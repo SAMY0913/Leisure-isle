@@ -118,7 +118,7 @@ pwsh D:/休闲小岛幻境/开发产物/run_perf6.ps1
 "D:/休闲小岛幻境/引擎/Godot_v4.7.2-stable_win64_console.exe" --headless --path D:/休闲小岛幻境/游戏工程 --check-only --script res://scripts/main.gd
 ```
 
-历史 P6_REPORT §5.1 用它做过 main.gd + 队友脚本 + 5 个 shader 的静态检查。
+历史 P6_REPORT §5.1 用它做过 main.gd + 队友脚本 + 5 个 shader 的静态检查。**本次 T3 实测（23:29）**：exit 0；但本机沙箱下引擎启动时会额外打印 2 行 user:// 日志写入失败（见 §6 噪音 5），属预期。日志 开发产物/logs/t3_checkonly_main.log。
 
 ## 4. P6 阶段当前有效探针（13 个核心验收探针）
 
@@ -207,6 +207,7 @@ pwsh D:/休闲小岛幻境/开发产物/run_perf6.ps1
 3. **分辨率自测项只在窗口模式实测**；--resolution 是引擎窗口尺寸参数（如 --resolution 1600x900），不是游戏设置。
 4. **user:// 写入失败**：历史沙箱下出现 `ERR_FILE_CANT_OPEN`；项目自动化已把所有输出改到 开发产物/。不要在新代码里写 user://。
 5. **无害噪音**（可忽略，不是失败）：
+   - `ERROR: Failed to open 'user://logs/godot2026-....log'.` 与 `ERROR: Failed to open log file for writing: user://logs/godot.log`（每次启动各 1 行；本机沙箱禁止 Godot 写用户目录，引擎自身日志落盘失败，不影响运行与退出码——这正是 P6 约定不写 user:// 的原因）。
    - `ERROR: Failed to read the root certificate store.`（headless 下 Windows 证书存储读取失败）
    - `[godot_ai game_helper] registered mcp capture ...`（addons/godot_ai 的帮助器注册日志）
    添加了该 autoload。
