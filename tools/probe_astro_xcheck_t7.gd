@@ -259,7 +259,7 @@ func _phase_a_events_and_samples() -> void:
 			var exp_illum := (1.0 + cos(deg_to_rad(pa))) * 0.5
 			var ie := absf(illum - exp_illum)
 			_upd("illum_formula", ie, "%s %d" % [d, mnt])
-			_checkq(ie <= 1e-6, "%s %d illum=(1+cos pa)/2 残差=%.2e" % [d, mnt, ie])
+			_checkq(ie <= 1e-6, "%s %d illum=(1+cos pa)/2 残差=%.6f" % [d, mnt, ie])
 		var thr_map := {"sunrise": SUN_RISE_ALT, "sunset": SUN_RISE_ALT, "civil_dawn": -6.0, "civil_dusk": -6.0, "nautical_dawn": -12.0, "nautical_dusk": -12.0, "astronomical_dawn": -18.0, "astronomical_dusk": -18.0}
 		for key in thr_map.keys():
 			var mm := float(ev[key])
@@ -313,7 +313,7 @@ func _phase_a_events_and_samples() -> void:
 			_checkq(float(ev["astronomical_dusk"]) >= float(ev["nautical_dusk"]) and float(ev["nautical_dusk"]) >= float(ev["civil_dusk"]), "%s 昏影次序 民用<=航海<=天文" % d)
 			var dl := absf(float(ev["day_length"]) - (sunset - sunrise))
 			_upd("day_length_formula", dl, d)
-			_checkq(dl <= 1e-6, "%s day_length=sunset-sunrise 残差=%.2e min" % [d, dl])
+			_checkq(dl <= 1e-6, "%s day_length=sunset-sunrise 残差=%.6f min" % [d, dl])
 			for key2 in ["sunrise", "sunset", "noon_time", "civil_dawn", "civil_dusk", "nautical_dawn", "nautical_dusk", "astronomical_dawn", "astronomical_dusk"]:
 				var mv := float(ev[key2])
 				_checkq(mv >= 0.0 and mv <= 1440.0, "%s %s 在本地日内 [0,1440)" % [d, key2])
@@ -803,36 +803,123 @@ func _phase_b_timezone() -> void:
 	var unix := 1773968400.0
 	var utc := Time.get_datetime_dict_from_unix_time(int(unix))
 	_check(int(utc.get("hour", -1)) == 1 and int(utc.get("day", -1)) == 20, "基准时刻 2026-03-20T01:00:00Z（UTC 时钟校验）")
+	# T7（a43ca8c 后）：real 模式的生产语义是「天文/生态时钟固定参考时区 IsleAstro.TZ_SECONDS，
+	# 所选显示时区只改 HUD/事件文本」。旧版本此处自行用 unix+所选偏移 构造 _sim_seconds（旧映射），
+	# 只能复现修复前的反事实 bug，无法验证当前代码；现改为走 main 生产路径 _advance_sim/_update_lighting。
+	# 旧映射保留在文末 [INFO] 反事实对照，只作 pre-fix 证据，不计入 known_bug。
 	_m._time_source = "real"
-	_m._abs_unix = unix
 	var tzs := ["Asia/Shanghai", "Asia/Tokyo", "America/New_York"]
 	var res := {}
+	# 段① 廉价时钟段：只走 _advance_sim（real 模式生产时钟入口）+ 显示换算，不调 _update_lighting；
+	# 重渲染开销约 50ms/次，会放大跨时区系统时钟读数漂移，掩盖真正的时区语义。
 	for tz in tzs:
 		_m._timezone = tz
-		var off: float = float(_m._offset_for(unix))
-		_m._sim_seconds = unix + off
+		_m._advance_sim(0.0)   # real 生产入口：_abs_unix=系统时间，_sim_seconds=_abs_unix+TZ_SECONDS
 		var c := IsleAstro.compute(float(_m._sim_seconds))
-		var wall := Time.get_datetime_dict_from_unix_time(int(unix + off))
-		res[tz] = {"off": off, "sun_alt": float(c["sun_alt"]), "sun_az": float(c["sun_az"]), "jd": float(c["jd"]), "wall": "%02d:%02d" % [int(wall.get("hour", 0)), int(wall.get("minute", 0))]}
-		print("  [MEASURE] tz=%s offset=%+.0fs 当地显示=%s sun_alt=%.4f° sun_az=%.4f° jd=%.6f" % [tz, off, String(res[tz]["wall"]), float(res[tz]["sun_alt"]), float(res[tz]["sun_az"]), float(res[tz]["jd"])])
+		var dt: Dictionary = _m._display_datetime()
+		var off: int = _m._offset_for(float(_m._abs_unix))
+		var simerr: float = absf(float(_m._sim_seconds) - (float(_m._abs_unix) + float(IsleAstro.TZ_SECONDS)))
+		res[tz] = {
+			"off": off, "abs": float(_m._abs_unix), "sim": float(_m._sim_seconds), "simerr": simerr,
+			"compute_alt": float(c["sun_alt"]), "compute_az": float(c["sun_az"]),
+			"wall": "%02d:%02d" % [int(dt.get("hour", 0)), int(dt.get("minute", 0))],
+			"wall_min": int(dt.get("hour", 0)) * 60 + int(dt.get("minute", 0)),
+		}
+		print("  [MEASURE] real tz=%s offset=%+.0fs 显示=%s sim=%.3f(abs+TZ 误差 %.4fs) compute sun_alt=%.4f° sun_az=%.4f°" % [tz, off, String(res[tz]["wall"]), float(_m._sim_seconds), simerr, float(c["sun_alt"]), float(c["sun_az"])])
 	_check(absf(float(res["Asia/Shanghai"]["off"]) - 28800.0) <= 1e-6, "Asia/Shanghai 偏移 +28800s")
 	_check(absf(float(res["Asia/Tokyo"]["off"]) - 32400.0) <= 1e-6, "Asia/Tokyo 偏移 +32400s")
 	var ref: Dictionary = res["Asia/Shanghai"]
 	var max_shift := 0.0
 	var max_az := 0.0
+	var max_sim_drift := 0.0
+	var max_simerr := 0.0
 	for tz in tzs:
-		max_shift = maxf(max_shift, absf(float(res[tz]["sun_alt"]) - float(ref["sun_alt"])))
-		max_az = maxf(max_az, absf(_adiff(float(res[tz]["sun_az"]), float(ref["sun_az"]))))
-	_upd("tz_sun_alt_shift", max_shift, "unix=2026-03-20T01:00Z")
-	_upd("tz_sun_az_shift", max_az, "unix=2026-03-20T01:00Z")
-	print("  [MEASURE] 时区切换导致的太阳位置漂移：max|dalt|=%.4f° max|daz|=%.4f°" % [max_shift, max_az])
-	if max_shift <= 0.01 and max_az <= 0.01:
-		_check(true, "切换显示时区后太阳位置不变（max dalt=%.4f° daz=%.4f°）" % [max_shift, max_az])
-	else:
-		_known += 1
-		print("  [KNOWN-BUG] real 模式切换显示时区改变了天体位置：max|dalt|=%.4f° max|daz|=%.4f°（1h 时区差≈15° 时角，位置不应变）" % [max_shift, max_az])
-		print("  [KNOWN-BUG] 原因：main.gd real 模式 _sim_seconds=_abs_unix+所选时区偏移，而 isle_astro.jd_from_local 固定减 28800（假定 UTC+8）→ 非 UTC+8 时区把显示偏移灌进天文层。")
-		print("  [KNOWN-BUG] 建议补丁（待 Lead 决定，本探针不修改源码）：real 模式向天文层传 _abs_unix+28800（或让 isle_astro 接收 Unix 时间戳），并让 _local_seconds_to_display_text 的 real 分支与 sim 分支一样做 local-28800+所选偏移；同时需同步调整 main.gd 自测第 24 项（它当前断言了 sky==显示时区墙上时刻）。")
+		max_sim_drift = maxf(max_sim_drift, absf(float(res[tz]["sim"]) - float(ref["sim"])))
+		max_simerr = maxf(max_simerr, float(res[tz]["simerr"]))
+		max_shift = maxf(max_shift, absf(float(res[tz]["compute_alt"]) - float(ref["compute_alt"])))
+		max_az = maxf(max_az, absf(_adiff(float(res[tz]["compute_az"]), float(ref["compute_az"]))))
+	_upd("tz_sun_alt_shift", max_shift, "real 廉价时钟段（系统时间）")
+	_upd("tz_sun_az_shift", max_az, "real 廉价时钟段（系统时间）")
+	_upd("tz_sim_seconds_drift", max_sim_drift, "real 廉价时钟段（跨时区）")
+	_upd("tz_sim_seconds_semantics_err", max_simerr, "|sim-(abs+TZ_SECONDS)|")
+	print("  [MEASURE] real 廉价时钟段：max|dsim|=%.4fs max|sim-(abs+TZ)|=%.5fs max|dalt|=%.6f° max|daz|=%.6f°" % [max_sim_drift, max_simerr, max_shift, max_az])
+	_checkq(max_simerr <= 0.01, "real 模式天文时钟固定参考时区：|_sim_seconds-(_abs_unix+TZ_SECONDS)|max=%.5fs≤0.01s" % max_simerr)
+	_checkq(max_sim_drift <= 0.1, "切换显示时区不改变天文时钟：跨时区 |dsim|max=%.4fs≤0.1s（廉价段，系统时间毫秒漂移）" % max_sim_drift)
+	_checkq(max_shift <= 0.05 and max_az <= 0.05, "切换显示时区后太阳天文位置不变（real 廉价段 max dalt=%.6f° daz=%.6f°≤0.05°）" % [max_shift, max_az])
+	# 段② 生产路径段：走 main._advance_sim + main._update_lighting（真实每帧链路），校验 _update_lighting
+	# 写出的 _sun_alt/_sun_az 与同一 _sim_seconds 的 IsleAstro.compute 完全一致，且跨时区场景太阳位置稳定。
+	var max_scene_mismatch := 0.0
+	var scene_ref_alt := 0.0
+	var scene_ref_az := 0.0
+	var max_scene_alt := 0.0
+	var max_scene_az := 0.0
+	var scene_first := true
+	for tz in tzs:
+		_m._timezone = tz
+		_m._advance_sim(0.0)
+		_m._update_lighting()
+		var c2 := IsleAstro.compute(float(_m._sim_seconds))
+		var mism := maxf(absf(float(_m._sun_alt) - float(c2["sun_alt"])), absf(_adiff(float(_m._sun_az), float(c2["sun_az"]))))
+		max_scene_mismatch = maxf(max_scene_mismatch, mism)
+		res[tz]["scene_alt"] = float(_m._sun_alt)
+		res[tz]["scene_az"] = float(_m._sun_az)
+		if scene_first:
+			scene_ref_alt = float(_m._sun_alt)
+			scene_ref_az = float(_m._sun_az)
+			scene_first = false
+		else:
+			max_scene_alt = maxf(max_scene_alt, absf(float(_m._sun_alt) - scene_ref_alt))
+			max_scene_az = maxf(max_scene_az, absf(_adiff(float(_m._sun_az), scene_ref_az)))
+		print("  [MEASURE] real 生产路径 tz=%s sim=%.3f _sun_alt=%.4f° _sun_az=%.4f°（vs compute 差 %.9f°）" % [tz, float(_m._sim_seconds), float(_m._sun_alt), float(_m._sun_az), mism])
+	_upd("tz_scene_sun_alt_shift", max_scene_alt, "real 生产路径 _update_lighting（跨时区）")
+	_upd("tz_scene_sun_az_shift", max_scene_az, "real 生产路径 _update_lighting（跨时区）")
+	_upd("tz_scene_compute_mismatch", max_scene_mismatch, "_update_lighting vs 同 _sim_seconds compute")
+	print("  [MEASURE] real 生产路径：max|dalt|=%.6f° max|daz|=%.6f° max|scene-compute|=%.9f°" % [max_scene_alt, max_scene_az, max_scene_mismatch])
+	_checkq(max_scene_mismatch <= 1.0e-9, "real 生产路径 _update_lighting 与同一 _sim_seconds 的 IsleAstro.compute 一致（max=%.9f°）" % max_scene_mismatch)
+	_checkq(max_scene_alt <= 0.05 and max_scene_az <= 0.05, "切换显示时区后 _update_lighting 太阳位置不变（生产路径 max dalt=%.6f° daz=%.6f°≤0.05°）" % [max_scene_alt, max_scene_az])
+	# 显示层：墙钟必须按所选时区偏移换算（显示调整允许，天体不随之移动，模 24h 比较）
+	var max_wall_err := 0.0
+	var off_ref: int = int(ref["off"])
+	var off_ref_min: int = int(float(off_ref) / 60.0)
+	for tz in tzs:
+		var off_tz_min: int = int(float(int(res[tz]["off"])) / 60.0)
+		var want_min: int = int(fposmod(float(int(ref["wall_min"]) - off_ref_min + off_tz_min), 1440.0))
+		var got_min: int = int(res[tz]["wall_min"])
+		var e: float = absf(fposmod(float(got_min - want_min) + 720.0, 1440.0) - 720.0)
+		max_wall_err = maxf(max_wall_err, e)
+		print("  [MEASURE] real tz=%s 墙钟=%s（按 offset 换算期望 %02d:%02d，误差 %.2fmin）" % [tz, String(res[tz]["wall"]), want_min / 60, want_min % 60, e])
+	_upd("tz_display_wall_err_min", max_wall_err, "real 生产路径（模 24h）")
+	_checkq(max_wall_err <= 1.0, "显示墙钟按所选时区偏移换算（模 24h 最大误差 %.2fmin≤1min）" % max_wall_err)
+	# 切换动作本身：同一绝对时刻连续切换显示时区，天体不得移动（仿 main 自测第 24 组并加严）
+	_m._timezone = "Asia/Shanghai"
+	_m._advance_sim(0.0)
+	_m._update_lighting()
+	var alt_a := float(_m._sun_alt)
+	var az_a := float(_m._sun_az)
+	var wall_a := _hhmm_min(String(_m._display_clock_text()))
+	_m._timezone = "America/New_York"
+	_m._advance_sim(0.0)
+	_m._update_lighting()
+	var d_switch_alt := absf(float(_m._sun_alt) - alt_a)
+	var d_switch_az := absf(_adiff(float(_m._sun_az), az_a))
+	var wall_b := _hhmm_min(String(_m._display_clock_text()))
+	var wall_diff := fposmod(float(wall_b - wall_a), 1440.0)
+	var want_switch := fposmod(float(int(res["America/New_York"]["off"]) - int(res["Asia/Shanghai"]["off"])) / 60.0, 1440.0)
+	var switch_wall_err: float = absf(fposmod(wall_diff - want_switch + 720.0, 1440.0) - 720.0)
+	_upd("tz_switch_sun_alt_shift", d_switch_alt, "上海→纽约 连续切换")
+	_upd("tz_switch_sun_az_shift", d_switch_az, "上海→纽约 连续切换")
+	_checkq(d_switch_alt <= 0.05 and d_switch_az <= 0.05, "同一绝对时刻连续切换显示时区（上海→纽约）：天体位置差 max dalt=%.6f° daz=%.6f°≤0.05°" % [d_switch_alt, d_switch_az])
+	_checkq(switch_wall_err <= 1.0, "切换后墙钟差与 offset 差一致（误差 %.2fmin≤1min）" % switch_wall_err)
+	# [INFO] 反事实对照：旧映射（unix+所选偏移 灌入天文层）的漂移量，修复前正是 KNOWN-BUG 来源；
+	# 修复后生产路径不再使用该映射，仅作证据保留，不计入 known_bug。
+	var old_ref := IsleAstro.compute(unix + float(ref["off"]))
+	var old_max_alt := 0.0
+	var old_max_az := 0.0
+	for tz in tzs:
+		var old_c := IsleAstro.compute(unix + float(res[tz]["off"]))
+		old_max_alt = maxf(old_max_alt, absf(float(old_c["sun_alt"]) - float(old_ref["sun_alt"])))
+		old_max_az = maxf(old_max_az, absf(_adiff(float(old_c["sun_az"]), float(old_ref["sun_az"]))))
+	print("  [INFO] 反事实旧映射 unix+显示偏移（pre-fix 语义）：max|dalt|=%.4f° max|daz|=%.4f° —— 修复后生产路径已不使用，仅证据保留" % [old_max_alt, old_max_az])
 	_m._time_source = "sim"
 	var fixed := _base("2026-03-20") + 9.0 * 3600.0
 	_m._sim_seconds = fixed
