@@ -284,8 +284,9 @@ func _cmdline_value(key: String) -> String:
 func _init_time() -> void:
 	_abs_unix = Time.get_unix_time_from_system()
 	if _time_source == "real":
-		# 现实时间：统一时间源——天文时钟与 HUD 都取所选时区的当地时刻。
-		_sim_seconds = _abs_unix + float(_offset_for(_abs_unix))
+		# 现实时间：天文/生态时钟固定为岛屿参考时区（广州 UTC+8）的当地秒；
+		# 所选“显示时区”只影响 HUD 文本（见 _display_datetime），不得平移天体位置（T7 修复）。
+		_sim_seconds = _abs_unix + float(IsleAstro.TZ_SECONDS)
 	else:
 		# 参考项目的氛围起点：傍晚 17:18
 		_sim_seconds = 17.0 * 3600.0 + 18.0 * 60.0
@@ -591,9 +592,9 @@ func _advance_sim(delta: float) -> void:
 	var before := fposmod(_sim_seconds, 86400.0)
 	var sim_before := _sim_seconds
 	if _time_source == "real":
-		# 现实模式：唯一来源是系统绝对时间；天文时钟 = 绝对时间 + 所选时区偏移。
+		# 现实模式：唯一来源是系统绝对时间；天文/生态时钟固定用岛屿参考时区（UTC+8）。
 		_abs_unix = Time.get_unix_time_from_system()
-		_sim_seconds = _abs_unix + float(_offset_for(_abs_unix))
+		_sim_seconds = _abs_unix + float(IsleAstro.TZ_SECONDS)
 	else:
 		var rate := 86400.0 / maxf(_day_length, 1.0)
 		_sim_seconds += delta * rate
@@ -2169,6 +2170,8 @@ func _run_selftest() -> void:
 		results.append(["时间轴可真实鼠标拖动并改变时刻", scrub_routed and scrub_time])
 		_hud.toggle_time_panel()
 	# 24. 现实时间模式 + IANA 时区（切东京立即生效，切回模拟不丢状态）
+	# T7 修复：现实模式下天文/生态时钟固定为岛屿参考时区（广州 UTC+8）；
+	#          切换“显示时区”只改 HUD 文本与事件显示时刻，不得平移天体位置。
 	var saved_src := _time_source
 	var saved_tz := _timezone
 	_settings["time_source"] = "real"
@@ -2180,24 +2183,32 @@ func _run_selftest() -> void:
 	var expect_dt := Time.get_datetime_dict_from_unix_time(int(_abs_unix + float(_offset_for(_abs_unix))))
 	var tz_ok: bool = _time_api != null and tokyo_off == 32400 and int(_display_datetime().get("hour", -1)) == int(expect_dt.get("hour", -2))
 	var tz_label_ok: bool = _tz_label_text().find("Asia/Tokyo") >= 0
-	# 统一时间源：天空天文时钟必须与 HUD 显示的所选时区当地时刻同源（不是广州时间）。
-	var d_tokyo: float = fposmod(_sim_seconds - (_abs_unix + float(tokyo_off)), 86400.0)
-	var sky_tokyo_ok: bool = minf(d_tokyo, 86400.0 - d_tokyo) < 5.0
+	# 天体时钟必须与系统绝对时间 + 参考时区同源（不是所选显示时区）。
+	var d_ref: float = fposmod(_sim_seconds - (_abs_unix + float(IsleAstro.TZ_SECONDS)), 86400.0)
+	var sky_ref_ok: bool = minf(d_ref, 86400.0 - d_ref) < 5.0
+	# 事件显示时刻按显示时区偏移换算（日出/日落等文本随所选时区平移，但天文事件不变）。
+	var sr_ev := float(_events["sunrise"])
+	var sr_unix_ev := sr_ev - float(IsleAstro.TZ_SECONDS)
+	var sr_tokyo_dt := Time.get_datetime_dict_from_unix_time(int(sr_unix_ev + float(tokyo_off)))
+	var sr_txt_ok: bool = _local_seconds_to_display_text(sr_ev) == "%02d:%02d" % [int(sr_tokyo_dt["hour"]), int(sr_tokyo_dt["minute"])]
+	# 切换显示时区前后天体位置不变（同一绝对时刻）。
+	var sky_alt_a := _sun_alt
+	var sky_az_a := _sun_az
 	_settings["timezone"] = "America/New_York"
 	_apply_user_settings(false)
 	await get_tree().process_frame
 	var ny_off: int = _offset_for(_abs_unix)
 	var ny_expect := Time.get_datetime_dict_from_unix_time(int(_abs_unix + float(ny_off)))
-	var d_ny: float = fposmod(_sim_seconds - (_abs_unix + float(ny_off)), 86400.0)
-	var sky_ny_ok: bool = minf(d_ny, 86400.0 - d_ny) < 5.0 and int(_display_datetime().get("hour", -1)) == int(ny_expect.get("hour", -2))
+	var sky_same: bool = absf(_sun_alt - sky_alt_a) < 0.05 and absf(wrapf(_sun_az - sky_az_a, -180.0, 180.0)) < 0.05
+	var sky_ny_ok: bool = sky_same and int(_display_datetime().get("hour", -1)) == int(ny_expect.get("hour", -2))
 	_settings["time_source"] = saved_src
 	_settings["timezone"] = saved_tz
 	_apply_user_settings(false)
 	await get_tree().process_frame
 	results.append(["现实时间模式", real_mode_ok])
 	results.append(["IANA 时区切换（东京 UTC+09）", tz_ok and tz_label_ok])
-	results.append(["现实时间天空与东京时区同源", sky_tokyo_ok])
-	results.append(["切换时区天空立即同源（纽约）", sky_ny_ok])
+	results.append(["现实时间天体时钟固定为岛屿参考时区", sky_ref_ok and sr_txt_ok])
+	results.append(["切换显示时区天体不移动（纽约）", sky_ny_ok])
 	# 25. 大船航线：≥8 组、每组 out/back 且贴海面
 	var routes_ok: bool = _sail_routes.size() >= 8
 	if routes_ok:
@@ -2829,7 +2840,7 @@ func _enter_resting() -> void:
 		_boat_rest_until = maxf(_boat_rest_until, _next_rest_end_sim())
 	print("[BOAT] arrived dock -> RESTING until sim=", snappedf(_boat_rest_until, 1.0))
 
-## 18:00—次日 08:00 为小船休息窗口（按所选时区的当地模拟时钟判定）
+## 18:00—次日 08:00 为小船休息窗口（按岛屿参考时区/模拟时钟判定；显示时区不影响生态行为）
 func _is_boat_rest_hour() -> bool:
 	var hour := fposmod(_sim_seconds, 86400.0) / 3600.0
 	return hour >= BOAT_REST_START_HOUR or hour < BOAT_REST_END_HOUR
@@ -3253,9 +3264,9 @@ func _apply_user_settings(save: bool) -> void:
 	_settings["resolution"] = Settings.sanitize_resolution(_settings.get("resolution", Settings.default_resolution()))
 	_settings["window_mode"] = Settings.sanitize_window_mode(_settings.get("window_mode", "windowed"), _settings.get("fullscreen", false))
 	if _realtime:
-		# 统一时间源：每次应用设置都以所选时区重算天文时钟，切换时区立即生效。
+		# 现实时间：天文/生态时钟固定用岛屿参考时区；显示时区只改 HUD 文本（T7 修复）。
 		_abs_unix = Time.get_unix_time_from_system()
-		_sim_seconds = _abs_unix + float(_offset_for(_abs_unix))
+		_sim_seconds = _abs_unix + float(IsleAstro.TZ_SECONDS)
 		_events = IsleAstro.day_events(_sim_seconds)
 	_apply_quality(_quality)
 	_apply_audio_volume()
@@ -3293,15 +3304,12 @@ func _display_clock_text() -> String:
 	var dt := _display_datetime()
 	return "%02d:%02d" % [int(dt.get("hour", 0)), int(dt.get("minute", 0))]
 
-## 广州本地秒 → 所选时区的显示时间（用于日出/日落/月出/月落）
+## 岛屿参考时区（广州）本地秒 → 所选显示时区的墙上时间（日出/日落/月出/月落）。
+## 现实与模拟模式同一换算：天体事件始终发生在参考时区，显示时区只改文本（T7 修复）。
 func _local_seconds_to_display_text(local_seconds: float) -> String:
 	if local_seconds < -1.0e8:
 		return "--:--"
-	var unix := local_seconds - 28800.0
-	if _time_source == "real":
-		# 现实模式下 _sim_seconds/_events 已是所选时区当地秒，直接格式化，避免二次换算。
-		var dt_direct := Time.get_datetime_dict_from_unix_time(int(local_seconds))
-		return "%02d:%02d" % [int(dt_direct.get("hour", 0)), int(dt_direct.get("minute", 0))]
+	var unix := local_seconds - float(IsleAstro.TZ_SECONDS)
 	var off := _offset_for(unix)
 	var dt2 := Time.get_datetime_dict_from_unix_time(int(unix + float(off)))
 	return "%02d:%02d" % [int(dt2.get("hour", 0)), int(dt2.get("minute", 0))]
@@ -3341,12 +3349,12 @@ func _on_time_mode_requested(mode: String) -> void:
 	_realtime = mode == "real"
 	_abs_unix = Time.get_unix_time_from_system()
 	if mode == "real":
-		# 切到现实：以系统绝对时间 + 所选时区重新同步。
-		_sim_seconds = _abs_unix + float(_offset_for(_abs_unix))
+		# 切到现实：以系统绝对时间 + 岛屿参考时区重新同步（显示时区只改文本）。
+		_sim_seconds = _abs_unix + float(IsleAstro.TZ_SECONDS)
 	else:
 		# 切到模拟：从当前显示时刻连续初始化模拟钟，太阳/月亮/船/鸟不会瞬间跳变。
 		if was_real:
-			_sim_seconds = _abs_unix + float(_offset_for(_abs_unix))
+			_sim_seconds = _abs_unix + float(IsleAstro.TZ_SECONDS)
 		_paused = false
 	_events = IsleAstro.day_events(_sim_seconds)
 	_events_timer = 0.0
@@ -3701,7 +3709,7 @@ func _update_perf_overlay(delta: float) -> void:
 	_perf_timer = 0.5
 	var fps := maxf(Engine.get_frames_per_second(), 1.0)
 	_hud.update_perf({
-		"clock": IsleAstro.clock_text(int(fposmod(_sim_seconds, 86400.0) / 60.0)),
+		"clock": _display_clock_text(),
 		"phase": _phase_name,
 		"fps": fps,
 		"frame_ms": 1000.0 / fps,
