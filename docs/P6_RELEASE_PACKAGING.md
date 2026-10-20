@@ -2,7 +2,10 @@
 
 > 负责人：release（task-2）。记录任务 A（sounds/ 审计归档）、任务 B（发布包剥离 addons/godot_ai）、
 > 任务 C（干净目录启动与资源完整性验收）的实测过程、证据与复现命令。
-> 状态：试导出与 headless 验收已完成；最终发布导出/覆盖 `发布/`、窗口冒烟待 Lead 广播 FREEZE 后执行（见 §6）。
+> 状态：**已完成并发布**。FREEZE（commit 55a8d73，tag `freeze-p6close-20261021_0515`）后完成正式导出、headless
+> 验收、退出码矩阵、窗口自动化验收（55/55 + 61 + 13 张）、覆盖 `发布/` 与 `构建输出/`，并在发布位置复测
+> 可执行性（见 §5.4、§5.5、§6）。发布构建 HEAD：导出时 **6ac049e**（其后提交均为 docs/test-only）；
+> 发布字节与 freeze 55a8d73 构建**完全一致**（sha256 `b3b4e4ab…`）。
 
 ## 0. 结论摘要
 
@@ -10,10 +13,14 @@
 | --- | --- |
 | sounds/ 早期录音 | 4 文件 47.9 MB 全局零引用 → 已归档到 `开发产物/archive/sounds_legacy/`，导入告警消除，发布包不再包含 sounds/ |
 | addons/godot_ai | `export_presets.cfg` 排除整目录后发布包不含任何 addon 资源；project.godot 的 autoload 由 addon 导出插件在导出时自动剥离，保留不影响发布包 |
-| 试导出包体积 | 122,950,336 B（旧发布）→ 116,767,872 B（P6 试导出 trial2），减少 6,182,464 B（-5.03%） |
-| 干净目录启动（headless） | `--headless -- --selftest` → `[TEST] RESULT 53/53 passed` |
-| 字体/中文/音频完整性 | 包内 `res://fonts/simhei.ttf` 可加载（FontFile，28522 字符，含 休/闲/中）；11/11 音频全部可加载且时长 > 0；isle.tscn 可实例化；4 个着色器可加载 |
-| 退出码（既有问题） | 导出 exe 自动化 selftest 跑完后进程退出码 `-1073740940 (0xC0000374 heap corruption)`；旧发布 exe 同样复现；普通 `--headless --quit` 退出码 0（详见 §5.3） |
+| 最终发布包体积 | 122,950,336 B（旧发布）→ **116,768,848 B**，减少 6,181,488 B（**-5.03%**）；sha256 `b3b4e4ab492b471da0472432749c9ac9faea225700443806389d803fbd9684f8`。已覆盖 `发布/`、`构建输出/`、`开发产物/release_verify/p6_20261021_final/` **三处完全一致**（构建 HEAD=6ac049e，字节等同 freeze 55a8d73） |
+| 包内容 | 79 文件（scripts 36 / .godot 16 / audio 11 / shaders 10 / icon 2 / project.binary 1 / isle.tscn.remap 1 / fonts 1 / art 1）；**addons/sounds/tools/docs/shots 均 0 条**；包内 `project.binary` 无 `_mcp_game_helper` |
+| 干净目录启动（headless） | `--headless -- --selftest` → `[TEST] RESULT 53/53 passed`，真实退出码 0（连跑 2 次一致） |
+| 字体/中文/音频完整性 | 包内 `res://fonts/simhei.ttf` 可加载（FontFile，28522 字符，含 休/闲/中）；11/11 音频全部可加载且时长 > 0；isle.tscn 可加载且可实例化；4 个着色器可加载 |
+| 退出码 | FREEZE 版 headless 矩阵：selftest×2 / perf / `--quit` **全部 EXIT=0，0xC0000374 未复现**（修复前 trial2/旧发布曾复现，见 §5.3 历史表） |
+| 窗口自动化验收 | Lead m00549 方案（不做鼠标注入）：窗口 `--selftest` **55/55 passed（exit 0，31.2s）**、`--shots` **61 张**、`--transition` **13 张**，`RESULT=ALL_PASS`（§5.4） |
+| 发布位置可执行性 | 对 `发布/休闲小岛幻境.exe`（最终交付字节）实测：`--headless --quit` **exit 0**；`--headless -- --selftest` **53/53 passed，exit 0**（§5.5） |
+| 发布包画面复核 | verify-visual 对 61+13 张 EXE 截图逐张程序化+人工复核：与工程内同名图灰度相关 median 0.9932、无黑帧/白帧、无 P0/P1（commit 7a5b488） |
 
 ## 1. 环境与版本
 
@@ -54,7 +61,7 @@ cd /d D:\休闲小岛幻境
 mkdir D:\休闲小岛幻境\开发产物\release_verify\tmpdir 2>nul
 set TMP=D:\休闲小岛幻境\开发产物\release_verify\tmpdir
 set TEMP=%TMP%
-"D:\休闲小岛幻境\引擎\Godot_v4.7.2-stable_win64_console.exe" --headless --path "D:\休闲小岛幻境\游戏工程" --export-release "Windows Desktop" "D:\休闲小岛幻境\开发产物\release_verify\p6_20261020\isle_p6.exe" --verbose > "D:\休闲小岛幻境\开发产物\logs\release\20_final_export.log" 2>&1
+"D:\休闲小岛幻境\引擎\Godot_v4.7.2-stable_win64_console.exe" --headless --path "D:\休闲小岛幻境\游戏工程" --export-release "Windows Desktop" "D:\休闲小岛幻境\开发产物\release_verify\p6_20261021_final\isle_p6.exe" --verbose > "D:\休闲小岛幻境\开发产物\logs\release\20_final_export.log" 2>&1
 echo EXIT=%ERRORLEVEL%
 ```
 
@@ -66,7 +73,7 @@ TMP="D:/休闲小岛幻境/开发产物/release_verify/tmpdir" \
 TEMP="D:/休闲小岛幻境/开发产物/release_verify/tmpdir" \
 "D:/休闲小岛幻境/引擎/Godot_v4.7.2-stable_win64_console.exe" --headless \
   --path "D:/休闲小岛幻境/游戏工程" --export-release "Windows Desktop" \
-  "D:/休闲小岛幻境/开发产物/release_verify/p6_20261020/isle_p6.exe" --verbose \
+  "D:/休闲小岛幻境/开发产物/release_verify/p6_20261021_final/isle_p6.exe" --verbose \
   > 开发产物/logs/release/20_final_export.log 2>&1
 ```
 
@@ -76,7 +83,7 @@ TEMP="D:/休闲小岛幻境/开发产物/release_verify/tmpdir" \
 
 ```bash
 # 1) 干净目录 selftest（目录里只放 exe）
-cd 开发产物/release_verify/p6_20261020
+cd 开发产物/release_verify/p6_20261021_final
 ./isle_p6.exe --headless -- --selftest
 
 # 2) 嵌入 PCK 内容校验（脚本加载 pack 后检查目录/项目配置，输出见 13_pack_inspect_*.log）
@@ -158,38 +165,58 @@ MCP | export: stripping autoload/_mcp_game_helper from the exported pack (restor
 - 独立校验（`13_pack_inspect_trial2.log`）：包内 `project.binary` 中 `_mcp_game_helper` / `addons/godot_ai`
   均不存在；游戏脚本/场景对该 autoload 零引用。**结论：保留 project.godot 的 autoload 不影响发布包。**
 
-### 4.3 包内容与体积（试导出 trial2，代码快照 2026-10-20 23:16）
+### 4.3 包内容与体积（FREEZE 正式导出，commit 55a8d73）
 
-- 试导出 exe：`开发产物/release_verify/trial2/isle_trial2.exe`
-  - 大小 116,767,872 B；sha256 `854bf2212a99123978240a4076790b89d984c66d32cb2db50c8cdfdfc22e3240`
-- savepack 清单（`11_trial_export_tmpfix.log`）：79 个文件
+- 正式导出 exe：`开发产物/release_verify/p6_20261021_final/isle_p6.exe`
+  - 大小 **116,768,848 B**；sha256 `b3b4e4ab492b471da0472432749c9ac9faea225700443806389d803fbd9684f8`
+  - 导出日志 `20_final_export.log`（EXPORT_EXIT=0，含 TMP/TEMP 指向工作区）
+- savepack 清单（`20_final_export.log` 提取，`20_final_savepack_list.txt`）：79 个文件
   scripts 36 / .godot 16 / audio 11 / shaders 10 / icon.ico 2 / project.binary 1 / isle.tscn.remap 1 / fonts 1 / art 1；
-  **addons=0、sounds=0、tools=0、docs=0、shots=0**
-- 独立包校验（`13_pack_inspect_trial2.log`）：
+  **addons=0、sounds=0、tools=0、docs=0、shots=0**（脚本逐条断言，命中即 exit 1）
+- 独立包校验（`13_pack_inspect_final.log`）：
   `PCK_MAGIC_AT=109128192 fmt=4 ver=4.7.2 flags=2 file_base=112`、`LOAD_PACK_OK=true`、
   `RES_ADDONS_DIR=false`、`RES_SOUNDS_DIR=false`、`RES_TOOLS_DIR=false`、`RES_DOCS_DIR=false`、
   `RES_SCRIPTS_DIR=true`、`RES_FONTS_DIR=true`、`PROJECT_BINARY_MAGIC=ECFG`、`PB_HAS_MCP_GAME_HELPER=false`
 - 体积对比：
 
-| 版本 | 大小 (B) | 说明 |
-| --- | --- | --- |
-| 旧发布 `发布/休闲小岛幻境.exe` | 122,950,336 | sha256 e2a9d242…（P6 前） |
-| P6 试导出 trial2 | 116,767,872 | -6,182,464 B（-5.03%） |
+| 版本 | 大小 (B) | sha256 前缀 | 说明 |
+| --- | --- | --- | --- |
+| 旧发布 `发布/休闲小岛幻境.exe` | 122,950,336 | `e2a9d242` | P6 前（备份 `开发产物/backup/release_pre_p6close/`） |
+| P6 试导出 trial2（历史） | 116,767,872 | `854bf221` | 验证过滤方案时产物（2026-10-20 23:16） |
+| **P6 正式导出（FREEZE）** | **116,768,848** | **`b3b4e4ab`** | -6,181,488 B（**-5.03%**） |
+
+> 历史试导出 trial2 的 savepack/包校验证据保留在 `11_trial_export_tmpfix.log`、`13_pack_inspect_trial2.log`；
+> 正式导出与 trial2 的清单结构一致（仅代码变化导致字节数 +1,024 B）。
+
+**FREEZE 后 HEAD 漂移的复核（实测）**：FREEZE tag 55a8d73 之后又有 5 笔提交（b56dc88 test-only、
+037cc4c docs、3ab7d9a docs、6ac049e docs、7a5b488 docs，均不在导出范围）。为确认发布字节不受影响，
+分别在 HEAD=3ab7d9a 与 HEAD=**6ac049e** 重新执行完整导出管线（`final_run3_console.log`、`final_run4_copy_console.log`）：
+
+| 导出时 HEAD | 大小 | sha256 | savepack 清单 |
+| --- | --- | --- | --- |
+| 55a8d73（freeze） | 116,768,848 | `b3b4e4ab…` | 79 行，sha256 `b8cd0996…` |
+| 3ab7d9a（重导出 1） | 116,768,848 | `b3b4e4ab…` | diff=0（与 freeze 清单完全一致） |
+| **6ac049e（重导出 2 = 发布构建）** | **116,768,848** | **`b3b4e4ab…`** | diff=0 |
+
+结论：后置 docs/test 提交**未改变发布字节**；报告以“发布构建 HEAD=6ac049e，内容等同 freeze 55a8d73”记录。
 
 - 既有告警（非本次引入，历史 `reorg_export.log` 同样存在）：图标缺尺寸 16/48/64/128/256、`icon.ico` 无效；
   exe 正常生成并可运行，属 P6 前既有资源问题，未在本次处理范围。
 
 ## 5. 任务 C：干净目录启动与资源验收
 
-### 5.1 干净目录 headless selftest
+### 5.1 干净目录 headless selftest（FREEZE 正式包）
 
-目录 `开发产物/release_verify/trial2_clean/`（仅放 exe），执行 `./isle_trial2.exe --headless -- --selftest`：
+目录 `开发产物/release_verify/p6_20261021_final/`（仅放 `isle_p6.exe`），执行
+`./isle_p6.exe --headless -- --selftest`：
 
-- 结果：`[TEST] RESULT 53/53 passed`（与源码运行一致）
-- 证据：`开发产物/release_verify/crash_evidence/trial2_selftest.stdout.log`、
-  `开发产物/logs/release/12_source_selftest.log`（源码同条件 53/53、退出码 0）
+- 结果：`[TEST] RESULT 53/53 passed`（与源码同条件 53/53 一致）
+- 真实退出码：0（`Start-Process -Wait -PassThru`，连跑 2 次一致，见 §5.3）
+- 证据：`开发产物/logs/release/21_final_selftest.log`、
+  `开发产物/release_verify/crash_evidence/final/selftest_1.stdout.log`、`selftest_2.stdout.log`；
+  源码基线 `开发产物/logs/release/12_source_selftest.log`
 
-### 5.2 字体/中文/音频/场景/着色器完整性（`14_res_inspect_trial2.log`）
+### 5.2 字体/中文/音频/场景/着色器完整性（FREEZE 正式包，`14_res_inspect_final.log`）
 
 ```
 FONT_LOAD path=res://fonts/simhei.ttf class=FontFile
@@ -202,42 +229,108 @@ SCENE_CAN_INSTANTIATE=true
 SHADER_LOAD res://shaders/post_ao.gdshader class=Shader（sea/sky/toon 同）
 ```
 
-注：`--headless selftest` 不渲染画面；**窗口模式实际渲染冒烟在 FREEZE 后执行**（见 §6 step 6）。
+注：`--headless selftest` 不渲染画面；窗口自动化验收方案见 §5.4。
 
-### 5.3 退出码（既有问题，复现材料）
+### 5.3 退出码矩阵（FREEZE 正式包：0xC0000374 未复现）
 
-同一 PowerShell `Start-Process -Wait -PassThru` 采集（`crash_evidence/exit_codes.txt`）：
+同一 PowerShell `Start-Process -Wait -PassThru` 采集真实退出码（`crash_evidence/final/exit_codes.txt`）：
+
+| 对象（FREEZE 导出 exe，sha256 `b3b4e4ab…`） | 命令 | 结果 | 耗时 | 退出码 |
+| --- | --- | --- | --- | --- |
+| 正式导出 exe | `--headless -- --selftest`（第 1 次） | `[TEST] RESULT 53/53 passed` | 22.0s | **0** |
+| 正式导出 exe | `--headless -- --selftest`（第 2 次） | `[TEST] RESULT 53/53 passed` | 21.8s | **0** |
+| 正式导出 exe | `--headless -- --perf` | `[PERF] end` | 44.2s | **0** |
+| 正式导出 exe | `--headless --quit` | 正常退出 | 6.4s | **0** |
+
+- **0xC0000374 在 FREEZE 版未复现**（lifecycle 的 FX 退出释放修复 `bd078b0` 已进冻结代码）。
+- stderr 仅环境噪声：user://logs 打不开 ×2、根证书 store ×1；另 selftest_2/perf_1 出现
+  `WARNING: 4 ObjectDB instances were leaked at exit`（退出期警告，非崩溃；selftest_1/quit 无）。
+- 证据：`开发产物/release_verify/crash_evidence/final/exit_codes.txt` 与
+  `selftest_1|selftest_2|perf_1|quit` 的 stdout/stderr；控制台 `开发产物/logs/release/final_exit_matrix_console.log`。
+
+历史（修复前，复现材料保留）：
 
 | 对象 | 命令 | 结果 | 退出码 |
 | --- | --- | --- | --- |
-| P6 试导出 exe | `--headless --quit` | 正常 | 0 |
-| P6 试导出 exe | `--headless -- --selftest` | 53/53 passed（连续 2 次一致） | **-1073740940 (0xC0000374)** |
+| P6 试导出 trial2 | `--headless --quit` | 正常 | 0 |
+| P6 试导出 trial2 | `--headless -- --selftest` | 53/53 passed（连续 2 次一致） | **-1073740940 (0xC0000374)** |
 | 旧发布 exe | `--headless --quit` | 正常 | 0 |
 | 旧发布 exe | `--headless -- --selftest` | 44/46 passed（2 项为 user:// 不可写导致的设置持久化失败） | **-1073740940 (0xC0000374)** |
 | 源码工程 | `--headless -- --selftest` | 53/53 passed | 0 |
 
-- 崩溃发生在 selftest 结束、进程退出阶段；stdout 已完整打印 `RESULT`，stderr 无 `ObjectDB instances leaked` 行
-  （即退出清理报告尚未输出即崩溃）。
-- `--quit` 运行 stderr 可见 `WARNING: 8 ObjectDB instances were leaked at exit`（lifecycle 正在修复的泄漏项）。
-- 结论：**该退出码异常为既有问题（旧发布 exe 同样复现），不是 P6 打包引入**；详细材料：
-  - `开发产物/release_verify/crash_evidence/exit_codes.txt`
-  - `trial2_quit.stdout/stderr.log`、`trial2_selftest.stdout/stderr.log`、`trial2_selftest_run2.*`
-  - `old_quit.*`、`old_selftest.*`
-  - 已同步 lifecycle；待其退出期修复后，用最终代码重新导出复测并更新本节。
+- 历史崩溃发生在 selftest 结束、进程退出阶段；stdout 已完整打印 `RESULT`；trial2 `--quit` stderr 可见
+  `WARNING: 8 ObjectDB instances were leaked at exit`。
+- 历史证据：`crash_evidence/exit_codes.txt`、`trial2_quit.*`、`trial2_selftest.*`、`trial2_selftest_run2.*`、
+  `old_quit.*`、`old_selftest.*`。
 
-## 6. 最终发布流程（FREEZE 后）
+### 5.4 窗口自动化验收（Lead m00549 方案，已执行：ALL_PASS）
 
-1. 确认无其他 teammate 在跑窗口 Godot：`tasklist | findstr -i godot`（导出/窗口冒烟前各查一次）。
-2. 按 §2.2 命令导出到 `开发产物/release_verify/p6_20261020/isle_p6.exe`（**不要直接覆盖 `发布/`**），保留
-   `20_final_export.log`；检查日志无 `project.binary` 错误、无 addon/sounds 条目。
-3. 干净目录 `--headless -- --selftest`，要求 53/53（记日志 `21_final_selftest.log`）。
-4. 跑 §2.3 的两个校验脚本（包内容 + 字体/音频完整性），要求 `RES_ADDONS_DIR=false`、`AUDIO_OK=11/11`。
-5. 复制 `isle_p6.exe` → `发布/休闲小岛幻境.exe` 与 `构建输出/休闲小岛幻境.exe`，核对两处 sha256 一致
-   （旧版备份已在 `开发产物/backup/release_pre_p6close/休闲小岛幻境_20261020_2045.exe`）。
-6. 窗口模式冒烟（需 Lead 协调 GPU 独占）：干净目录启动约 10–20 s，取截图/日志，确认无渲染/资源/脚本错误后退出，
-   退出后 tasklist 复查无残留 Godot 进程；记录 `22_window_smoke.log` 与截图路径。
-7. 更新本文件 §0/§6 的最终 sha256/体积/日志路径；提交自己 scope 的文件（`export_presets.cfg`、`sounds/` 删除、
-   本文件），向 Lead 报 commit hash。
+> 旧版鼠标注入冒烟（`window_smoke.ps1`）因窗口无法置前、输入未生效，Lead 已判定不可作为验收证据；
+> 改用导出包内置自动化入口（不依赖窗口焦点、不做输入注入）。
+
+脚本：`开发产物/logs/release/window_auto_smoke.ps1`
+（预检无其它 Godot/isle 进程、打印 SIZE/SHA256/HEAD，退出码 0 = 全绿）。
+
+| 步骤 | 命令（exe = `开发产物/release_verify/p6_20261021_final/isle_p6.exe`） | 期望 | 产物 |
+| --- | --- | --- | --- |
+| ① 窗口 selftest | `isle_p6.exe --resolution 1600x900 -- --selftest` | `[TEST] RESULT 55/55 passed`、exit 0（窗口模式比 headless 多 2 项真实鼠标拖动：设置滑条/时间轴，源码 `scripts/main.gd:2099-2169`） | `window_smoke/auto_selftest.out.log` |
+| ② 画面自动化 | `isle_p6.exe --resolution 1600x900 -- --shots` | 61 张 PNG | `window_smoke/final_shots/` |
+| ③ 转场自动化 | `isle_p6.exe --resolution 1600x900 -- --transition` | 13 张 PNG（`tr_00`…`tr_12`，源码 `scripts/main.gd:1822-1837`） | `window_smoke/final_transition/` |
+
+- 汇总：`window_smoke/auto_smoke_summary.txt` + `开发产物/logs/release/30_window_auto_smoke.log`
+- 截图从 `开发产物/shots/` 按 mtime 快照只归集本轮新写文件（避免历史 166 张图污染）。
+- 窗口关闭：Lead 已 PowerShell 手动实测 `CloseMainWindow=True`、`WaitForExit(20s)=True`（正常退出）。
+- **实测结果（2026-10-21 00:08–00:10，GPU 独占；EXE sha256 `b3b4e4ab…`，HEAD=3ab7d9a 构建）：**
+
+| 步骤 | 实测结果 | 退出码 | 截图数 | 耗时 |
+| --- | --- | --- | --- | --- |
+| ① 窗口 selftest | `[TEST] RESULT 55/55 passed`（含 2 项真实鼠标拖动） | **0** | - | 31.2s |
+| ② `--shots` | 61 张 PNG（`final_shots/`） | **0** | **61** | 85.7s |
+| ③ `--transition` | 13 张 PNG（`final_transition/`） | **0** | **13** | 22.7s |
+
+- 汇总：`RESULT=ALL_PASS`（`window_smoke/auto_smoke_summary.txt`、`30_window_auto_smoke.log`）。
+- PNG 实测尺寸 **1600×900**（自动化按逻辑视口截图，而非窗口物理尺寸）；无黑帧/白帧。
+- stderr 全部为本机环境噪声，无脚本/资源错误：selftest 96 行 = 91× `_save_to_cache f.is_null()`（user:// 不可写）、
+  user:// 日志打不开 ×2、user://screenshots 保存失败 ×1、根证书 ×1、FSR 下采样提示 WARNING ×1；shots 94 行、
+  transition 74 行同类。**无 SCRIPT ERROR、无资源缺失、无加载失败。**
+- 每步 stdout/stderr：`window_smoke/auto_{selftest,shots,transition}.{out,err}.log`。
+- EXE 截图复核（verify-visual，commit 7a5b488）：61+13 张与工程内同名图逐张配对，灰度相关 median 0.9932 /
+  min 0.8768；实看 27 张（菜单/设置/六时段/夜景/水面/转场首末帧等），字体中文、布局、渲染与源码版一致，
+  无方块字/UI 裁切/黑帧，未发现需补拍问题。
+
+### 5.5 发布位置可执行性冒烟（最终交付字节）
+
+对 `发布/休闲小岛幻境.exe`（复制后，sha256 `b3b4e4ab…`，LastWriteTime 2026-10-21 00:13）执行：
+
+| 命令 | 结果 | 退出码 |
+| --- | --- | --- |
+| `发布/休闲小岛幻境.exe --headless --quit` | 正常退出 | **0** |
+| `发布/休闲小岛幻境.exe --headless -- --selftest` | `[TEST] RESULT 53/53 passed` | **0** |
+
+- stderr 仅已知环境噪声 + `WARNING: 4 ObjectDB instances were leaked at exit`（退出期警告，非崩溃）。
+- 证据：`开发产物/logs/release/22_final_location_selftest.out.log` / `.err.log`。
+
+## 6. 最终发布流程（FREEZE 后，实际执行记录）
+
+1. FREEZE 确认：commit **55a8d73**（tag `freeze-p6close-20261021_0515`）；导出/窗口验收前 `tasklist` 确认无其它
+   Godot 进程（`godot-ai.exe` 除外）。
+2. 一键 headless 管线：`bash 开发产物/logs/release/final_release.sh`（脚本内部设置 TMP/TEMP；导出到
+   `开发产物/release_verify/p6_20261021_final/`；清单断言；包校验；资源校验；干净目录 selftest）。
+   **已执行**：EXPORT_EXIT=0、79 文件、selftest 53/53、`AUDIO_OK=11/11`。
+3. headless 退出码矩阵：`pwsh -File 开发产物/logs/release/final_exit_matrix.ps1` → selftest×2 / perf / quit
+   **全部 EXIT=0，0xC0000374 未复现**（§5.3）。
+4. 窗口自动化验收（GPU 独占，Lead 广播 GPU_FREE 后执行）：`pwsh -File 开发产物/logs/release/window_auto_smoke.ps1`
+   → 窗口 selftest **55/55**、`--shots` **61 张**、`--transition` **13 张**，`RESULT=ALL_PASS`（§5.4）。
+   脚本预检只拦“窗口模式”Godot 进程，允许其他 teammate 的 headless 探针并行。
+5. 验收全绿后发布（**已于 00:12–00:13 执行**）：`COPY_TO_RELEASE=1 ALLOW_PARALLEL=1 bash 开发产物/logs/release/final_release.sh`
+   → 重新导出并复验（EXPORT_EXIT=0、79 文件、selftest 53/53、AUDIO_OK=11/11），覆盖 `发布/休闲小岛幻境.exe` 与
+   `构建输出/休闲小岛幻境.exe`；三处 sha256 均为 `b3b4e4ab492b471da0472432749c9ac9faea225700443806389d803fbd9684f8`。
+   导出时 HEAD=**6ac049e**（字节与 freeze 55a8d73 完全一致，见 §4.3）。
+   旧版备份：`开发产物/backup/release_pre_p6close/休闲小岛幻境_20261020_2045.exe`（sha256 `e2a9d242…`，回滚见 §7 末尾）。
+6. 发布位置可执行性复测：对 `发布/休闲小岛幻境.exe` 跑 `--headless --quit`（exit 0）与 `--headless -- --selftest`
+   （53/53 passed，exit 0），证据 §5.5。
+7. 更新本文件（体积/sha256/窗口结果/日志路径/发布 HEAD）→ `git add docs/P6_RELEASE_PACKAGING.md` 提交
+   （`export_presets.cfg`/`sounds/`/首版文档已在 55a8d73 提交）→ 向 Lead 报最终 commit hash。
 
 ## 7. 证据与文件索引
 
@@ -245,19 +338,38 @@ SHADER_LOAD res://shaders/post_ao.gdshader class=Shader（sea/sky/toon 同）
 | --- | --- |
 | 试导出日志（失败，未设 TMP） | `开发产物/logs/release/10_trial_export.log` |
 | 试导出日志（TMP 修复后） | `开发产物/logs/release/11_trial_export_tmpfix.log` |
-| 源码 selftest | `开发产物/logs/release/12_source_selftest.log` |
-| 嵌入包内容校验 | `开发产物/logs/release/13_pack_inspect_trial2.log` |
-| 资源完整性校验 | `开发产物/logs/release/14_res_inspect_trial2.log` |
+| 正式导出日志（FREEZE） | `开发产物/logs/release/20_final_export.log` |
+| 正式导出 savepack 清单 | `开发产物/logs/release/20_final_savepack_list.txt`（79 行） |
+| 正式包 headless selftest | `开发产物/logs/release/21_final_selftest.log` |
+| 正式包嵌入内容校验 | `开发产物/logs/release/13_pack_inspect_final.log` |
+| 正式包资源完整性校验 | `开发产物/logs/release/14_res_inspect_final.log` |
+| 源码 selftest 基线 | `开发产物/logs/release/12_source_selftest.log` |
 | 导入告警（前/后） | `开发产物/logs/release/01_import_baseline.log`、`02_import_after_sounds_archive.log` |
-| 退出码证据 | `开发产物/release_verify/crash_evidence/` |
-| 试导出 exe | `开发产物/release_verify/trial2/isle_trial2.exe`（116,767,872 B，sha256 854bf221…） |
+| headless 退出码矩阵 | `开发产物/release_verify/crash_evidence/final/`（exit_codes.txt + 各例 stdout/stderr） |
+| 历史退出码证据（0xC0000374） | `开发产物/release_verify/crash_evidence/` |
+| 窗口自动化脚本/汇总/日志 | `开发产物/logs/release/window_auto_smoke.ps1`、`window_smoke/auto_smoke_summary.txt`、`30_window_auto_smoke.log` |
+| 窗口截图（--shots / --transition） | `开发产物/release_verify/window_smoke/final_shots/`（61 张）、`final_transition/`（13 张） |
+| 窗口每步 stdout/stderr | `开发产物/release_verify/window_smoke/auto_{selftest,shots,transition}.{out,err}.log` |
+| 发布位置可执行性冒烟 | `开发产物/logs/release/22_final_location_selftest.out.log` / `.err.log` |
+| 发布重建/COPY 控制台 | `开发产物/logs/release/final_run3_console.log`、`final_run4_copy_console.log` |
+| 交付字节（三处一致） | `发布/休闲小岛幻境.exe`、`构建输出/休闲小岛幻境.exe`、`开发产物/release_verify/p6_20261021_final/isle_p6.exe`（均 116,768,848 B / `b3b4e4ab…`） |
+| 正式导出 exe（构建目录） | `开发产物/release_verify/p6_20261021_final/isle_p6.exe`（116,768,848 B，sha256 `b3b4e4ab…`） |
+| 试导出 exe（历史） | `开发产物/release_verify/trial2/isle_trial2.exe`（116,767,872 B，sha256 854bf221…） |
 | 归档音频 | `开发产物/archive/sounds_legacy/`（含 SHA256SUMS_before_move.txt） |
 | 旧发布备份 | `开发产物/backup/release_pre_p6close/休闲小岛幻境_20261020_2045.exe` |
 
 ## 8. 已知问题与限制
 
-1. **导出 exe 自动化 selftest 退出码 0xC0000374**：既有问题（旧发布 exe 同现），见 §5.3；详细材料已交 lifecycle。
-2. 本机 Godot 无法写 user://，所有自动化日志固定带 2–3 条 user:// 环境噪声 ERROR，不代表发布包缺陷；发布包在
-   正常用户机器上 user:// 可写。
-3. 图标告警（icon.ico 缺多尺寸）为 P6 前既有问题，不在本次处理范围。
-4. headless selftest 不能证明窗口渲染；窗口冒烟待 FREEZE 后执行（§6 step 6）。
+1. **导出 exe 自动化 selftest 退出码 0xC0000374**：修复前既有问题（旧发布 exe/trial2 同现），FREEZE 版
+   （含 lifecycle FX 退出释放修复 bd078b0）**未复现**，headless 矩阵全部 EXIT=0，见 §5.3；历史复现材料保留。
+2. 本机 Godot 无法写 user://，所有自动化日志固定带 2–3 条 user:// 环境噪声 ERROR（含 shader cache
+   `_save_to_cache f.is_null()` 警告），不代表发布包缺陷；发布包在正常用户机器上 user:// 可写。
+3. 图标告警（icon.ico 缺 16/48/64/128/256 多尺寸、导出日志 "无效的图标文件"）为 P6 前既有问题（历史
+   `reorg_export.log` 同样存在），不在本次处理范围，exe 正常生成。
+4. 窗口验收不使用鼠标注入：旧 `window_smoke.ps1` 因无法置前输入未生效，已被 Lead m00549 判定不可作为证据；
+   现用导出包内置 `--selftest`/`--shots`/`--transition`（§5.4）。窗口关闭由 Lead PowerShell 手动实测
+   `CloseMainWindow=True`、`WaitForExit(20s)=True`。
+5. 窗口 selftest 分支中 `scripts/main.gd:3443` 不跳过 `_apply_resolution`，窗口物理尺寸会被本机
+   `user://settings.cfg`（fullscreen=true / 2560x1390）覆盖；但自动化截图按逻辑视口输出 **1600×900**（实测，
+   `--shots`/`--transition` 共 74 张 PNG 均为 1600×900），逻辑视口 1440x900（canvas_items + expand）不变，
+   不影响 55 项断言（分辨率项自身用 1280x720 实测并恢复）。
