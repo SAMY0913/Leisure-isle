@@ -870,6 +870,31 @@ class Splash extends Node3D:
 			"max_units": MAX_UNITS,
 		}
 
+	## 退出/销毁时释放池内"已脱离场景树"的复用单元。
+	## 这些单元在 _finish() 里 remove_child() 后只由 _free 数组持有（运行期计入
+	## Performance.OBJECT_ORPHAN_NODE_COUNT），场景树退出/池节点销毁时父节点已不再
+	## 持有它们，若不显式 free() 会在退出阶段造成 ObjectDB/RID 泄漏（T1 生命周期修复）。
+	## 仅在池退出或销毁时执行，不影响运行期"只有活跃 unit 是子节点"的语义；可重复调用。
+	func _exit_tree() -> void:
+		_release_detached()
+
+	func _notification(what: int) -> void:
+		if what == NOTIFICATION_PREDELETE:
+			_release_detached()
+
+	func _release_detached() -> void:
+		for unit_v in _free:
+			var unit: Dictionary = unit_v
+			var root_v: Variant = unit.get("root")
+			if not is_instance_valid(root_v):
+				continue
+			var root: Node3D = root_v as Node3D
+			if root != null:
+				if root.get_parent() == self:
+					remove_child(root)
+				root.free()
+		_free.clear()
+
 	## 通用入口：power 1.0 ≈ 普通点击，>1.6 ≈ 大鱼跃出，<0.6 ≈ 船尾小水花。
 	func splash_at(p: Vector3, power: float = 1.0) -> void:
 		_ensure_init()
@@ -1257,6 +1282,27 @@ class Ripples extends Node3D:
 
 	func get_state_counts() -> Dictionary:
 		return {"ripples": _items.size(), "created": _created, "free": _free.size(), "fish": _fish.size(), "clicks": _click_times.size()}
+
+	## 退出/销毁时释放池内"已脱离场景树"的复用 MeshInstance3D（同 Splash._release_detached 说明）。
+	func _exit_tree() -> void:
+		_release_detached()
+
+	func _notification(what: int) -> void:
+		if what == NOTIFICATION_PREDELETE:
+			_release_detached()
+
+	func _release_detached() -> void:
+		for it_v in _free:
+			var it: Dictionary = it_v
+			var node_v: Variant = it.get("node")
+			if not is_instance_valid(node_v):
+				continue
+			var node: MeshInstance3D = node_v as MeshInstance3D
+			if node != null:
+				if node.get_parent() == self:
+					remove_child(node)
+				node.free()
+		_free.clear()
 
 	func ripple_at(p: Vector3, power: float = 1.0) -> void:
 		_ensure_init()
