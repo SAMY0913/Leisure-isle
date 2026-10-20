@@ -153,7 +153,7 @@ main.gd 的 `_wave_h` / 船体吃水直接调它，保证船不穿水/悬空。
 - 洗白检查：Δlum(q3-q2)=+0.0097、Δlum(q4-q2)=+0.0180（阈值 +0.025/+0.035）；饱和度比 q3=0.999、q4=1.002（阈值 0.85）→ **高档不再发白/灰**。
 - 解析反射增强（q4 ssr_strength 0.62 vs 0）：mean 0.0197、75.96% 海面像素变化，全图亮度 0.5966→0.5932（Δ=-0.0034，仅海面微调，无整屏提亮）。旧屏幕 SSR 的船/岛竖条纹伪影已消失。
 - 自定义 AO（开 strength .75/radius 1.0/samples 16 vs 关）：mean 0.0228、65.35% 像素变化，全图亮度比 0.9741（局部接触阴影，非蒙层）；AO debug 岛区 p50=0.000/p90=0.835/p99=1.000、>0.05 占比 37.12%（密集草叶几何产生强遮蔽，符合预期）。
-- 截图：`../开发产物/shots6/t3/quality_fixed_q0..q4.png`（同机位五档）、`quality_fixed_ao_off/on/debug.png`、`quality_fixed_q4_ssr0.png`、`t3_water_ultra.png` / `t3_water_low.png`（海面近景，q4/q0）。
+- 截图：`D:/休闲小岛幻境/开发产物/shots6/t3/quality_fixed_q0..q4.png`（同机位五档）、`quality_fixed_ao_off/on/debug.png`、`quality_fixed_q4_ssr0.png`、`t3_water_ultra.png` / `t3_water_low.png`（海面近景，q4/q0）。
 - 视觉核查（人眼对比截图）：q0 为干净低配（无云、海面细节少但完整）；q2 云层/岸浪出现；q4 天空出现第 4 层高云、海面高频波纹与反射细节、草地纹理明显更密，未见整屏灰白或过曝。
 
 ## 10. 高画质「阁楼窗重影」根因与修复（task-8，2026-10-20）

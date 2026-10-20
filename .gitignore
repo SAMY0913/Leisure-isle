@@ -6,3 +6,9 @@
 .editor_pid
 .game_pid
 *.log
+*.tmp
+
+# Python 工具脚本的缓存（tools/ 下的辅助脚本可能生成）
+__pycache__/
+*.pyc
+*.pyo
