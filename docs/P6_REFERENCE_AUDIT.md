@@ -14,6 +14,7 @@
   - **前向引用 5 条**（P6_TEST_RESULTS.md 中 verify 将来才会产出的证据日志/截图与 lifecycle 待产出文档，待其产出后自然成立，不补空文件）。
 - 实际修复 1 处文档写法错误：游戏工程/docs/P6_RESEARCH_VISUAL.md:156（截图相对路径 `../开发产物/...` 少了工作区层级，实际文件存在，见 §5）。
 - uid 一致性：基线 220 个 .uid 全部可映射；孤儿 .uid 仅 1 个（scripts/menu_orig_t1.gd.uid，已归档删除）；.gd 缺 .gd.uid 在基线上为 0；.import 无源文件 0；0 字节文件 0。
+- **复核口径（2026-10-20 23:28 提交 705b535 后复跑）**：工作树复跑得 FILES 286 / REFS 1144 / DANGLING 130，比基线快照的 53 条多出的 77 条全部是**文档自引用噪音与队友前向产出**，不是新缺陷：本审计报告自己引用缺失证据路径 65 条、P6_BASELINE.md 引用已归档/删除文件 9 条、P6_TESTING.md 引用运行时输出路径 3 条、P6_TEST_RESULTS.md 前向引用 5 条、历史文档 4 条、新增未跟踪探针 3 条。按**代码/配置口径**（排除 .md，仅 .gd/.tscn/.tres/.gdshader/.godot/.cfg/.json/.import）统计：**未解析 42 条 = addons/godot_ai 第三方 29 条 + 运行时输出路径 12 条 + verify 新探针前向输出 1 条，真实失效 0 条**。
 
 ## 2. 扫描方法与复跑方式
 
@@ -29,6 +30,21 @@ python D:/休闲小岛幻境/开发产物/baseline/scan_references_v3.py
 - 判定「存在」时同时查工作区、游戏工程 与 游戏工程/docs 三个基准目录（文档里的相对路径按引用方目录父级解析）；uid:// 通过工程内 .uid/.tscn/.tres 头部映射；含通配符（* { $ % <>）的条目视为 shell 通配写法，检查通配前的目录/前缀是否存在；动态拼接字符串（如 `"res://" + name`）不产生静态引用、不算缺失。
 - 排除项：export_presets.cfg 的 excluded_filter 条目不参与引用判定（tools/*、shots/*、*.md、addons/godot_ai 等在导出包中不存在属预期）。
 - 第三方 addons/godot_ai 是 vendored 依赖，其内部文档/示例路径不按本项目资产判定。
+- **复跑注意**：扫描器会无差别计入 .md 中的路径文本，因此本审计报告、P6_BASELINE.md、P6_TESTING.md 这类「记录缺失路径的文档」会被算成未解析引用（自引用噪音）；判断项目是否有真实失效引用请用代码/配置口径。可直接执行：
+
+```bash
+cd D:/休闲小岛幻境
+python 开发产物/baseline/scan_references_v3.py >/dev/null 2>&1
+python - <<'PY'
+import json
+d=json.load(open("开发产物/baseline/reference_audit.json",encoding="utf-8"))
+code=[r for r in d["dangling_rows"] if not r["file"].lower().endswith(".md")]
+print("code/config dangling:", len(code))
+for r in code: print(r["file"], r["line"], r["raw"])
+PY
+```
+
+2026-10-20 23:28 实测输出为 42 条（明细即 §3.2 与 §3.4 所列 + verify 新探针 1 条前向输出）。
 
 ## 3. 失效清单与逐条判定（53 条）
 

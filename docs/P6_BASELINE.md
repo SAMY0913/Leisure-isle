@@ -231,7 +231,7 @@ cp -r 开发产物/archive/scripts_p6_intermediate/scripts/menu_orig_t1.gd.uid �
 
 ### 9.2 扫描与一致性结论
 
-- 全工程引用扫描（开发产物/baseline/scan_references_v3.py）：280 文件 / 900 条引用 / 53 条未解析，逐条判定全部为：运行时输出 16 条、第三方 addons/godot_ai 文本与示例 29 条、历史记录 3 条、前向引用 5 条；**项目代码/资源/配置无真实失效引用**。唯一实际修复：docs/P6_RESEARCH_VISUAL.md:156 截图路径写法（详见 docs/P6_REFERENCE_AUDIT.md）。
+- 全工程引用扫描（开发产物/baseline/scan_references_v3.py，**基线快照 8f80b13 口径**；工作树复跑因文档自引用会增大，见 P6_REFERENCE_AUDIT.md §1 复核口径）：280 文件 / 900 条引用 / 53 条未解析，逐条判定全部为：运行时输出 16 条、第三方 addons/godot_ai 文本与示例 29 条、历史记录 3 条、前向引用 5 条；**项目代码/资源/配置无真实失效引用**。唯一实际修复：docs/P6_RESEARCH_VISUAL.md:156 截图路径写法（详见 docs/P6_REFERENCE_AUDIT.md）。
 - uid 一致性：基线已跟踪 220 个 .uid 全部可映射；孤儿 .uid 仅 menu_orig_t1.gd.uid（已归档删除）；.gd 缺 .gd.uid 基线为 0；.import 无源文件 0；0 字节文件 0。
 - uid 提交策略：见 docs/P6_TESTING.md §8——.uid 必须与源文件成对提交，禁止用 .gitignore 忽略 *.uid；T3 补交 19 个与基线已跟踪探针配对的 tools/probe_*.gd.uid；shaders/post_ao.gdshader.uid 归 lifecycle 提交；verify-visual 新增探针的 .uid 由其随源文件提交。
 - .gitignore 增补：*.tmp、__pycache__/、*.pyc、*.pyo；未忽略 *.uid。已用 `git check-ignore` 复核 tools/base_env.json、tools/probe_*.gd、*.gd.uid、export_presets.cfg、docs/*.md 均未被忽略，且 `git ls-files -ci --exclude-standard` 为空（无已跟踪文件被新增规则忽略）。
