@@ -3,7 +3,9 @@
 > 验收对象：休闲小岛幻境（Godot 4.7.2 stable，Forward+，主场景 res://isle.tscn）
 > 执行人：verify-visual（teammate）　关联任务：task-5
 > 阶段 1（分辨率矩阵 / 窗口模式 / 回退 / DPI 模拟）实测完成：2026-10-20 23:22–23:36
-> 阶段 2（最终画面截图集逐张人工审查）：**待 Lead 发出 FREEZE 后执行**，本文件先固化阶段 1 数据。
+> 阶段 2（最终画面截图集逐张人工审查）完成：FREEZE HEAD = **55a8d73**（tag freeze-p6close-20261021_0515），
+> 审查对象 = verify-auto project --shots 61 张 + --transition 13 张 + quality 固定机位 11 张，全部 read_image 实看。
+> 发布包 EXE 自动化 final_shots/final_transition 由 release 另行产出，若产出再补审（见 §7 未验证项）。
 >
 > **阶段 1 结论：通过（0 FAIL）。** 三阶段共 1138 项程序化检查（矩阵 934、回退 118、DPI 86），FAIL=0；
 > 全部 WARN 均已逐条归因：低分辨率小字可读性（设计取舍）、超屏分辨率被屏幕可用区钳制（设计限制）、
@@ -119,6 +121,35 @@ letterbox 高度公式、截图纹理尺寸与窗口一致性、画面非空统�
 分辨率行显示"2560 × 1390 · 满屏"（本机屏幕可用区钳制后的真实值）；确认层文案与倒计时清晰、按钮可点。
 37 张截图中未发现裁切、错位、文字溢出、黑屏或空画面。
 
+已用 read_image 实看的矩阵类截图（14 张，覆盖每个分辨率档与关键交互态）：
+ui_1280x720_windowed、ui_1366x768_windowed、ui_1600x900_windowed、ui_1920x1080_windowed、
+ui_2560x1440_windowed、ui_2560x1440_fullscreen、ui_3440x1440_windowed、ui_3840x2160_borderless、
+ui_1920x1200_windowed、menu_1280x720、menu_1280x720_settings、menu_1920x1080、menu_3440x1440、
+ui_confirm_1280x720、ui_confirm_keep、ui_confirm_revert、ui_confirm_mode_borderless、
+ui_confirm_mode_fullscreen、ui_confirm_timeout_after、ui_hidden_1440x900、ui_dpi_sim_125/150。
+观察结论：HUD 左右面板与顶部罗盘在各比例下不裁切；菜单在 <2.39 视口下上下 letterbox 与公式一致、>=2.39 无黑边；
+设置面板为纵向滚动设计（右侧滚动条可见），无横向溢出；确认层居中且按钮可点；隐藏界面后无 HUD 残留。
+
+### 2.4 AO / 体积雾实验截图复核（开发产物/shots6/ao/，FREEZE 前实验产物）
+
+用 read_image 实看 20 张（AO 四机位 off/on/debug、Q2/Q4、dawn/noon/dusk 体积雾 off/on 与差异图）：
+
+| 类别 | 实看结论 | 证据 |
+| --- | --- | --- |
+| AO off/on（noon_house_front / roof_close / stairs_close / attic_window） | 差异仅檐口/窗洞/栏杆接触处轻微压暗；无光晕、无黑边、无过暗；暗部细节仍可见 | noon_house_front_ao_off/on.png、noon_roof_close_ao_off/on.png、noon_stairs_close_ao_off/on.png、noon_attic_window_ao_off/on.png |
+| AO debug 视图 | 遮蔽关系符合几何（窗洞、屋檐、台阶阴影）；无异常亮斑或漏遮蔽 | noon_house_front_ao_debug.png、noon_attic_window_ao_debug.png、q3_noon_cottage_ao_debug.png |
+| AO 差异图 | 差异集中在边缘轮廓（斜率/接触阴影），无整块色偏；屋顶差异图中的橙红色块是烟囱烟雾随时间变化，非 AO 伪影 | diff_AO_house_front_off_on.png、diff_AO_roof_close_off_on.png、diff_AO_stairs_close_off_on.png、diff_AO_attic_window_off_on.png |
+| 体积雾 dawn（房屋机位） | **on 出现明显问题**：地平线出现一条硬边黑色横带，海面被显著压暗，整体泛白过曝；off/off2 正常（两次 off 仅水面波光相位差异） | dawn_house_enginefog_off/off2/on.png、diff_FOG_dawn_house_off_on.png |
+| 体积雾 noon/dusk（实为阁楼玻璃近景，机位命名与内容不符） | on 主要改变窗内暖光与玻璃反射强度，差异局限在灯窗光晕附近；无黑边 | noon_sea_enginefog_off/on.png、dusk_sea_enginefog_off/on.png、diff_FOG_noon_sea_off_on.png、diff_FOG_dusk_sea_off_on.png |
+| 噪声底 | 两次 off 的差异主要为水面波光/烟雾等时变项，幅值远小于 fog on/off 差异，说明 fog 差异非测量噪声 | diff_FOG_dawn_house_noise.png |
+
+结论：AO 方案效果克制、无可见伪影，可作为 q2–q4 默认；体积雾实验方案在 dawn 机位会破坏地平线与海面亮度，**属该实验方案本身的缺陷**。
+本观察与 docs/P6_AO_FOG_EVAL.md 的像素统计（黎明 fog on 平均差 32.34、>24 灰阶 48.0%，噪声地板仅 1.42）方向一致，互为交叉印证。
+Lead 已决定不接入体积雾并从菜单移除，因此该缺陷不进入发布版本；阶段 2 将以 FREEZE 构建的 --shots 全集（未启用体积雾）
+复核地平线/海面无黑带，确认该问题不会出现在最终画面。
+另注：AO 实验脚本中 noon_sea/dusk_sea 机位实际取景为阁楼玻璃近景（测试机位命名问题，非产品缺陷），q3_noon_cottage
+机位取景过低（贴地草丛，非产品缺陷），均不作为最终视觉验收依据。
+
 ---
 
 ## 3. 窗口模式与分辨率确认 / 回退
@@ -197,23 +228,43 @@ letterbox 高度公式、截图纹理尺寸与窗口一致性、画面非空统�
 
 ---
 
-## 7. 阶段 2：最终画面截图集逐张审查（待 Lead FREEZE）
+## 7. 阶段 2：最终画面截图集逐张审查（FREEZE HEAD 55a8d73）
 
-**状态：待执行。** Lead 发出 FREEZE 后，按下表逐项用 read_image 实看最终截图集
-（目录建议：D:/休闲小岛幻境/开发产物/shots6/verify_visual/final/；若项目 --shots 已产出完整集则直接审查并补缺），
-逐张记录"通过 / 不通过 / 未验证 + 证据路径"：
+**状态：已完成。** FREEZE HEAD = **55a8d73**（tag freeze-p6close-20261021_0515）。
+审查集（全部逐张 read_image 实看，非仅存在性判定）：
+- 静态机位 61 张：D:/休闲小岛幻境/开发产物/shots6/verify/shots/（00–07 编号，含菜单/设置/六时段/天空/建筑/海鸥/船/光效/画质/转场静帧）
+- 转场序列 13 张：D:/休闲小岛幻境/开发产物/shots6/verify/transition/（tr_00_menu + tr_01…tr_12；与 开发产物/shots/tr_*.png 抽查同源一致）
+- 固定机位画质对比 11 张：D:/休闲小岛幻境/开发产物/shots6/verify/quality/（quality_fixed_q0..q4、ao_off/on/debug、q4_ssr0、t3_water_low/ultra）
+合计 85 张（61+13+11）全部实看；q0/q2/q4 同机位对比由 quality/ 的固定机位图直接提供，未额外占用 GPU 补拍。
 
-- [ ] 正午场景：曝光/亮度溢出、阴影、海面完整性
-- [ ] 日出前后：暖色过渡、过曝、阴影异常
-- [ ] 黄昏/日落：辉光、色彩、暗部细节
-- [ ] 夜景与灯塔光束：光束伪影、亮度溢出、暗部噪点
-- [ ] 海面近景：水面边界漏洞/漏水、反射/折射、AA 锯齿
-- [ ] 船舶与水面：船体穿模/悬浮、倒影、接触阴影
-- [ ] 小屋正面/背面/阁楼玻璃：玻璃反射是否过强、室内是否可见、遮挡异常
-- [ ] 海鸥停靠：穿模/悬空/比例异常
-- [ ] 画质档位同机位对比（q0 vs q2 vs q4）：差异合理性、AA 噪点/闪烁
-- [ ] 菜单/设置/关键转场：UI 裁切/比例、转场黑帧/闪白
-- [ ] 补充缺失机位（若项目 --shots 集不全）
+| # | 类别 | 对应机位 | 重点 | 结论 | 证据/说明 |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 正午 | 01_noon、02_noon_sky、06_smoke_noon | 曝光/亮度溢出、阴影/遮挡、海面完整性 | 通过 | 太阳高位、天空云层自然；屋檐/树影方向一致；岸线与泡沫环连续；烟囱烟与屋顶海鸥正常 |
+| 2 | 日出前后 | 01_sunrise、02_sunrise_sky | 暖色过渡、过曝、阴影异常 | 通过 | 地平线金色渐变，海面波光与云层正常；无异常阴影/噪点；太阳亮部无死白块 |
+| 3 | 黄昏/日落 | 01_golden、01_sunset、01_dusk、02_sunset_sky | 辉光、色彩、暗部细节 | 通过 | 暖橙→粉紫渐变平滑无断层；灯窗/街灯/船用探照灯按时开启；dusk 灯塔光束已开（符合夜间阈值） |
+| 4 | 夜景与灯塔 | 01_night、02_night_sky、04_lighthouse_beam/sweep、04_lantern_close、04_night_lights、05_lighthouse_island_light | 光束伪影/亮度溢出、暗部噪点 | 通过 | 光束锥边缘柔和、无黑带/闪烁；灯窗高光有细节；星空/月牙正常；无过曝白块 |
+| 5 | 海面近景 | 01b_dock_level、01c_dock_oblique、03_rocks_coast/shore、05_water_low/ultra、t3_water_low/ultra | 水面边界漏洞/漏水、反射、AA 锯齿 | 通过 | 海岸线连续、泡沫环完整，无海水穿透地形/漏面；近水面波纹自然；低/极高水面对比差异合理且单调（低档无云层、高档多层反射） |
+| 6 | 船舶与水面 | 04_boat_route、04_boat_wake_close、05_boat_night_lantern、05_boat_spotlight(_side)、05_lighthouse_boat_light | 船体穿模/悬浮、倒影、接触阴影 | 通过 | 船体吃水线合理、无悬浮/穿模；尾迹泡沫环与探照灯锥正常；夜间船灯/探照灯照亮水面；P3：尾迹为风格化环状泡沫而非物理拖尾（非缺陷） |
+| 7 | 小屋正/背面 | 03_house_front、03_roof_close、03_stairs_close、03_garden、03_interior | 阴影/遮挡、贴图接缝 | 通过 | 瓦片/木框/门廊无接缝或 z-fighting；檐下自阴影正常；门打开时室内可见（03_interior 底部 toast“小屋的门开了”为正常 UI） |
+| 8 | 阁楼玻璃/室内 | 03_attic_window、06_attic_window_night、03_interior | 玻璃反射过度、室内是否可见 | 通过 | 白天/夜间均可见书桌、灯、椅等内饰，反射为轻微叠加不遮挡；夜间灯窗透出暖光，无黑块 |
+| 9 | 海鸥停靠 | 04_birds、04_bird_perch、06_bird_roof、06_smoke_noon、04_lantern_close | 穿模/悬空/比例异常 | 通过（P3×1） | 栖枝/屋脊/灯笼旁/飞行姿态位置合理，无穿模；P3：低多边形鸟腿部略有悬空感（风格化，非阻塞） |
+| 10 | 画质档同机位 | 05_quality_low/medium/high/extreme/ultra、quality_fixed_q0..q4、q4_ssr0、ao_off/on/debug | q0 vs q2 vs q4 差异合理性、AA/噪点/闪烁 | 通过 | 档位差异单调合理：q0 天空无云层/水面简化，q1 起有云层与波浪，q2–q4 阴影/反射/水面细节递增；AO 仅边缘压暗、无光晕；SSR 开关差异可见但不突兀；静态截图未见明显锯齿 |
+| 11 | 菜单/设置、菜单转场 | 00_menu、00_settings、00_settings_drag、07_menu_enter_012/042、07_menu_stable、07_menu_exit_018 | UI 裁切/比例、字号 | 通过 | 标题/副标题/三按钮/页脚完整；设置滑条真实拖动 80%→90% 并显示；无裁切；电影黑边符合 2.39:1 设计；菜单进入/退出 UI 淡入淡出与镜头推进平滑 |
+| 12 | 转场 | transition/tr_00_menu、tr_01…tr_12 | 黑帧/闪白/跳变 | 通过 | 13 帧连续：菜单 UI 上移淡出、letterbox 收拢、镜头推近，HUD 渐显；无黑帧/闪白/跳变 |
+| 13 | 灯塔照屋 | 06_beam_house_a/b/side/side_off | 光束贴墙亮度溢出/伪影 | 通过 | 光束贴墙/树冠亮度合理、边缘柔和；side_off 对照确认亮度差异来自光束而非曝光；无硬边伪影 |
+| 14 | 补充机位 | 06_attic_window_night、03_interior、06_*（A/B 对照） | 按需补拍 | 通过（无需补拍） | 61+13+11 已覆盖全部指定类别；发布包 EXE final_shots 由 release 产出后如需补审再增行 |
+
+**缺陷分级口径**：P0=画面黑屏/严重破损/可复现崩溃；P1=明显穿模/漏水/过曝/玻璃不可见等影响观感；
+P2=轻微接缝/边缘锯齿/画质档差异不合理；P3=体验优化建议。发现 P1 及以上立即 send_message 报 Lead。
+
+**阶段 2 已看 / 未验证清单**
+- 已看：本阶段 85 张（61+13+11）全部 read_image 实看；另阶段 1 矩阵 37 张、ao 实验 45 张，累计 167 张。
+- 未验证项：
+  1. 发布包 EXE 的 final_shots / final_transition 尚未产出（release 侧待 GPU 档期）；工程内同源画面已覆盖，不改变本阶段结论，但 EXE 与编辑器在 shader 缓存/字体回退上的差异未验证。
+  2. 动态画面中的 AA 闪烁、水面动态闪烁、远景 shimmer 无法用静态截图判定（需录屏/逐帧对比，本轮未做）。
+  3. 真实系统 125%/150% DPI 未验证（环境不可程序化修改 Windows 缩放，见 §4）。
+  4. 真实 4K 显示器输出未验证（本机物理屏 2560×1440，4K 仅 viewport capture 验证布局/渲染，见 §2.2）。
+- 项目 release 窗口冒烟 6 张（开发产物/release_verify/window_smoke/，旧版 v1）已实看：字体/中文/布局正常，但 02–06 实为菜单画面（窗口无法置前导致注入失效），不作为进游戏/设置/退出验收证据；已反馈 release 与 Lead。
 
 ---
 
@@ -226,6 +277,9 @@ letterbox 高度公式、截图纹理尺寸与窗口一致性、画面非空统�
 4. **WARN 归因清楚**：29 + 4 + 4 条 WARN 分别为低分辨率小字可读性、超屏钳制（设计）、letterbox 无黑边（设计）、
    DPI 环境未验证、测试静音提示；无一条属于布局缺陷。
 5. **未发现 P0/P1 视觉/UI 缺陷**；建议的非阻塞优化：最小分辨率档最小字号略增、后续支持 UI 缩放。
+6. **阶段 2 完成**：--shots 61 张 + --transition 13 张 + quality 固定机位 11 张全部 read_image 实看（含 q0–q4、AO 三态、SSR 开关、水面低/极高对比），
+   14 类逐项通过、0 P0/P1（P3 风格项 2 条：海鸥腿部轻微悬空感、船尾迹环状泡沫）；体积雾实验缺陷已确认不进入发布版本。
+   发布包 EXE 版 final_shots 未产出（release 侧 GPU 排队），列为未验证项，不影响本阶段工程画面结论。
 
 ---
 
@@ -247,6 +301,11 @@ letterbox 高度公式、截图纹理尺寸与窗口一致性、画面非空统�
 
 ## 附录 C：证据清单
 
-- 截图（37）：D:/休闲小岛幻境/开发产物/shots6/verify_visual/
-- 日志（3）：D:/休闲小岛幻境/开发产物/logs/visual/probe_ui_matrix6_{matrix,fallback,dpi}.log
-- 结构化结果（3）：同目录 probe_ui_matrix6_result_{matrix,fallback,dpi}.json
+- 阶段 1 截图（37）：D:/休闲小岛幻境/开发产物/shots6/verify_visual/
+- 阶段 1 日志（3）：D:/休闲小岛幻境/开发产物/logs/visual/probe_ui_matrix6_{matrix,fallback,dpi}.log
+- 阶段 1 结构化结果（3）：同目录 probe_ui_matrix6_result_{matrix,fallback,dpi}.json
+- 阶段 2 静态截图（61）：D:/休闲小岛幻境/开发产物/shots6/verify/shots/
+- 阶段 2 转场截图（13）：D:/休闲小岛幻境/开发产物/shots6/verify/transition/
+- 阶段 2 固定机位画质对比（11）：D:/休闲小岛幻境/开发产物/shots6/verify/quality/
+- ao/ 实验复核图（45）：D:/休闲小岛幻境/开发产物/shots6/ao/
+- release 旧版冒烟（6，v1 输入注入失效，仅字体/布局参考）：D:/休闲小岛幻境/开发产物/release_verify/window_smoke/
