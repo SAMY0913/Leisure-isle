@@ -1,0 +1,1 @@
+Get-CimInstance Win32_Process -Filter "Name LIKE 'Godot%'" | Select-Object ProcessId, Name, CreationDate, CommandLine | Format-List

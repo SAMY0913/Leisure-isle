@@ -1,0 +1,8 @@
+# Godot 4 导入缓存（引擎自动生成，不必提交）
+.godot/
+*.import.tmp
+
+# 编辑器/运行时临时文件
+.editor_pid
+.game_pid
+*.log

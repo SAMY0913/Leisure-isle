@@ -1,0 +1,25 @@
+[gd_scene format=3 uid="uid://b2u2cei84vsxl"]
+
+[ext_resource type="Script" uid="uid://cca7130nibras" path="res://scripts/spinner.gd" id="1_0mdao"]
+[ext_resource type="Texture2D" uid="uid://t81n6icg2iud" path="res://art/spinner.tres" id="2_8ibhk"]
+
+[node name="SmokeTest" type="Node2D" unique_id=1847609662]
+script = ExtResource("1_0mdao")
+
+[node name="Background" type="ColorRect" parent="." unique_id=592946855]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+color = Color(0.1, 0.12, 0.2, 1)
+
+[node name="Spinner" type="Sprite2D" parent="." unique_id=1016360821]
+position = Vector2(482, 285)
+texture = ExtResource("2_8ibhk")
+
+[node name="Title" type="Label" parent="." unique_id=1209690971]
+offset_left = 430.0
+offset_top = 60.0
+offset_right = 586.0
+offset_bottom = 83.0
+theme_override_font_sizes/font_size = 36
+text = "Godot AI MCP × DSH"
