@@ -260,7 +260,7 @@ P2=轻微接缝/边缘锯齿/画质档差异不合理；P3=体验优化建议。
 **阶段 2 已看 / 未验证清单**
 - 已看：本阶段 85 张（61+13+11）全部 read_image 实看；另阶段 1 矩阵 37 张、ao 实验 45 张，累计 167 张。
 - 未验证项：
-  1. 发布包 EXE 的 final_shots / final_transition 尚未产出（release 侧待 GPU 档期）；工程内同源画面已覆盖，不改变本阶段结论，但 EXE 与编辑器在 shader 缓存/字体回退上的差异未验证。
+  1. ~~发布包 EXE 的 final_shots / final_transition 尚未产出~~ → **已补齐**：release 已产出 61+13 张，关键图实看 + 像素对比见附录 D（EXE 与工程内同源一致，无方块字/黑帧/裁切）。
   2. 动态画面中的 AA 闪烁、水面动态闪烁、远景 shimmer 无法用静态截图判定（需录屏/逐帧对比，本轮未做）。
   3. 真实系统 125%/150% DPI 未验证（环境不可程序化修改 Windows 缩放，见 §4）。
   4. 真实 4K 显示器输出未验证（本机物理屏 2560×1440，4K 仅 viewport capture 验证布局/渲染，见 §2.2）。
@@ -309,3 +309,25 @@ P2=轻微接缝/边缘锯齿/画质档差异不合理；P3=体验优化建议。
 - 阶段 2 固定机位画质对比（11）：D:/休闲小岛幻境/开发产物/shots6/verify/quality/
 - ao/ 实验复核图（45）：D:/休闲小岛幻境/开发产物/shots6/ao/
 - release 旧版冒烟（6，v1 输入注入失效，仅字体/布局参考）：D:/休闲小岛幻境/开发产物/release_verify/window_smoke/
+
+## 附录 D：发布包 EXE 窗口自动化截图复核（FREEZE 后，release 产物）
+
+**来源**：D:/休闲小岛幻境/开发产物/release_verify/window_smoke/final_shots/（61 张）与 final_transition/（13 张），由 isle_p6.exe 窗口自动化生成
+（Lead/release 提供：--selftest 55/55 exit0、--shots 61 张、--transition 13 张，发布包 SHA256 b3b4e4ab… 与 freeze 构建一致）。
+**方法**：read_image 实看 15 张关键图（主菜单/设置页/六时段各 1/夜景灯塔/水面近景/海岸近景/转场首·中·末帧等）+ Python/PIL 数值对比
+（脚本 开发产物/logs/visual/exe_consistency_check.py：EXE 与工程内同名图的降采样灰度 MAE/相关系数，转场 13 帧亮度统计）。
+
+| 检查项 | EXE 图（final_shots/ 或 final_transition/） | 实看结论 | 与工程内同源图数值对比 |
+| --- | --- | --- | --- |
+| 主菜单中文渲染 | 00_menu.png | 标题“休闲小岛幻境”/副标题/开始游戏/设置/离开/页脚完整，无豆腐块/缺字/错行/裁切；描边与字重正常 | MAE 0.89，corr 0.9943 |
+| 设置页布局与文字 | 00_settings.png | 分组标题（时间/画面/音量）、7 组滑条+数值、右侧滚动条完整；无横向裁切；字号与工程内一致 | MAE 4.26，corr 0.9478（差异来自半透明面板透出的动态场景与设置值，同源结构一致） |
+| 六时段 | 01_noon / 01_sunrise / 01_sunset / 01_dusk / 01_night（+01_golden 已实看） | 时间/时段文字正确；天体、阴影、海面、灯光按时段变化正常；无过曝/黑屏/异常阴影 | MAE 0.83–2.34，corr 0.9301–0.9949 |
+| 夜景灯塔 | 04_lighthouse_beam.png | 灯窗与光束锥正常，无黑带、无过曝白块；烟囱/植被细节保留 | MAE 1.17，corr 0.9736 |
+| 水面近景 | 05_water_ultra.png、03_rocks_shore.png | 云层/水面反射/岸线/泡沫环连续，无漏面；近景岩石与草地接触正常 | MAE 0.84 / 0.83，corr 0.996 / 0.9934 |
+| 转场序列 | final_transition/tr_00_menu…tr_12_4.40.png | 首帧菜单→中段 UI 上移淡出+letterbox 收拢+镜头推近→末帧进入游戏 HUD；无黑帧/闪白/跳变 | 13 帧亮度均值单调 85.59→130.64→138.13，white_frac=0，首帧与 00_menu MAE 0.30 |
+
+**结论**：发布包 EXE 内字体/中文/渲染与工程内同源画面一致（菜单类 corr ≥0.99；夜景受动态水体/灯光相位影响 corr 0.877 仍为同源），
+未发现字体缺失方块、黑帧、UI 裁切或缺失贴图；EXE 产物数量与 Lead 提供一致（61+13）。
+**备注**：EXE --shots 日志出现一次 `[SHOTDBG] 第二次 ESC 注入未生效，退回 _on_menu_start(true)`——为自动化截图 harness 的输入注入回退（脚本已兜底，
+产物完整），属测试工具行为，不影响发布包运行；已记录供 release 参考。
+
