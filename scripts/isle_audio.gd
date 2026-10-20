@@ -52,6 +52,12 @@ const LOOP_BASE_DB: Array[float] = [0.0, -4.5, -6.5]
 const LOOP_TAU: Array[float] = [2.4, 3.2, 2.0]
 const NIGHT_START_ENV := 0.02
 const NIGHT_STOP_ENV := 0.015
+# C2：夜层门限关闭后不再单帧 hard-stop（跳时曾瞬断约 73dB），而是按 LOOP_TAU[2] 自然淡出，
+#     到该 env（约 -43dB，与实测自然黎明停点 -42.8dB 一致）才真正 stop。
+const NIGHT_FADE_STOP_ENV := 0.015
+# C3：壁炉声关闭时按 FIRE_FADE_TAU 淡出，到该 env 才 stop；开启时立即回到 FIRE_BASE_DB。
+const FIRE_FADE_TAU := 0.9
+const FIRE_FADE_STOP_ENV := 0.015
 
 # --- bird chorus (own bus: IsleBirds) ---
 const BIRD_FILES: Array[String] = ["bird_1.wav", "bird_2.wav", "bird_3.wav"]
@@ -111,6 +117,7 @@ var _fire_player: AudioStreamPlayer = null
 var _fire_stream: AudioStream = null
 var _fire_loaded := false
 var _fire_loop_on := false
+var _fire_env := 0.0
 
 var _group_linear := {"master": 1.0, "ambient": 1.0, "birds": 1.0, "fire": 1.0, "sfx": 1.0}
 var _muted := false
@@ -364,6 +371,7 @@ func _start_ambience() -> void:
 			p.play()
 			_log_event("loop_play", {"layer": LOOP_NAMES[i], "source": "start_ambience", "volume_db": p.volume_db})
 	if _fire_loop_on and _fire_player != null and _fire_player.stream != null and not _fire_player.playing:
+		_fire_env = 1.0
 		_fire_player.volume_db = FIRE_BASE_DB
 		_fire_player.play()
 
@@ -490,7 +498,8 @@ func update_audio(delta: float, state: Dictionary) -> void:
 		_log_event("phase", {"from": _phase, "to": new_phase, "sun_alt": sun_alt, "night": night})
 		_phase = new_phase
 
-	# night layer gate: only start it above NIGHT_START_ENV, stop below NIGHT_STOP_ENV
+	# night layer gate: start above NIGHT_START_ENV; below NIGHT_STOP_ENV keep playing but let
+	# env fade with LOOP_TAU[2] and only stop once it reaches NIGHT_FADE_STOP_ENV (C2).
 	if _loop_players.size() == 3 and _loop_loaded[2]:
 		if not _night_on and _loop_target[2] >= NIGHT_START_ENV:
 			_night_on = true
@@ -499,32 +508,44 @@ func update_audio(delta: float, state: Dictionary) -> void:
 				_loop_players[2].volume_db = _loop_base_db[2] + linear_to_db(maxf(_loop_env[2], 0.0001))
 				_loop_players[2].play()
 				_log_event("loop_play", {"layer": LOOP_NAMES[2], "source": "night_gate", "env": _loop_env[2]})
-		elif _night_on and _loop_target[2] < NIGHT_STOP_ENV:
+		elif _night_on and _loop_target[2] < NIGHT_STOP_ENV and _loop_env[2] <= NIGHT_FADE_STOP_ENV:
 			_night_on = false
 			if _loop_players[2].playing:
 				_loop_players[2].stop()
-				_log_event("loop_stop", {"layer": LOOP_NAMES[2], "source": "night_gate", "env": _loop_env[2]})
+				_log_event("loop_stop", {"layer": LOOP_NAMES[2], "source": "night_gate", "env": _loop_env[2], "fade_tau": LOOP_TAU[2]})
 
 	for i in range(LOOP_FILES.size()):
 		var tau: float = LOOP_TAU[i]
-		if i == 2 and not _night_on and _loop_target[2] < NIGHT_STOP_ENV:
+		if i == 2 and not _night_on and not _loop_players[2].playing:
 			_loop_env[i] = 0.0
 		else:
 			_loop_env[i] = lerpf(_loop_env[i], _loop_target[i], 1.0 - exp(-delta / maxf(tau, 0.01)))
 		_apply_loop_gain(i)
 		_log_gain(i)
 
-	# fireplace stream toggle
+	# fireplace stream: start immediately at FIRE_BASE_DB, stop only after a short fade (C3:
+	# the old code cut from -12 dB to silence in one frame when sun_alt crossed +2°).
 	if fireplace_on != _fire_loop_on:
 		_fire_loop_on = fireplace_on
 		if _fire_player != null and _fire_player.stream != null:
 			if fireplace_on:
+				_fire_env = 1.0
 				_fire_player.volume_db = FIRE_BASE_DB
-				_fire_player.play()
+				if not _fire_player.playing:
+					_fire_player.play()
 				_log_event("fire_start", {"source": "fireplace_on", "volume_db": FIRE_BASE_DB, "sun_alt": sun_alt})
 			else:
-				_fire_player.stop()
-				_log_event("fire_stop", {"source": "fireplace_on", "volume_db": FIRE_BASE_DB, "sun_alt": sun_alt})
+				_log_event("fire_fade", {"source": "fireplace_on", "volume_db": FIRE_BASE_DB, "sun_alt": sun_alt})
+	if _fire_player != null and _fire_player.stream != null and _fire_player.playing and not _fire_loop_on:
+		_fire_env = maxf(0.0, _fire_env * exp(-delta / FIRE_FADE_TAU))
+		if _fire_env <= FIRE_FADE_STOP_ENV:
+			var stop_env := _fire_env
+			_fire_env = 0.0
+			_fire_player.volume_db = QUIET_DB
+			_fire_player.stop()
+			_log_event("fire_stop", {"source": "fireplace_off", "stop_env": stop_env, "sun_alt": sun_alt, "fade_tau": FIRE_FADE_TAU})
+		else:
+			_fire_player.volume_db = FIRE_BASE_DB + linear_to_db(maxf(_fire_env, 0.0001))
 
 	# daytime bird chorus (gap timer, only when it is clearly day)
 	_bird_timer -= delta
@@ -837,11 +858,14 @@ func get_debug_info() -> Dictionary:
 		"birds_loaded": _bird_loaded,
 		"fire_loaded": _fire_loaded,
 		"fire_playing": _fire_player != null and _fire_player.playing,
+		"fire_env": _fire_env,
+		"fire_volume_db": _fire_player.volume_db if _fire_player != null else QUIET_DB,
 		"players_total": _player_count(),
 		"missing": _missing.duplicate(),
 		"phase": _phase,
 		"night_start_env": NIGHT_START_ENV,
 		"night_stop_env": NIGHT_STOP_ENV,
+		"night_fade_stop_env": NIGHT_FADE_STOP_ENV,
 		"event_count": _event_log.size(),
 		"event_seq": _event_seq,
 		"event_totals": _event_totals.duplicate(true),

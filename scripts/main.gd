@@ -5,6 +5,7 @@ extends Node3D
 ## 相机推入 → 放置观景（慢速运镜 + 真实天文 + 昼夜循环）。
 
 const SHOTS_DIR := "D:/休闲小岛幻境/开发产物/shots/"
+const P7_SHOTS_DIR := "D:/休闲小岛幻境/开发产物/p7/shots/"
 const VIGNETTE_SHADER := "res://shaders/vignette.gdshader"
 const SKY_SHADER := "res://shaders/sky.gdshader"
 const SEA_SHADER := "res://shaders/sea.gdshader"
@@ -33,6 +34,7 @@ var _started := false
 var _shots := false
 var _transition := false
 var _selftest := false
+var _p7shots := false
 
 # ---- 时间 ----
 var _sim_seconds := 0.0
@@ -194,6 +196,9 @@ var _boat_route_kind := "far"
 var _boat_far_entries: Array = []
 var _boat_ret_pts: Array = []
 var _boat_wait_total := 28800.0
+# P7：船鸟联动——近海航段一次性触发（每次航次最多一次；时间跳转不改 _boat_route_dist，不重放）
+var _boat_shore_done := true
+var _boat_shore_trigger := -1.0
 # 探照灯最近一次写入的值（headless 的 dummy renderer 读不到 global uniform，探针用这些字段断言）
 var _dbg_spot_strength := 0.0
 var _dbg_spot_dir := Vector3.ZERO
@@ -225,7 +230,8 @@ var _settings_save_delay := -1.0
 # ============================================================
 func _ready() -> void:
 	randomize()
-	_shots = "--shots" in OS.get_cmdline_args() or "--shots" in OS.get_cmdline_user_args()
+	_p7shots = "--p7shots" in OS.get_cmdline_args() or "--p7shots" in OS.get_cmdline_user_args()
+	_shots = "--shots" in OS.get_cmdline_args() or "--shots" in OS.get_cmdline_user_args() or _p7shots
 	_transition = "--transition" in OS.get_cmdline_args() or "--transition" in OS.get_cmdline_user_args()
 	_selftest = "--selftest" in OS.get_cmdline_args() or "--selftest" in OS.get_cmdline_user_args()
 	_perf = "--perf" in OS.get_cmdline_args() or "--perf" in OS.get_cmdline_user_args()
@@ -233,7 +239,7 @@ func _ready() -> void:
 		DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
 	# 读取用户设置：菜单、时钟、画质、音量、窗口模式共用同一份数据。
 	# 自动化运行（截图/性能/自测/转场）使用默认设置，保证结果可复现且不受玩家配置影响。
-	var automation := _shots or _perf or _selftest or _transition
+	var automation := _shots or _perf or _selftest or _transition or _p7shots
 	_settings = Settings.defaults() if automation else Settings.load_settings()
 	_setup_time_api()
 	_time_source = String(_settings.get("time_source", "sim"))
@@ -266,6 +272,8 @@ func _ready() -> void:
 		_run_perf()
 	elif _transition:
 		_run_transition()
+	elif _p7shots:
+		_run_p7shots()
 	elif _shots:
 		_run_shots()
 	else:
@@ -675,6 +683,16 @@ func _start_blend(to: String, from_pose: Dictionary, done: Callable) -> void:
 # ============================================================
 # 光照 / 材质每帧
 # ============================================================
+## P7：交给海鸥状态机的权威时间/阶段信息（生态事件只消费这些，不另建世界时钟）。
+func _eco_ctx() -> Dictionary:
+	return {
+		"day": int(floor(_sim_seconds / 86400.0)),
+		"rising": _rising,
+		"sim_seconds": _sim_seconds,
+		"time_source": _time_source,
+		"paused": _paused,
+	}
+
 func _update_lighting() -> void:
 	_astro = IsleAstro.compute(_sim_seconds)
 	_sun_alt = float(_astro["sun_alt"])
@@ -833,17 +851,20 @@ func _update_lighting() -> void:
 		var bhm: Material = _boat_lantern_halo.material_override
 		if bhm is StandardMaterial3D:
 			(bhm as StandardMaterial3D).albedo_color = Color(1.30 * lampf, 0.83 * lampf, 0.40 * lampf, 1.0)
-	# 萤火
+	# 萤火（C1 修复：原写法按 ShaderMaterial 写 amount_ratio，但实际材质是 StandardMaterial3D，
+	# 赋值恒为 null，夜间粒子从未发射；改为直接驱动 GPUParticles3D 的 emitting / amount_ratio）
 	var ff: Dictionary = _fx.get("fireflies", {})
-	if ff.has("mat"):
-		var fm: ShaderMaterial = ff["mat"] as ShaderMaterial
-		if fm != null:
-			fm.set_shader_parameter("amount_ratio", clampf(float(p["fireflyI"]), 0.0, 1.0))
+	if ff.has("node"):
+		var fnode: GPUParticles3D = ff["node"] as GPUParticles3D
+		if fnode != null:
+			var ffi := clampf(float(p["fireflyI"]), 0.0, 1.0)
+			fnode.emitting = ffi > 0.02
+			fnode.amount_ratio = maxf(ffi, 0.0)
 	# 特效
 	if _ripples != null:
 		_ripples.update(get_process_delta_time(), _sun_alt)
 	if _birds != null:
-		_birds.update_birds(get_process_delta_time(), _sun_alt)
+		_birds.update_birds(get_process_delta_time(), _sun_alt, _eco_ctx())
 	# 船 / 风车 / 秋千 / 水花推进
 	_update_props(get_process_delta_time())
 
@@ -2320,11 +2341,11 @@ func _set_time_of_day(minutes: float) -> void:
 	_sim_seconds = today + minutes * 60.0
 	_events = IsleAstro.day_events(_sim_seconds)
 
-func _save_shot(name: String) -> void:
+func _save_shot(name: String, dir: String = SHOTS_DIR) -> void:
 	await RenderingServer.frame_post_draw
-	DirAccess.make_dir_recursive_absolute(SHOTS_DIR)
+	DirAccess.make_dir_recursive_absolute(dir)
 	var img := get_viewport().get_texture().get_image()
-	img.save_png(SHOTS_DIR + name + ".png")
+	img.save_png(dir + name + ".png")
 	print("[SHOT] ", name, " ", img.get_width(), "x", img.get_height())
 	await get_tree().process_frame
 
@@ -2755,6 +2776,7 @@ func _start_boat_departure() -> void:
 	_boat_wait_total = maxf(60.0, float(_sail_route.get("wait_sim_seconds", 28800.0)))
 	_boat_route_speed = maxf(_sail_speed, float(_sail_route.get("speed", _sail_speed)))
 	_boat_route_len = _polyline_len(_sail_route["_out_pts"])
+	_set_boat_shore_window(_sail_route)
 	_boat_route_dist = 0.0
 	_boat_speed_cur = 0.0
 	_boat_turn_rate = 0.0
@@ -2766,6 +2788,20 @@ func _start_boat_departure() -> void:
 	_sail_dist2 = 0.0
 	_apply_boat_fade()
 	print("[BOAT] depart #", _boat_trip, " route=", String(_sail_route.get("name", str(idx))), " kind=", _boat_route_kind, " out_len=", snappedf(_boat_route_len, 0.1), " far_entries=", _boat_far_entries.size(), " wait=", snappedf(_boat_wait_total, 1.0), "s")
+
+## P7：按航线真实几何计算近海航段的一次性触发距离；远海 / 无近海元数据的航次直接禁用。
+func _set_boat_shore_window(route: Dictionary) -> void:
+	_boat_shore_done = true
+	_boat_shore_trigger = -1.0
+	if String(route.get("kind", "")) != "coastal" or not route.has("shore_a0"):
+		return
+	var pts: Array = route.get("_out_pts", [])
+	if pts.is_empty():
+		pts = _route_points(route.get("out", []))
+	var d: float = IsleWorld.shore_trigger_dist(pts, float(route["shore_a0"]), float(route["shore_a1"]))
+	if d > 0.0:
+		_boat_shore_trigger = d
+		_boat_shore_done = false
 
 ## 沿路线推进（弧长参数化），船头始终对准路径切线
 func _boat_step(pts: Array, speed: float, delta: float) -> Dictionary:
@@ -2857,14 +2893,20 @@ func _next_rest_end_sim() -> float:
 func _sync_boat_clock() -> void:
 	if _sailboat == null:
 		return
-	if absf(_time_jump) > 0.001:
+	var jumped := absf(_time_jump) > 0.001
+	if jumped:
 		if _boat_state == "OFFSCREEN_WAIT":
 			_boat_wait_sim = maxf(0.0, _boat_wait_sim - absf(_time_jump))
 		_time_jump = 0.0
 	if _boat_state == "DOCKED" and _is_boat_rest_hour():
 		_enter_resting()
-	elif _boat_state == "RESTING" and _is_boat_rest_hour():
-		_boat_rest_until = maxf(_boat_rest_until, _next_rest_end_sim())
+	elif _boat_state == "RESTING":
+		if _is_boat_rest_hour():
+			_boat_rest_until = maxf(_boat_rest_until, _next_rest_end_sim())
+		elif jumped and _boat_rest_until > _sim_seconds:
+			# C4 修复：向后拖时间/跳到白天时，夜间长休息不应把船锁在 RESTING 约 20 游戏小时；
+			# 只在真正的跳时（_time_jump）时提前结束，正常白天短停靠不受影响。
+			_boat_rest_until = _sim_seconds
 
 func _update_boat(delta: float) -> void:
 	if _sailboat == null:
@@ -2896,6 +2938,13 @@ func _update_boat(delta: float) -> void:
 		"COASTAL_CRUISE":
 			_boat_speed_cur = minf(_boat_route_speed, _boat_speed_cur + 1.1 * delta)
 			var c := _boat_step(_sail_route.get("_out_pts", []), _boat_speed_cur, delta)
+			# P7：进入真实近海航段的一次性边界触发；_boat_shore_done 保证同一航次只调用一次。
+			if not _boat_shore_done and _boat_shore_trigger > 0.0 and _boat_route_dist >= _boat_shore_trigger and not _paused:
+				_boat_shore_done = true
+				var eco: Dictionary = {}
+				if _birds != null:
+					eco = _birds.on_boat_shore_pass(_boat_trip, _sailboat.global_position, _sun_alt)
+				print("[ECO] boat_shore trip=", _boat_trip, " birds=", int(eco.get("birds", 0)), " reason=", String(eco.get("reason", "")), " dist=", snappedf(_boat_route_dist, 0.1))
 			if bool(c["done"]):
 				_begin_return(_sail_route.get("_back_pts", []))
 		"OUTBOUND_FAR":
@@ -3752,3 +3801,254 @@ func _take_photo() -> void:
 	else:
 		if _hud != null:
 			_hud.show_toast("截图保存失败")
+
+# ============================================================
+# P7 专项截图（--p7shots）：黄昏归栖 / 夜间稳定 / 清晨恢复 / 船鸟联动
+# 仅用于视觉验收：只放慢太阳并固定机位，不改变正式运行的生态规则。
+# ============================================================
+func _run_p7shots() -> void:
+	_mode = Mode.PLAYING
+	_started = true
+	_paused = false
+	_menu.instant_finish()
+	_blending = ""
+	_apply_pose(_play_pose())
+	_hud.set_hud_visible(false, false)
+	_auto_orbit = false
+	_shot_beam_lock = false
+	# 放慢太阳：让黄昏阶段在截图期间保持稳定可复现（正式运行仍用玩家设置流速）。
+	_day_length = 3600.0
+	await get_tree().create_timer(0.9).timeout
+	_p7_camera_island()
+	# 1) 白天海鸥活动（应有飞行/停栖混合）
+	_set_time_of_day(12.0 * 60.0 + 20.0)
+	_update_lighting()
+	await get_tree().create_timer(4.0).timeout
+	await _p7_shot("p7_01_day_gulls")
+	await _p7_shot_close("p7_01b_day_gulls_close", 12.0, 3.0)
+	_p7_camera_island()
+	# 2) 黄昏归栖开始：太阳从上方下穿 +4°
+	_set_p7_sim_time(_p7_time_for_alt(4.2, true))
+	_update_lighting()
+	await get_tree().create_timer(2.5).timeout
+	await _p7_shot("p7_02_dusk_roost_start")
+	await _p7_shot_close("p7_02b_dusk_roost_close", 12.0, 3.0)
+	_p7_camera_island()
+	# 3) 黄昏归栖推进：太阳接近地平线，空中数量应明显下降
+	_set_p7_sim_time(_p7_time_for_alt(0.6, true))
+	_update_lighting()
+	await get_tree().create_timer(6.0).timeout
+	await _p7_shot("p7_03_dusk_roost_mid")
+	await _p7_shot_close("p7_03b_dusk_mid_close", 12.0, 3.0)
+	_p7_camera_island()
+	# 4) 稳定夜间：全部停栖、夜灯/窗灯/星空
+	_set_time_of_day(22.0 * 60.0 + 20.0)
+	_update_lighting()
+	await get_tree().create_timer(5.0).timeout
+	await _p7_shot("p7_04_night_calm")
+	await _p7_shot_close("p7_04b_night_perch_close", 8.0, 2.2, "perch")
+	_p7_camera_island()
+	# 5) 清晨恢复：太阳升过 +2° 后错峰起飞，不是全体同步
+	_set_p7_sim_time(_p7_time_for_alt(3.0, false))
+	_update_lighting()
+	await get_tree().create_timer(6.0).timeout
+	await _p7_shot("p7_05_dawn_recover")
+	await _p7_shot_close("p7_05b_dawn_recover_close", 12.0, 3.0)
+	_p7_camera_island()
+	# 6) 船进近海航段 + 海鸥短暂响应
+	_set_time_of_day(11.0 * 60.0)
+	_update_lighting()
+	await get_tree().create_timer(1.0).timeout
+	var route: Dictionary = _p7_pick_coastal_route()
+	if not route.is_empty():
+		var trigger := _p7_setup_boat_pass(route)
+		if trigger > 0.0:
+			var wait_s: float = clampf(6.0 / maxf(_boat_route_speed, 0.5), 0.5, 4.0) + 1.6
+			await get_tree().create_timer(wait_s).timeout
+			_p7_camera_boat()
+			await get_tree().create_timer(0.5).timeout
+			await _p7_shot("p7_06_boat_pass")
+			await _p7_shot_boat_respond_close("p7_06b_boat_respond_close")
+			_p7_camera_boat()
+			await get_tree().create_timer(14.0).timeout
+			await _p7_shot("p7_07_boat_recovered")
+			await _p7_shot_close("p7_07b_boat_recovered_close", 12.0, 3.0)
+	print("[SHOT] p7 sequence done")
+	get_tree().quit()
+
+## P7 截图：保存到独立目录，并把鸟群生态状态打进日志便于逐张核对。
+func _p7_shot(shot_name: String) -> void:
+	await _save_shot(shot_name, P7_SHOTS_DIR)
+	var eco: Dictionary = {}
+	var counts: Dictionary = {}
+	if _birds != null:
+		eco = _birds.debug_eco_state()
+		counts = _birds.get_state_counts()
+	var compact := {
+		"airborne": counts.get("airborne", -1),
+		"perched": counts.get("perched", -1),
+		"waiting": counts.get("waiting", -1),
+		"takeoffs": counts.get("takeoffs", -1),
+		"landings": counts.get("landings", -1),
+		"conflicts": counts.get("perch_conflicts", -1),
+	}
+	print("[P7] ", shot_name, " sun_alt=", snappedf(_sun_alt, 0.01), " eco=", JSON.stringify(eco), " counts=", JSON.stringify(compact))
+
+## P7 截图：把相机拉近到当前空中的海鸥群 / 响应船只的海鸥 / 夜间栖鸟，验证行为可观察性。
+## 只影响截图机位，不改变正式运行的生态规则。
+func _p7_shot_close(shot_name: String, back: float, up: float, mode: String = "air") -> void:
+	if not _p7_camera_birds(back, up, mode):
+		return
+	await get_tree().create_timer(0.5).timeout
+	await _p7_shot(shot_name)
+
+func _p7_camera_birds(back: float, up: float, mode: String) -> bool:
+	if _birds == null:
+		return false
+	var snap: Array = _birds.debug_snapshot()
+	var c := Vector3.ZERO
+	var n := 0
+	if mode == "perch":
+		# 夜间：选最高的一只栖鸟（大树冠层），避免被屋顶挡住视线。
+		var best: Dictionary = {}
+		for s_v in snap:
+			var sp: Dictionary = s_v
+			if int(sp["state"]) != 3:
+				continue
+			if best.is_empty() or (sp["pos"] as Vector3).y > (best["pos"] as Vector3).y:
+				best = sp
+		if best.is_empty():
+			return false
+		c = best["pos"] as Vector3
+		n = 1
+	else:
+		for s_v in snap:
+			var s: Dictionary = s_v
+			var st: int = int(s["state"])
+			if st == 3:
+				continue
+			if mode == "resp" and float(s["resp_w"]) <= 0.02 and float(s["resp_timer"]) <= 0.0:
+				continue
+			c += s["pos"] as Vector3
+			n += 1
+	if n == 0:
+		return false
+	c /= float(n)
+	var outw := Vector3(c.x, 0.0, c.z)
+	if outw.length() < 0.5:
+		outw = Vector3(1.0, 0.0, 0.0)
+	outw = outw.normalized()
+	_pose_look(c + outw * back + Vector3(0.0, up, 0.0), c, 46.0)
+	return true
+
+## P7 截图：同框呈现帆船与被它引起的响应海鸥（相机放在两者中点外侧）。
+func _p7_shot_boat_respond_close(shot_name: String) -> void:
+	if _birds == null or _sailboat == null:
+		return
+	var snap: Array = _birds.debug_snapshot()
+	var c := Vector3.ZERO
+	var n := 0
+	for s_v in snap:
+		var s: Dictionary = s_v
+		if int(s["state"]) == 3:
+			continue
+		if float(s["resp_w"]) <= 0.02 and float(s["resp_timer"]) <= 0.0:
+			continue
+		c += s["pos"] as Vector3
+		n += 1
+	if n == 0:
+		return
+	c /= float(n)
+	var b: Vector3 = _sailboat.global_position
+	var mid: Vector3 = (c + b) * 0.5
+	# 相机放在「船—鸟」连线的水平垂线上，而不是岛屿外法线上：
+	# 外法线方向会把相机放到船的外海一侧，船落在相机后方而无法同框。
+	var axis := b - c
+	axis.y = 0.0
+	if axis.length() < 0.5:
+		axis = Vector3(1.0, 0.0, 0.0)
+	axis = axis.normalized()
+	var side := Vector3(-axis.z, 0.0, axis.x)
+	var outward := Vector3(mid.x, 0.0, mid.z)
+	if outward.length() > 0.1 and side.dot(outward.normalized()) < 0.0:
+		side = -side
+	var sep := (b - c).length()
+	var back := clampf(10.0 + sep * 0.9, 12.0, 40.0)
+	var cam_y := clampf(4.0 + sep * 0.1, 4.0, 10.0)
+	_pose_look(mid + side * back + Vector3(0.0, cam_y, 0.0), mid + Vector3(0.0, 1.0, 0.0), 55.0)
+	await get_tree().create_timer(0.4).timeout
+	await _p7_shot(shot_name)
+
+func _set_p7_sim_time(seconds: float) -> void:
+	_sim_seconds = seconds
+	_events = IsleAstro.day_events(_sim_seconds)
+
+## 扫描当天，返回太阳高度第一次穿越 target_alt 的模拟时刻（秒）。
+func _p7_time_for_alt(target_alt: float, descending: bool) -> float:
+	var day_start := _sim_seconds - fposmod(_sim_seconds, 86400.0)
+	var prev := 0.0
+	var have_prev := false
+	for m in range(0, 1440):
+		var astro: Dictionary = IsleAstro.compute(day_start + float(m) * 60.0)
+		var alt := float(astro["sun_alt"])
+		if have_prev:
+			var hit: bool = (prev > target_alt and alt <= target_alt) if descending else (prev < target_alt and alt >= target_alt)
+			if hit:
+				return day_start + float(m) * 60.0
+		prev = alt
+		have_prev = true
+	return day_start + 12.0 * 3600.0
+
+func _p7_camera_island() -> void:
+	_theta = 0.86
+	_elev = 0.30
+	_radius = 60.0
+	_cam_target = Vector3(0.0, 11.0, 0.0)
+	_fov = 52.0
+	_apply_pose(_play_pose())
+
+func _p7_camera_boat() -> void:
+	if _sailboat == null:
+		return
+	var bp: Vector3 = _sailboat.global_position
+	var outw := Vector3(bp.x, 0.0, bp.z)
+	if outw.length() < 0.1:
+		outw = Vector3(0.0, 0.0, 1.0)
+	outw = outw.normalized()
+	var cam := bp + outw * 16.0 + Vector3(0.0, 5.5, 0.0)
+	_pose_look(cam, bp + Vector3(0.0, 2.4, 0.0), 52.0)
+
+func _p7_pick_coastal_route() -> Dictionary:
+	for r_v in _sail_routes:
+		var r: Dictionary = r_v
+		if String(r.get("kind", "")) == "coastal" and r.has("shore_a0"):
+			return r
+	return {}
+
+## P7 截图：真实近海航线 + 真实航次号，把船摆到触发点前 6m，由状态机自行驶过触发点。
+func _p7_setup_boat_pass(route: Dictionary) -> float:
+	if _sailboat == null:
+		return -1.0
+	_sail_route = route
+	_sail_route["_out_pts"] = _route_points(route.get("out", []))
+	_sail_route["_back_pts"] = _route_points(route.get("back", []))
+	_boat_route_kind = "coastal"
+	_boat_route_speed = maxf(_sail_speed, float(route.get("speed", _sail_speed)))
+	_boat_route_len = _polyline_len(_sail_route["_out_pts"])
+	_set_boat_shore_window(_sail_route)
+	if _boat_shore_trigger <= 0.0 or _boat_shore_trigger >= _boat_route_len - 1.0:
+		return -1.0
+	_boat_route_dist = maxf(0.0, _boat_shore_trigger - 6.0)
+	_boat_speed_cur = _boat_route_speed
+	_boat_fade = 1.0
+	_boat_state = "COASTAL_CRUISE"
+	_sail_phase = "out"
+	_boat_trip += 1
+	var smp: Dictionary = _sample_polyline(_sail_route["_out_pts"], _boat_route_dist)
+	var pos: Vector3 = smp["pos"]
+	var dir: Vector3 = smp["dir"]
+	_boat_apply(pos, atan2(dir.x, dir.z), _boat_route_speed, 1.0 / 60.0)
+	_apply_boat_fade()
+	print("[P7] boat pass armed route=", String(route.get("name", "?")), " trip=", _boat_trip, " trigger=", snappedf(_boat_shore_trigger, 0.1), " len=", snappedf(_boat_route_len, 0.1))
+	return _boat_shore_trigger
+

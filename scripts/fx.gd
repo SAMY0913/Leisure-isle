@@ -1476,6 +1476,35 @@ class BirdFlock extends Node3D:
 	var _landings_total := 0
 	var _takeoffs_night := 0
 	var _check_acc := 0.0
+	# ---- P7：生态节奏（黄昏归栖 + 船鸟联动）。只复用现有状态机并补最少事件状态，不另建时钟/状态机。 ----
+	const ROOST_NONE := 0
+	const ROOST_ACTIVE := 1
+	const ROOST_NIGHT := 2
+	const DUSK_START_ALT := 4.0       # 太阳高度向下穿过该值视为黄昏启动候选（度，isle_astro 太阳高度）
+	const DUSK_CANCEL_ALT := 6.0      # 时间回拖到白天时取消未完成归栖计划（不重演已消费事件）
+	const ROOST_GAP_MIN := 0.7        # 分批归栖最小间隔（真实帧时间秒）
+	const ROOST_GAP_MAX := 1.5
+	const BOAT_RESP_SHIFT := 10.0     # 船鸟联动：轨道中心朝船方位的水平偏移上限（米）
+	const BOAT_RESP_DROP := 4.0       # 船鸟联动：轨道高度下调上限（米）
+	const BOAT_RESP_UP_TIME := 1.8    # 响应权重上升时间
+	const BOAT_RESP_DOWN_TIME := 2.4  # 响应权重回落时间
+	const BOAT_RESP_DUR_MIN := 9.0
+	const BOAT_RESP_DUR_MAX := 15.0
+	const BOAT_RESP_MIN_ALT := 8.0    # 太阳高度低于此值（黄昏/夜间）不响应船只
+	var _roost_state: int = ROOST_NONE
+	var _roost_day: int = -999999
+	var _roost_timer := 0.0
+	var _roost_landings := 0
+	var _roost_starts := 0
+	var _roost_skips := 0
+	var _roost_skip_reason := ""
+	var _sun_prev := 0.0
+	var _sun_prev_valid := false
+	var _boat_trip_handled := -1
+	var _boat_pass_attempts := 0
+	var _boat_pass_birds := 0
+	var _boat_skip_reason := ""
+	var _eco_paused := false
 
 	func _ready() -> void:
 		_ensure_ready()
@@ -1553,7 +1582,121 @@ class BirdFlock extends Node3D:
 			"takeoffs": _takeoffs_total,
 			"landings": _landings_total,
 			"takeoffs_night": _takeoffs_night,
+			"roost_state": _roost_state,
+			"roost_day": _roost_day,
+			"roost_landings": _roost_landings,
+			"roost_starts": _roost_starts,
+			"roost_skips": _roost_skips,
+			"boat_trip_handled": _boat_trip_handled,
+			"boat_pass_attempts": _boat_pass_attempts,
 		}
+
+	## P7：生态事件可观测状态（只读；探针 / --p7shots / 日志使用）。只含原生类型，便于 JSON.stringify。
+	func debug_eco_state() -> Dictionary:
+		return {
+			"night": _night,
+			"roost_state": _roost_state,
+			"roost_day": _roost_day,
+			"roost_timer": _roost_timer,
+			"roost_landings": _roost_landings,
+			"roost_starts": _roost_starts,
+			"roost_skips": _roost_skips,
+			"roost_skip_reason": _roost_skip_reason,
+			"boat_trip_handled": _boat_trip_handled,
+			"boat_pass_attempts": _boat_pass_attempts,
+			"boat_pass_birds": _boat_pass_birds,
+			"boat_skip_reason": _boat_skip_reason,
+			"paused": _eco_paused,
+		}
+
+	## P7：每鸟状态快照（只读；探针验证「不瞬移 / 栖点互斥 / 响应后恢复」）。
+	func debug_snapshot() -> Array:
+		var out: Array = []
+		for b_v in _birds:
+			var b: Dictionary = b_v
+			var node: Node3D = b["node"]
+			out.append({
+				"index": _bird_index(b),
+				"state": int(b["state"]),
+				"waiting": bool(b.get("waiting", false)),
+				"perch_id": String(b.get("perch_id", "")),
+				"perch_slot": int(b.get("perch_slot", -1)),
+				"timer": float(b.get("timer", 0.0)),
+				"resp_timer": float(b.get("resp_timer", 0.0)),
+				"resp_w": float(b.get("resp_w", 0.0)),
+				"pos": node.position,
+			})
+		return out
+
+	## P7：帆船经过近海航段时的一次性海鸥联动。trip 为 main 的航次号；
+	## 同一次航行最多启动一次（成功或跳过都记为已处理，船在范围内持续移动时不会逐帧重试）。
+	## 只调用既有起飞/飞行/降落接口，不新建飞行 AI。返回 {ok, birds, reason, trip}。
+	func on_boat_shore_pass(trip: int, boat_pos: Vector3, sun_alt: float) -> Dictionary:
+		_ensure_ready()
+		_boat_pass_attempts += 1
+		if _birds.is_empty():
+			_boat_skip_reason = "no_birds"
+			return {"ok": false, "birds": 0, "reason": "no_birds", "trip": trip}
+		if trip == _boat_trip_handled:
+			_boat_skip_reason = "trip_done"
+			return {"ok": false, "birds": 0, "reason": "trip_done", "trip": trip}
+		_boat_trip_handled = trip
+		if _night:
+			_boat_skip_reason = "night"
+			return {"ok": false, "birds": 0, "reason": "night", "trip": trip}
+		if _roost_state != ROOST_NONE:
+			_boat_skip_reason = "dusk_roost"
+			return {"ok": false, "birds": 0, "reason": "dusk_roost", "trip": trip}
+		if sun_alt < BOAT_RESP_MIN_ALT:
+			_boat_skip_reason = "low_sun"
+			return {"ok": false, "birds": 0, "reason": "low_sun", "trip": trip}
+		# 候选：已停栖的鸟优先（从原栖点正常起飞）；不足时用可安全打断的空闲巡航个体。
+		var perched: Array = []
+		var flying: Array = []
+		for b_v in _birds:
+			var b: Dictionary = b_v
+			var st: int = int(b["state"])
+			if st == State.PERCH:
+				if float(b.get("resp_delay", 0.0)) > 0.0:
+					continue
+				perched.append(b)
+			elif st == State.FLY and not bool(b.get("waiting", false)):
+				if _t - float(b.get("fly_since", -100.0)) < 1.2:
+					continue
+				flying.append(b)
+		var pool: Array = perched if not perched.is_empty() else flying
+		if pool.is_empty():
+			_boat_skip_reason = "no_candidate"
+			return {"ok": false, "birds": 0, "reason": "no_candidate", "trip": trip}
+		var count := 1
+		if pool.size() >= 2 and _rng.randf() < 0.62:
+			count = 2
+		var boat_az: float = atan2(boat_pos.z, boat_pos.x)
+		var picked := 0
+		var guard := 0
+		while picked < count and guard < 10 and not pool.is_empty():
+			guard += 1
+			var pick_i: int = _rng.randi_range(0, pool.size() - 1)
+			var b: Dictionary = pool[pick_i]
+			pool.remove_at(pick_i)
+			b["resp_az"] = boat_az + _rng.randf_range(-0.16, 0.16)
+			b["resp_timer"] = _rng.randf_range(BOAT_RESP_DUR_MIN, BOAT_RESP_DUR_MAX)
+			b["resp_w"] = 0.0
+			if int(b["state"]) == State.PERCH:
+				# 第二只错峰起飞：延迟到期后由 _update_perched 走既有起飞接口
+				b["resp_delay"] = _rng.randf_range(0.5, 1.1) if picked > 0 else 0.0
+				if float(b["resp_delay"]) <= 0.0:
+					_begin_takeoff(b)
+			else:
+				b["resp_delay"] = _rng.randf_range(0.4, 0.9) if picked > 0 else 0.0
+			picked += 1
+		if picked <= 0:
+			_boat_skip_reason = "no_candidate"
+			return {"ok": false, "birds": 0, "reason": "no_candidate", "trip": trip}
+		_boat_pass_birds = picked
+		_boat_skip_reason = ""
+		print("[ECO] boat_pass trip=", trip, " birds=", picked, " boat_az=", snappedf(boat_az, 0.01), " sun_alt=", snappedf(sun_alt, 0.1))
+		return {"ok": true, "birds": picked, "reason": "ok", "trip": trip}
 
 	# ---------------- perches ----------------
 	func _normalize_perches(raw_perches: Array) -> Array:
@@ -1966,6 +2109,7 @@ class BirdFlock extends Node3D:
 		b["prev_vel"] = Vector3.ZERO
 		b["teleport"] = true
 		b["timer"] = _rng.randf_range(1.0, 4.0)
+		b["fly_since"] = _t
 
 	func _reseat_all(initial: bool) -> void:
 		_clear_allocations()
@@ -2028,6 +2172,29 @@ class BirdFlock extends Node3D:
 		var r: float = float(b["radius"])
 		return Vector3(-sin(angle) * r * omega, cos(angle * 2.0) * 2.2 * omega, cos(angle) * r * omega)
 
+	## P7：船只响应期间的飞行目标 = 原轨道点 + 朝船方位的水平偏移 - 高度下沉；权重平滑过渡，无瞬移。
+	func _flight_target(b: Dictionary, angle: float) -> Vector3:
+		var p: Vector3 = _orbit_point(b, angle)
+		var w: float = float(b.get("resp_w", 0.0))
+		if w <= 0.0001:
+			return p
+		var az: float = float(b.get("resp_az", 0.0))
+		return p + Vector3(cos(az) * BOAT_RESP_SHIFT * w, -BOAT_RESP_DROP * w, sin(az) * BOAT_RESP_SHIFT * w)
+
+	## P7：响应权重生命周期（延迟 → 上升 → 保持 → 回落）。只改飞行目标，不参与世界时间。
+	func _update_boat_response(b: Dictionary, delta: float) -> void:
+		var delay: float = float(b.get("resp_delay", 0.0))
+		if delay > 0.0:
+			b["resp_delay"] = maxf(0.0, delay - delta)
+			return
+		var timer: float = float(b.get("resp_timer", 0.0))
+		var w: float = float(b.get("resp_w", 0.0))
+		if timer > 0.0:
+			b["resp_timer"] = maxf(0.0, timer - delta)
+			b["resp_w"] = minf(1.0, w + delta / BOAT_RESP_UP_TIME)
+		elif w > 0.0:
+			b["resp_w"] = maxf(0.0, w - delta / BOAT_RESP_DOWN_TIME)
+
 	func _airborne_count() -> int:
 		var n := 0
 		for b_v in _birds:
@@ -2065,6 +2232,10 @@ class BirdFlock extends Node3D:
 		b["from_p"] = (b["node"] as Node3D).position
 		b["to_p"] = slot["pos"]
 		b["waiting"] = false
+		# P7：一旦转入降落，结束船只响应偏置，避免响应状态残留到下一次日常飞行。
+		b["resp_delay"] = 0.0
+		b["resp_timer"] = 0.0
+		b["resp_w"] = 0.0
 		_landings_total += 1
 		return true
 
@@ -2106,14 +2277,123 @@ class BirdFlock extends Node3D:
 				b["timer"] = _rng.randf_range(0.2, 2.2)
 
 	func _on_dawn() -> void:
+		_roost_state = ROOST_NONE
+		_roost_timer = 0.0
+		_roost_skip_reason = ""
 		for b_v in _birds:
 			var b: Dictionary = b_v
 			if int(b["state"]) == State.PERCH:
 				b["timer"] = _rng.randf_range(2.0, 14.0)
 
+	# ---------------- P7：生态节奏（黄昏归栖 / 船鸟联动） ----------------
+	## 黄昏归栖的空中目标数：太阳从 +4° 降到 -2° 时由 6 递减到 0（沿用现有 BIRD_DAY_TARGET）。
+	func _roost_target_airborne(sun_alt: float) -> int:
+		var p: float = clampf((DUSK_START_ALT - sun_alt) / (DUSK_START_ALT + 2.0), 0.0, 1.0)
+		return int(round(float(IsleFx.BIRD_DAY_TARGET) * (1.0 - p)))
+
+	## 选择一只可安全转入降落的鸟：只动巡航态（不打断起飞/降落/停栖），并尊重落点占用。
+	func _pick_roost_bird() -> Dictionary:
+		var pool: Array = []
+		for b_v in _birds:
+			var b: Dictionary = b_v
+			if int(b["state"]) != State.FLY:
+				continue
+			if bool(b.get("waiting", false)):
+				continue
+			if _t - float(b.get("fly_since", -100.0)) < 1.0:
+				continue
+			pool.append(b)
+		if pool.is_empty():
+			return {}
+		return pool[_rng.randi_range(0, pool.size() - 1)]
+
+	## 每帧生态事件推进：世界阶段→触发资格→事件生命周期只依赖权威时间（sun_alt / rising / day），
+	## 动画与缓动只消费这些状态，不反向决定世界时间。
+	func _update_eco(delta: float, sun_alt: float, ctx: Dictionary) -> void:
+		var has_rising: bool = ctx.has("rising")
+		var descending: bool
+		if has_rising:
+			descending = not bool(ctx["rising"])
+		else:
+			descending = _sun_prev_valid and sun_alt < _sun_prev - 0.0005
+		var first_sample := not _sun_prev_valid
+		_sun_prev = sun_alt
+		_sun_prev_valid = true
+		var has_day: bool = ctx.has("day")
+		var day: int = int(ctx.get("day", -999999))
+		# 夜间：进行中的归栖转为夜间稳定状态，由既有 _request_night_landings 收尾，不补演已错过动画。
+		if _night:
+			if _roost_state == ROOST_ACTIVE:
+				_roost_state = ROOST_NIGHT
+				print("[ECO] dusk_roost -> night alt=", snappedf(sun_alt, 0.01))
+			_roost_timer = 0.0
+			return
+		if _roost_state == ROOST_NIGHT:
+			_roost_state = ROOST_NONE
+		# 时间回拖到白天：取消未完成的归栖计划；但保留 _roost_day，同一模拟日不重演。
+		if _roost_state == ROOST_ACTIVE and sun_alt > DUSK_CANCEL_ALT:
+			_roost_state = ROOST_NONE
+			_roost_timer = 0.0
+			_roost_skip_reason = "cancel_return_day"
+			print("[ECO] dusk_roost cancel (back to day) alt=", snappedf(sun_alt, 0.01))
+			return
+		var start_ok: bool = descending and sun_alt <= DUSK_START_ALT and not first_sample
+		if _roost_state == ROOST_NONE:
+			if start_ok and (not has_day or day != _roost_day):
+				_roost_state = ROOST_ACTIVE
+				_roost_day = day
+				_roost_timer = 0.0
+				_roost_starts += 1
+				print("[ECO] dusk_roost start day=", day, " alt=", snappedf(sun_alt, 0.01), " target=", _roost_target_airborne(sun_alt))
+			return
+		# ROOST_ACTIVE：时间前跳跨过午夜后落在新一天的黄昏时，允许新一天重新开始（每日一次）。
+		if start_ok and has_day and day != _roost_day:
+			_roost_day = day
+			_roost_timer = 0.0
+			_roost_starts += 1
+			print("[ECO] dusk_roost restart new day=", day, " alt=", snappedf(sun_alt, 0.01))
+		if _eco_paused:
+			return
+		var target: int = _roost_target_airborne(sun_alt)
+		if _airborne_count() <= target:
+			_roost_timer = 0.0
+			return
+		_roost_timer = float(_roost_timer) - delta
+		if _roost_timer > 0.0:
+			return
+		_roost_timer = _rng.randf_range(ROOST_GAP_MIN, ROOST_GAP_MAX)
+		var pick: Dictionary = _pick_roost_bird()
+		if pick.is_empty():
+			_roost_skips += 1
+			_roost_skip_reason = "no_eligible_bird"
+			return
+		if not _begin_landing(pick):
+			_roost_skips += 1
+			_roost_skip_reason = "no_free_slot"
+			_roost_timer = maxf(float(_roost_timer), 0.9)
+			return
+		_roost_landings += 1
+		_roost_skip_reason = ""
+		if _airborne_count() == 0:
+			print("[ECO] dusk_roost complete landings=", _roost_landings, " alt=", snappedf(sun_alt, 0.01))
+
 	# ---------------- per-bird state updates ----------------
 	func _update_perched(b: Dictionary, delta: float) -> void:
 		if _night:
+			return
+		# P7：船鸟联动的第二只响应鸟延迟起飞（到期后走既有起飞接口）。
+		var resp_delay: float = float(b.get("resp_delay", 0.0))
+		if resp_delay > 0.0:
+			b["resp_delay"] = maxf(0.0, resp_delay - delta)
+			if float(b["resp_delay"]) <= 0.0:
+				if _roost_state == ROOST_NONE:
+					_begin_takeoff(b)
+				else:
+					b["resp_delay"] = 0.0
+			return
+		# P7：黄昏归栖进行中不再让停栖鸟起飞；保留既有休息状态，等夜间/清晨规则接管。
+		if _roost_state == ROOST_ACTIVE:
+			b["timer"] = _rng.randf_range(IsleFx.BIRD_TIMER_MIN, IsleFx.BIRD_TIMER_MAX)
 			return
 		# 白天停在屋脊上的海鸥做「长时间歇脚」：不主动起飞，其他栖枝仍按原节奏轮换，
 		# 保证空中鸟数/起飞降落动画不变，同时白天屋顶始终有海鸥（验收：实际观察降落屋顶）。
@@ -2142,11 +2422,13 @@ class BirdFlock extends Node3D:
 			b["state"] = State.FLY
 			b["phase"] = atan2(node.position.z, node.position.x) - _t * float(b["speed"]) * float(b["dir"])
 			b["timer"] = _rng.randf_range(0.2, 1.2) if _night else _rng.randf_range(IsleFx.BIRD_TIMER_MIN, IsleFx.BIRD_TIMER_MAX)
+			b["fly_since"] = _t
 
 	func _update_flying(b: Dictionary, delta: float) -> void:
 		var node: Node3D = b["node"]
+		_update_boat_response(b, delta)
 		var angle: float = _t * float(b["speed"]) * float(b["dir"]) + float(b["phase"])
-		var target: Vector3 = _orbit_point(b, angle)
+		var target: Vector3 = _flight_target(b, angle)
 		var k: float = 1.0 - exp(-3.2 * delta)
 		node.position = node.position.lerp(target, k)
 		b["timer"] = float(b["timer"]) - delta
@@ -2155,6 +2437,10 @@ class BirdFlock extends Node3D:
 		if _night:
 			if not _begin_landing(b):
 				b["timer"] = 0.8
+			return
+		# P7：船只响应期间不因日常计时器提前收场；响应结束后恢复原有随机降落启发。
+		if float(b.get("resp_w", 0.0)) > 0.05:
+			b["timer"] = 1.0
 			return
 		b["timer"] = _rng.randf_range(IsleFx.BIRD_TIMER_MIN, IsleFx.BIRD_TIMER_MAX)
 		var airborne: int = _airborne_count()
@@ -2191,7 +2477,7 @@ class BirdFlock extends Node3D:
 			b["state"] = State.PERCH
 			b["t"] = 0.0
 			b["timer"] = 999.0 if _night else _rng.randf_range(IsleFx.BIRD_TIMER_MIN, IsleFx.BIRD_TIMER_MAX)
-			if not _night and _airborne_count() < IsleFx.BIRD_DAY_TARGET:
+			if not _night and _roost_state == ROOST_NONE and _airborne_count() < IsleFx.BIRD_DAY_TARGET:
 				_nudge_takeoff()
 
 	func _separate() -> void:
@@ -2439,12 +2725,16 @@ class BirdFlock extends Node3D:
 			_pose_flying(b, d, st)
 
 	# ---------------- main update ----------------
-	func update_birds(delta: float, sun_alt: float) -> void:
+	## ctx 可选：{day:int, rising:bool, sim_seconds:float, time_source:String, paused:bool}
+	## 只用于生态事件的触发资格（世界阶段/日期/方向），不建立第二套时间推进。
+	func update_birds(delta: float, sun_alt: float, ctx: Dictionary = {}) -> void:
 		_ensure_ready()
 		if _birds.is_empty():
 			return
 		_t += delta
+		_eco_paused = bool(ctx.get("paused", false))
 		_update_day_night(delta, sun_alt)
+		_update_eco(delta, sun_alt, ctx)
 		_check_perch_validity(delta)
 		for b_v in _birds:
 			var b: Dictionary = b_v

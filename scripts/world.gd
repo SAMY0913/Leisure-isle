@@ -2648,7 +2648,35 @@ static func _coastal_route(route_name: String, a0: float, a1: float, o0: float, 
         "back": back,
         "wait": 3.0,
         "speed": speed,
+        # P7：近海弧段的方位范围（真实航线几何元数据；远海航线没有这两个字段）。
+        "shore_a0": a0,
+        "shore_a1": a1,
     }
+
+# --- P7：近海航段触发点 -------------------------------------------------------
+# 把「方位角位于 [a0,a1] 的近海弧段」换算成 out 航线上的弧长触发点（main 与探针共用同一几何）。
+# 取弧段前段约 28% 处：船刚进入可观察的近海弧段，海鸥有足够时间响应，同时船仍在视野内。
+# 返回 -1.0 表示该航线没有可用的近海弧段（例如远海航线）。
+static func shore_trigger_dist(out_pts: Array, a0: float, a1: float) -> float:
+    if out_pts.size() < 2:
+        return -1.0
+    var total := 0.0
+    var first := -1.0
+    var last := -1.0
+    var prev: Vector3 = out_pts[0]
+    for i in range(out_pts.size()):
+        var p: Vector3 = out_pts[i]
+        if i > 0:
+            total += p.distance_to(prev)
+        prev = p
+        var az := fposmod(atan2(p.z, p.x), TAU)
+        if az >= a0 and az <= a1:
+            if first < 0.0:
+                first = total
+            last = total
+    if first < 0.0 or last <= first:
+        return -1.0
+    return first + (last - first) * 0.28
 
 # --- far offshore runs ------------------------------------------------------
 static func _far_route(route_name: String, phi: float, speed: float,
