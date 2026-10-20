@@ -314,8 +314,8 @@ P2=轻微接缝/边缘锯齿/画质档差异不合理；P3=体验优化建议。
 
 **来源**：D:/休闲小岛幻境/开发产物/release_verify/window_smoke/final_shots/（61 张）与 final_transition/（13 张），由 isle_p6.exe 窗口自动化生成
 （Lead/release 提供：--selftest 55/55 exit0、--shots 61 张、--transition 13 张，发布包 SHA256 b3b4e4ab… 与 freeze 构建一致）。
-**方法**：read_image 实看 15 张关键图（主菜单/设置页/六时段各 1/夜景灯塔/水面近景/海岸近景/转场首·中·末帧等）+ Python/PIL 数值对比
-（脚本 开发产物/logs/visual/exe_consistency_check.py：EXE 与工程内同名图的降采样灰度 MAE/相关系数，转场 13 帧亮度统计）。
+**方法**：read_image 实看 27 张（Lead 指定的 15 张关键图 + 额外抽查 12 张：00_settings_drag、01_golden、02_night_sky、03_house_front、03_attic_window、04_birds、04_splash、05_boat_night_lantern、05_quality_low/ultra、06_beam_house_side、07_menu_stable）；
+另对全部 61+13 张做 Python/PIL 全量数值复核（脚本 开发产物/logs/visual/exe_consistency_check.py 与 开发产物/logs/visual/exe_fullset_check.py：EXE 与工程内同名图的降采样灰度 MAE/相关系数、黑帧/白帧扫描、转场亮度统计）。
 
 | 检查项 | EXE 图（final_shots/ 或 final_transition/） | 实看结论 | 与工程内同源图数值对比 |
 | --- | --- | --- | --- |
@@ -326,8 +326,14 @@ P2=轻微接缝/边缘锯齿/画质档差异不合理；P3=体验优化建议。
 | 水面近景 | 05_water_ultra.png、03_rocks_shore.png | 云层/水面反射/岸线/泡沫环连续，无漏面；近景岩石与草地接触正常 | MAE 0.84 / 0.83，corr 0.996 / 0.9934 |
 | 转场序列 | final_transition/tr_00_menu…tr_12_4.40.png | 首帧菜单→中段 UI 上移淡出+letterbox 收拢+镜头推近→末帧进入游戏 HUD；无黑帧/闪白/跳变 | 13 帧亮度均值单调 85.59→130.64→138.13，white_frac=0，首帧与 00_menu MAE 0.30 |
 
+**全量数值复核（61+13 张，非抽样）**：
+- 数量与配对：EXE final_shots=61、final_transition=13；与工程内 shots/transition 61+13 同名全部配对成功（missing=0）；实测 PNG 尺寸全部 **1600×900**。
+- 同源一致性：61 对同名图降采样灰度相关系数 median=0.9932，min=0.8768（01_night，受动态灯光/水面相位影响），最差 8 对依次为 01_night 0.8768、07_menu_exit_018 0.9001、07_menu_stable 0.9172、01_dusk 0.9301、00_settings_drag 0.9469、00_settings 0.9478、07_menu_enter_042 0.9535、04_time_panel 0.9543；MAE 0.83–4.31/255，均为动态元素/半透明面板导致，结构一致。
+- 黑帧/白帧扫描：61 张中 mean<8 的黑帧 0 张、white_frac>0.5 的过曝白帧 0 张；13 张转场中 mean<8 的黑帧 0、白帧 0；转场亮度均值 85.6→138.1 单调过渡，无闪白/黑帧。
+
 **结论**：发布包 EXE 内字体/中文/渲染与工程内同源画面一致（菜单类 corr ≥0.99；夜景受动态水体/灯光相位影响 corr 0.877 仍为同源），
 未发现字体缺失方块、黑帧、UI 裁切或缺失贴图；EXE 产物数量与 Lead 提供一致（61+13）。
 **备注**：EXE --shots 日志出现一次 `[SHOTDBG] 第二次 ESC 注入未生效，退回 _on_menu_start(true)`——为自动化截图 harness 的输入注入回退（脚本已兜底，
 产物完整），属测试工具行为，不影响发布包运行；已记录供 release 参考。
+另：release 说明窗口以 fullscreen 2560×1390 启动、PNG 物理尺寸“可能为 2560×1390”；实测 61+13 张 PNG 均为 1600×900（自动化按逻辑视口 1600×900 截图），以实测为准。
 
