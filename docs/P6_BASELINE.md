@@ -43,7 +43,9 @@
 
 按扩展名：.gd 229、.uid 220、.py 17、.import 16、.wav 15、.gdshader 10、.tscn 8、.ps1 7、.md 4、.mjs 3、.txt 2、.json 2、.cfg 2，其余 .ttf/.tres/.pyc/.ico/.godot/.gitignore/.exe/.bat/LICENSE 各 1。
 
-> 备注：仓库根有 w3.txt（2 字节，内容 hi，tracked）。疑似临时文件，但不在 T3 write scope（scripts/ 之外），本次只登记不处理，待 Lead 决定是否清理。
+> 备注：仓库根 w3.txt（2 字节，内容 hi，tracked）经 Lead 复核确认无任何代码/文档/导出引用，属临时文件；T7 已归档到
+> `开发产物/archive/root_cleanup/w3.txt`（sha256 8f434346648f6b96df89dda901c5176b10a6d83961dd3c1ac88b59b2dc327aa4）
+> 并从仓库 `git rm`。如需恢复：`git checkout baseline-p6close-20261020 -- w3.txt`。
 
 ## 2. 发布版基线（修改前快照）
 
