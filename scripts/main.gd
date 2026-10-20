@@ -199,6 +199,9 @@ var _dbg_spot_strength := 0.0
 var _dbg_spot_dir := Vector3.ZERO
 var _dbg_spot_origin := Vector3.ZERO
 var _dbg_spot_visible := false
+# 画质档雾距（fog_scale）最后一次写入值：headless dummy renderer 读不到 global uniform，探针用这两个字段断言。
+var _dbg_fog_near := 0.0
+var _dbg_fog_far := 0.0
 
 # ---- 用户设置 / 画质 / 音频 / 交互反馈 ----
 const Settings := preload("res://scripts/isle_settings.gd")
@@ -685,6 +688,9 @@ func _update_lighting() -> void:
 	_theme_t = IsleMath.theme_time(_sun_alt, _rising)
 	_pal = IslePalette.sample(_theme_t)
 	var p := _pal
+	# 画质档雾距缩放（fog_scale 是 isle_quality 定义但此前从未被渲染消费的键）：
+	# 只缩放自定义 shader 的雾起止距离；雾色仍由调色板决定，低档稍近、极致档稍远。
+	var fog_scale := clampf(float(_quality_state.get("fog_scale", 1.0)), 0.6, 1.4)
 	# environment
 	# 画质档 glow_strength 系数（1.0=预设基准）；让五档的辉光强度真实生效，而不是被调色板每帧覆盖。
 	var gq := clampf(float(_quality_state.get("glow_strength", 1.0)), 0.0, 1.5)
@@ -728,8 +734,10 @@ func _update_lighting() -> void:
 	_sea_mat.set_shader_parameter("moon_i", float(p["moonI"]))
 	_sea_mat.set_shader_parameter("glitter_i", float(p["waterGlitterI"]))
 	_sea_mat.set_shader_parameter("moon_phase", _moon_illum)
-	_sea_mat.set_shader_parameter("fog_near", float(p["fogNear"]))
-	_sea_mat.set_shader_parameter("fog_far", float(p["fogFar"]))
+	_dbg_fog_near = float(p["fogNear"]) * fog_scale
+	_dbg_fog_far = float(p["fogFar"]) * fog_scale
+	_sea_mat.set_shader_parameter("fog_near", _dbg_fog_near)
+	_sea_mat.set_shader_parameter("fog_far", _dbg_fog_far)
 	_sea_mat.set_shader_parameter("time_s", _frame_t)
 	_sea_mat.set_shader_parameter("cloud_opacity", clampf(float(p["cloudOpacity"]) * 1.35 + 0.10, 0.0, 0.95))
 	# SSR 深度重建用相机矩阵（每帧随相机变换更新；shader 内零矩阵即自动跳过 SSR）
@@ -745,8 +753,8 @@ func _update_lighting() -> void:
 	RenderingServer.global_shader_parameter_set("g_ambient_sky", _lin(p["hemiSky"]) * float(p["hemiI"]))
 	RenderingServer.global_shader_parameter_set("g_ambient_ground", _lin(p["hemiGround"]) * float(p["hemiI"]))
 	RenderingServer.global_shader_parameter_set("g_fog_color", _lin(p["fog"]))
-	RenderingServer.global_shader_parameter_set("g_fog_near", float(p["fogNear"]))
-	RenderingServer.global_shader_parameter_set("g_fog_far", float(p["fogFar"]))
+	RenderingServer.global_shader_parameter_set("g_fog_near", float(p["fogNear"]) * fog_scale)
+	RenderingServer.global_shader_parameter_set("g_fog_far", float(p["fogFar"]) * fog_scale)
 	RenderingServer.global_shader_parameter_set("g_wind_time", _frame_t)
 	RenderingServer.global_shader_parameter_set("g_outline_color", _lin(p["outline"]))
 	# 夜间局部灯光 → 全局 uniform（toon/grass/glass 在片元里自算点光衰减）
@@ -3471,8 +3479,9 @@ func _apply_quality(q: int) -> void:
 		_env.tonemap_exposure = clampf(float(p.get("exposure", 1.0)), 0.5, 2.0)
 		_env.glow_enabled = _quality >= 1
 		_env.glow_intensity = clampf(float(p.get("glow_strength", 0.6)), 0.0, 2.0)
-		# 引擎 SSAO/SSIL/体积雾对全 unshaded 自定义管线基本不产生可见效果，
-		# 仅在极致档尝试开启 SSAO 并在报告中标注「兼容性核查：未观察到可见差异」；不依赖它做画质卖点。
+		# 引擎 SSAO/SSIL 对全 unshaded 自定义管线不产生可见效果；引擎体积雾虽会改变画面，
+		# 但在黎明/黄昏会被未受光的雾染暗海面（2026-10-20 T7 实测：黎明海面接近全黑、远景山体成黑带），
+		# 与既有暖色天空/海面艺术风格冲突，故不接入，也不在菜单暴露覆盖开关。详见 docs/P6_AO_FOG_EVAL.md。
 		_env.ssao_enabled = false
 		_env.ssil_enabled = false
 		_env.volumetric_fog_enabled = false
@@ -3493,9 +3502,19 @@ func _apply_quality(q: int) -> void:
 		_sea_mat.set_shader_parameter("sea_refl_detail", float(sp.get("sea_refl_detail", 1.0)))
 	_light_budget = int(p.get("light_budget", 8))
 	_apply_sea_mesh(float(p.get("sea_mesh_scale", 1.0)))
-	# 自定义 AO：仅极高/极致档启用；radius/samples/bias 固定，强度随档位。
+	_apply_lod_bias(float(p.get("lod_bias", 1.0)))
+	# 自定义 AO：开关由 posts_ao 布尔决定（同时兼容菜单高级覆盖写入的 UI 别名 post_ao），
+	# ao_strength 只表达强度。此前只读 ao_strength，导致「高级覆盖=关」只改状态不动渲染。
 	if _post_ao_mat != null and _post_ao_mi != null:
+		var ao_on := bool(p.get("posts_ao", true))
+		if p.has("post_ao"):
+			ao_on = bool(p["post_ao"])
 		var ao_s := clampf(float(p.get("ao_strength", 0.0)), 0.0, 1.0)
+		if not ao_on:
+			ao_s = 0.0
+		elif ao_s <= 0.001:
+			# 低/中档预设默认关 AO（strength=0）；玩家在高级覆盖里手动打开时给一个可见强度。
+			ao_s = 0.35
 		_post_ao_mat.set_shader_parameter("ao_strength", ao_s)
 		_post_ao_mat.set_shader_parameter("ao_radius", float(p.get("ao_radius", 0.9)))
 		_post_ao_mat.set_shader_parameter("ao_samples", int(p.get("ao_samples", 12)))
@@ -3545,6 +3564,12 @@ func _quality_params() -> Dictionary:
 	if ov is Dictionary:
 		overrides = ov as Dictionary
 	var p: Dictionary = Settings.quality_effective(_quality, overrides)
+	# 菜单高级覆盖历史上把 AO 开关存成 UI 别名 "post_ao"，而参数表/渲染键是
+	# "posts_ao"。这里做唯一一次归一（保留外部存档契约，内部只留规范键），
+	# 避免"改开关不改渲染"的两套键并存。
+	if p.has("post_ao"):
+		p["posts_ao"] = bool(p["post_ao"])
+		p.erase("post_ao")
 	var fb := _fallback_quality_params(_quality)
 	for k in fb.keys():
 		if not p.has(k):
@@ -3580,6 +3605,23 @@ func _apply_sea_mesh(scale: float) -> void:
 	sea.mesh = pm
 	if _sea_mat != null:
 		_sea_mat.set_shader_parameter("wave_scale", 1.0)
+
+# 画质档 LOD 偏置：缩放世界层岩石近/远 LOD 的可见范围（world.gd 建出的
+# Rocks_<family>_Near / Rocks_<family>_Far 的 visibility_range，基准 28m / 24m）。
+# 两段同时等比缩放，重叠区间始终存在，切档不会出现岩石空洞或突跳。
+func _apply_lod_bias(bias: float) -> void:
+	var b := clampf(bias, 0.6, 1.6)
+	var holder := get_node_or_null("World")
+	if holder == null:
+		return
+	# 岩石挂在 World/Island 下（world.gd build() 的 root），必须递归查找。
+	for child in holder.find_children("Rocks_*", "", true, false):
+		var nm := String(child.name)
+		if child is GeometryInstance3D:
+			if nm.begins_with("Rocks_") and nm.ends_with("_Near"):
+				(child as GeometryInstance3D).visibility_range_end = 28.0 * b
+			elif nm.begins_with("Rocks_") and nm.ends_with("_Far"):
+				(child as GeometryInstance3D).visibility_range_begin = 24.0 * b
 
 func _find_grass_node(node_name: String) -> MultiMeshInstance3D:
 	var root = _world.get("root", null)

@@ -1,9 +1,0 @@
-marker_present=True
-marker_replaced=True
-final_chars=58439 final_lines=1470
-tabs_left=0
-func_count=73
-duplicate_funcs=[]
-tz_funcs=['_build_timezone_picker', '_build_fade', 'open_timezone_picker', 'close_timezone_picker']
-tail_funcs_present=['open', 'close', '_reverse_anim', '_layout', '_set_bar', 'get_settings', 'set_settings', '_set_settings_visuals']
-class_name_ok=True

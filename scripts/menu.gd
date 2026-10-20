@@ -27,10 +27,11 @@ const SENS_MAX := 3.0
 const SENS_STEP := 0.05
 
 ## 画质高级覆盖开关：写入 quality_overrides（空字典 = 完全跟随预设档位）。
+## 体积雾不列为可覆盖项：引擎体积雾虽会改变画面，但在黎明/黄昏会被未受光的雾染暗海面，
+## 与既有暖色天空/海面艺术风格冲突（2026-10-20 T7 AO/FOG 实测，见 docs/P6_AO_FOG_EVAL.md）。
 const OVERRIDE_ROWS := [
     {"key": "sea_ssr", "title": "海面反射 · SSR"},
     {"key": "post_ao", "title": "环境光遮蔽 · AO"},
-    {"key": "volumetric_fog", "title": "体积雾 · FOG"},
 ]
 
 ## 窗口模式中文名（三态：窗口化 / 全屏 / 无边框窗口）。
@@ -1273,11 +1274,17 @@ func _cancel_res_confirm() -> void:
     _res_prev = {}
     _res_kind = ""
 
+## 菜单 UI 键 → 画质参数键的别名（AO 开关历史存档键为 post_ao，参数表里是 posts_ao）。
+func _override_param_key(key: String) -> String:
+    return "posts_ao" if key == "post_ao" else key
+
 ## 三态高级覆盖：跟随预设 → 与预设相反 → 与预设相同 → 跟随预设。
 func _cycle_override(key: String) -> void:
     var ov: Dictionary = (_values["quality_overrides"] as Dictionary).duplicate(true)
     var preset: Dictionary = S.quality_preset(int(_values["quality"]))
-    var preset_v: bool = bool(preset.get(key, true))
+    var pkey: String = _override_param_key(key)
+    # 别名键必须用参数表键取预设值，否则 post_ao 永远读到默认 true，三态循环方向错误。
+    var preset_v: bool = bool(preset.get(pkey, true))
     if not ov.has(key):
         ov[key] = not preset_v
     elif bool(ov[key]) == preset_v:
@@ -1297,7 +1304,10 @@ func _refresh_override_buttons() -> void:
         if not _quality_override_buttons.has(key):
             continue
         var b: Button = _quality_override_buttons[key]
-        var v: bool = bool(eff.get(key, true))
+        var pkey: String = _override_param_key(key)
+        var v: bool = bool(eff.get(pkey, true))
+        if ov.has(key):
+            v = bool(ov[key])
         if ov.has(key):
             b.text = "开" if v else "关"
             b.tooltip_text = "已覆盖预设：%s（再次点击可切回跟随预设）" % ("开" if v else "关")
