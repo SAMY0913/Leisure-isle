@@ -2,8 +2,8 @@
 
 > 任务：task-6（P6 收尾 / teammate astro）。被测文件：`scripts/isle_astro.gd`（本轮未修改）。
 > 参考实现：NOAA Solar Calculator 官方 JS（`开发产物/t6_astro/noaa_solcalc_main.js`）+ astronomy-engine 2.1.19（`astronomy-engine.min.js`）。
-> 结论：**交叉校验 46/46 类别 PASS（预设容差内），探针 2481 项断言 0 失败**；时间系统回归通过。
-> 发现 1 个真实缺陷，位于 `main.gd` 现实时间模式的时区处理（非天文模型），已以 [KNOWN-BUG] 记录并上报 Lead，本轮未修改源码。
+> 结论：**交叉校验 46/46 类别 PASS（预设容差内），探针 2489 项断言 0 失败（known_bug=0）**；时间系统回归通过。
+> 唯一确证缺陷位于 `main.gd` 现实时间模式的时区处理（非天文模型）：由 Lead 在 `a43ca8c` 修复；本报告 §8 记录修复语义、生产路径回归证据与旧反事实数据。`scripts/isle_astro.gd` 本轮未修改。
 > 本报告不对近似星历作高精度宣传：所有数字均为「与两个独立参考实现的交叉一致度」，不是绝对真值精度。
 
 ---
@@ -30,7 +30,9 @@ node 开发产物/logs/astro/compare_t7.js \
 cat 开发产物/logs/astro/compare_t7.log   # 期望末行 [RESULT] PASS
 ```
 
-本轮实际运行：探针 EXIT=0，`[SUMMARY] pass=2481 fail=0 skip=0 known_bug=1 raw_lines=684 elapsed_ms=9561`（Phase A 1125ms / Phase B 约 8.4s）；比对器 EXIT=0，`[RESULT] PASS: 全部类别在预先定义的容差内`。
+本轮实际运行（修复前基线）：探针 EXIT=0，`[SUMMARY] pass=2481 fail=0 skip=0 known_bug=1 raw_lines=684 elapsed_ms=9561`；比对器 EXIT=0，`[RESULT] PASS: 全部类别在预先定义的容差内`。
+
+修复后最终回归（HEAD 55a8d73 + 本探针 test-only 补丁；日志 `probe_t7_final.log`）：探针 EXIT=0，`[SUMMARY] pass=2489 fail=0 skip=0 known_bug=0 raw_lines=684 elapsed_ms=46794`（Phase A 37569ms / Phase B 约 9.2s）；比对器 `node compare_t7.js probe_t7_final.log ref_t7.json` EXIT=0，46/46 类别 PASS + 1 INFO；Phase A 的 684 行 RAW 与修复前日志逐字节 diff=0（`raw_diff.txt` 0 行差异），确认 test-only 改动对天文数值零影响。
 
 ## 2. 输入输出约定（从 isle_astro.gd 代码确认）
 
@@ -181,9 +183,9 @@ cat 开发产物/logs/astro/compare_t7.log   # 期望末行 [RESULT] PASS
 | compute 平均 | 0.124ms | ≤5ms |
 | 确定性 | 同输入逐位一致、同日不同时刻一致 | 逐位 |
 
-## 7. 时间系统回归（Phase B，131 项断言全过）
+## 7. 时间系统回归（Phase B，139 项断言全过）
 
-统一时钟基准：`_sim_seconds`（模拟模式）或 `_abs_unix+偏移`（现实模式）；十档 day_length = 60/300/600/900/1200/1500/1800/2400/2700/3600s。
+统一时钟基准：`_sim_seconds`（模拟模式）或 `_abs_unix + IsleAstro.TZ_SECONDS`（现实模式，a43ca8c 后固定参考时区；显示时区只影响文本）；十档 day_length = 60/300/600/900/1200/1500/1800/2400/2700/3600s。
 
 | 驱动项 | 实测结论 |
 | --- | --- |
@@ -196,28 +198,31 @@ cat 开发产物/logs/astro/compare_t7.log   # 期望末行 [RESULT] PASS
 | 海鸥 | 昼夜迟滞 -2/+2：sun_alt=-5 判夜、+1 仍夜、+2.5 回日、-1.5 仍日、-3 判夜；夜间 12s 后全部栖息（perched=10）；计数无 NaN/负值 |
 | 夜间灯光与环境音 | 音频相位 day（alt=20）/night（alt=-8）；夜间层 6 帧后 env=0.951（交叉淡化生效）；fireplace_on 在 sun_alt<2 翻转；白天 target surf=1.000 wind=0.650 night=0.000 |
 | B9 协调性 | 同一 _sim_seconds 下 h=12/18/20：天空太阳高度、灯塔强度公式、船只休息窗、炊烟窗口、海鸥昼夜、音频相位全部自洽 |
-| 现实时间 + 时区显示 | 显示时刻随所选时区平移（Shanghai 15:31 → Tokyo 16:31，1h）——**允许的显示调整**；模拟模式下仅切时区时天体位置严格不变（通过）。见 §8 的 real 模式缺陷 |
+| 现实时间 + 时区显示 | 改走生产路径 `_advance_sim`/`_update_lighting` 测试（见 §8）：同一天文时钟跨时区 max\|dsim\|=0.042s（≤0.1s）、`\|sim-(abs+TZ_SECONDS)\|`=0、`_update_lighting` 太阳位置 max dalt=0.000059° / daz=0.000692°（≤0.05°）、与同 `_sim_seconds` 的 `IsleAstro.compute` 差 0；显示墙钟按所选时区偏移精确换算（误差 0.00min，Shanghai 23:51 / Tokyo 00:51 / New_York 11:51）。模拟模式仅切时区天体位置严格不变（≤1e-12） |
 
-## 8. [KNOWN-BUG] 现实时间模式切换显示时区会平移天体地理位置（位于 main.gd，非天文模型）
+## 8. 现实时间模式时区处理缺陷 —— 已修复（main.gd，a43ca8c）并回归
 
-实测（基准 unix=1773968400 = 2026-03-20T01:00Z，同一物理时刻仅换显示时区）：
+**原缺陷（修复前，本报告早期版本 §8 [KNOWN-BUG]）**：`main.gd` real 模式令 `_sim_seconds = _abs_unix + 所选显示时区偏移`，而 `isle_astro.jd_from_local()` 固定减 28800（参考时区 UTC+8）。非 UTC+8 的显示时区偏移因此被灌进天文层，切换显示时区会平移天体地理位置。修复前反事实实测（基准 unix=1773968400 = 2026-03-20T01:00Z）：Asia/Shanghai sun_alt=32.9373°/sun_az=106.3676°、Asia/Tokyo 45.8032°/116.4199°、America/New_York -33.2072°/285.6649° → max|dalt|=**66.1445°**、max|daz|=**179.2974°**。
 
-| 显示时区 | 偏移 | 显示当地时刻 | sun_alt | sun_az | jd |
-| --- | --- | --- | --- | --- | --- |
-| Asia/Shanghai | +28800s | 09:00 | 32.9373° | 106.3676° | 2461119.541667 |
-| Asia/Tokyo | +32400s | 10:00 | 45.8032° | 116.4199° | 2461119.583333 |
-| America/New_York | -14400s | 21:00 | -33.2072° | 285.6649° | 2461119.041667 |
+**修复语义（a43ca8c，HEAD 55a8d73）**：
+- 天文/生态时钟固定参考时区：real 模式下 `_sim_seconds = _abs_unix + IsleAstro.TZ_SECONDS`（不再使用所选时区偏移）；
+- 显示时区只改 HUD/事件文本：`_display_datetime()` real 分支 = `_abs_unix + _offset_for(_abs_unix)`，`_local_seconds_to_display_text()` 统一 `unix = local_seconds - TZ_SECONDS; off = _offset_for(unix)`；
+- `main.gd` `_selftest` 第 24 组改为「切纽约后天体不移动（|dalt|、|daz| < 0.05°）」+ `_sim_seconds == _abs_unix + TZ_SECONDS`。
 
-→ max|dalt|=**66.1445°**、max|daz|=**179.2974°**。天体位置不应随显示时区变化（用户硬性要求）。
+**修复后回归证据（本轮，日志 `probe_t7_final.log` / `probe_t7_bonly_final.log`）**：
 
-根因：`main.gd` real 模式令 `_sim_seconds = _abs_unix + 所选时区偏移`，而 `isle_astro.jd_from_local()` 固定减 28800（假定 UTC+8），非 UTC+8 时区把显示偏移直接灌进天文层。
+| 测试（生产路径行为测试） | 实测 | 判据 |
+| --- | --- | --- |
+| 跨时区天文时钟漂移 max\|dsim\|（上海/东京/纽约） | 0.042s（B-only 0.069s） | ≤0.1s（加严） |
+| 时钟语义 `\|_sim_seconds - (_abs_unix + TZ_SECONDS)\|` | 0 | ≤0.01s |
+| `_update_lighting` 与同一 `_sim_seconds` 的 `IsleAstro.compute` | 0（≤1e-9°） | 逐位一致 |
+| 切时区后生产路径太阳位置 max dalt / daz | 0.000059° / 0.000692° | ≤0.05° |
+| 连续切换上海→纽约天体位置差 | 0 / 0 | ≤0.05° |
+| 显示墙钟按 offset 换算误差 | 0.00min（上海 23:51 / 东京 00:51 / 纽约 11:51） | ≤1min |
 
-建议 patch（待 Lead 决定；本探针/本报告未改源码）：
-- real 模式向天文层传 `_abs_unix + 28800`（或让 isle_astro 接收 Unix 时间戳直接算 jd）；
-- `_local_seconds_to_display_text` 的 real 分支改为与 sim 分支同式：`local - 28800 + 所选偏移`；
-- 同步修改 `main.gd` _selftest 第 24 项（其当前断言 sky == 显示时区墙上时刻，与该语义一致但与“地理不变”冲突）。
+旧映射（`unix + 显示偏移` 直接灌天文层）保留为 `[INFO]` 反事实对照，仍打印 66.1445°/179.2974°，仅作修复前 bug 证据，不计入 known_bug。
 
-状态：**未修复/未验证修复**（不在本 teammate scope；isle_astro.gd 本身在所有交叉校验中通过）。模拟模式下该问题不存在（通过）。
+**探针 B8 修正（test-only，FREEZE 例外）**：原 B8 由探针按旧 main.gd 公式自行构造 `_sim_seconds`，无论 main.gd 是否修复都必然报 KNOWN-BUG（known_bug 无法归零）。现 B8 改为两段生产路径行为测试：段①廉价时钟段（`_advance_sim` + `_display_datetime`，不调 `_update_lighting`，避免重渲染 50ms 级开销放大系统时钟读数漂移）→ 跨时区时钟/墙钟语义；段②生产渲染段（`_advance_sim` + `_update_lighting`）→ 场景太阳位置与 compute 一致性/不变性。旧映射仅作 `[INFO]`。仅改测试文件，未改任何游戏源码，断言只加严（跨时区 ≤0.1s、位置 ≤0.05°、scene-vs-compute ≤1e-9）。
 
 ## 9. 通过 / 未通过 / 未验证清单
 
@@ -225,17 +230,17 @@ cat 开发产物/logs/astro/compare_t7.log   # 期望末行 [RESULT] PASS
 - 太阳：57 日期（含二分二至）升落/正午/方位/高度/时角，双参考交叉一致；采样点；跨日缓存与日界；1s/60s 连续性；现实/模拟两模式的时间驱动。
 - 月亮：升落求根、高度/方位（含地平线下 alt<0 样本）、照度、相位角、地心距、视半径、50 四相、相位-位置解耦、跨午夜（多日升落查询）、±60s 无突跳。
 - 时间系统：十档流速、灯塔、天空/调色、炊烟双窗、小船休息、海鸥迟滞、音频交叉淡化、B9 协调性。
+- 现实时间时区语义（修复 a43ca8c）：生产路径 `_advance_sim`/`_update_lighting` 跨时区时钟、天体位置与显示墙钟换算，见 §8。
 - 参考口径：NOAA vs AE 方向夹角 ≤0.01465°；AE 站心距 vs 地心距差 ≤ 地球半径（几何自检通过）。
 
 **未通过**
-- 无天文模型断言失败（探针 2481/2481 pass，比对器 46/46 类别 PASS）。
-- 唯一缺陷：[KNOWN-BUG] real 模式时区显示影响天体位置（§8，main.gd 侧，未修复）。
+- 无（探针 2489/2489 pass、known_bug=0，比对器 46/46 类别 PASS；§8 main.gd real 模式时区缺陷已由 a43ca8c 修复并通过生产路径回归）。
 
 **未验证 / 局限**
 - 绝对真值精度未验证：本报告只证明与 NOAA/AE 的一致性，不能宣称近似星历达到角秒级；模型本身是截断级数（太阳 NOAA 中低阶项；月亮 Meeus 47.A/47.B 60 项 + 视差），固有误差量级 1e-2° / 0.1s 级，与实测一致。
 - 未做真实天空实测（无星表/观测基准）；未验证长年代（仅 2026；探针 A6 用 2027 冷启动仅测性能）；未验证极地/高纬（地点固定广州）。
 - 未验证窗口内视觉表现（本报告不涉及截图/罗盘渲染；视觉项由 Lead 的 verify-visual 负责）。
-- 未验证 real 模式时区缺陷修复后的行为（等 Lead patch 后需回归）。
+- real 模式时区缺陷修复后的行为已由 B8 生产路径测试回归（§8）；`main.gd` 其它 UI 路径未逐一覆盖。
 - 月落 2/57 日期参考缺失（AE 当日无本地月落），已计入 knownLimits。
 - NOAA 正午高度为 1min 网格，非连续参考；其 0.0643° 偏差是量化而非模型误差。
 - ΔT / UT1-UTC 未单独建模（固定在简化 jd；对秒级时间结果影响小于容差，未单独量化）。
@@ -244,15 +249,19 @@ cat 开发产物/logs/astro/compare_t7.log   # 期望末行 [RESULT] PASS
 
 | 路径 | 内容 |
 | --- | --- |
-| `开发产物/logs/astro/probe_t7.log` | 探针完整输出（587KB，RAW/RAWN/RAWT/RAWP + 2481 断言 + KNOWN-BUG 证据） |
+| `开发产物/logs/astro/probe_t7_final.log` | **修复后最终回归**探针完整输出（2489 断言、known_bug=0、684 RAW 行；Phase A 37569ms / Phase B 约 9.2s） |
+| `开发产物/logs/astro/compare_t7_final.txt` | 最终比对输出（46 类 PASS + 1 INFO；EXIT=0） |
+| `开发产物/logs/astro/raw_old.txt` / `raw_final.txt` / `raw_diff.txt` | Phase A 684 行 RAW 修复前后 diff（0 行差异，证明 test-only 改动零影响） |
+| `开发产物/logs/astro/probe_t7_bonly_final.log` | B-only 快速回归（Phase B：139 pass / 0 fail / known_bug=0） |
+| `开发产物/logs/astro/probe_t7.log` | 修复前基线完整输出（2481 断言 + KNOWN-BUG 证据，历史对照） |
+| `开发产物/logs/astro/b8_newblock2.txt` / `patch_b8_2.js` | B8 生产路径测试补丁文本与拼接脚本（test-only，可复现） |
 | `开发产物/logs/astro/gen_ref_t7.js` | 参考数据生成器（NOAA + astronomy-engine） |
 | `开发产物/logs/astro/ref_t7.json` | 参考数据（57 日期 + 50 四相，含 moon_dist_geo_km） |
 | `开发产物/logs/astro/compare_t7.js` | 比对器（容差表 + 判据） |
-| `开发产物/logs/astro/compare_t7.log` | 比对结果（46 类 PASS + 1 INFO） |
 | `开发产物/logs/astro/compare_t7_summary.json` | 机读汇总（每类 n/mean/max/maxAt/tol/ok） |
 
-被测代码版本：`scripts/isle_astro.gd`（本轮未修改）；探针：`tools/probe_astro_xcheck_t7.gd`。
+被测代码版本：`scripts/isle_astro.gd`（本轮未修改）；探针：`tools/probe_astro_xcheck_t7.gd`（test-only 例外：B8 生产路径测试）；回归代码 HEAD：`55a8d73`（含 `a43ca8c` 修复）。
 
 ## 11. 结论
 
-在当前源码上，太阳/月亮近似模型与 NOAA 官方算法、astronomy-engine 2.1.19 在预设容差内一致（时间 ≤0.07min 量级、角度 ≤0.02° 量级、地心距 ≤24km），相位与位置解耦、升落求根、跨日/连续性、时间系统各驱动项均通过回归。**不需要重写天文学模型**。唯一确证缺陷在 `main.gd` 的现实时间时区处理：显示时区不应改变天体地理位置，建议按 §8 patch 后再回归 B8。
+在当前源码（HEAD 55a8d73）上，太阳/月亮近似模型与 NOAA 官方算法、astronomy-engine 2.1.19 在预设容差内一致（时间 ≤0.07min 量级、角度 ≤0.02° 量级、地心距 ≤24km），相位与位置解耦、升落求根、跨日/连续性、时间系统各驱动项均通过回归；修复后探针 2489/2489 pass、known_bug=0，比对器 46/46 PASS。**不需要重写天文学模型**。唯一确证缺陷在 `main.gd` 现实时间时区处理（已由 a43ca8c 修复：天文/生态时钟固定参考时区、显示时区只改文本），B8 已改为生产路径行为测试并通过回归（跨时区 |dsim|≤0.042s、天体位置差 ≤0.0007°）。报告仍只声称「与两独立参考实现的交叉一致度」，不宣称绝对真值精度。
