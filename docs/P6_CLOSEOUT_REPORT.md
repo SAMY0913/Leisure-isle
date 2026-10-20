@@ -300,7 +300,7 @@ VRAM q2 ≈ 350–352MB（历史 348.5–350.5MB），objects/draw_calls 与历�
 
 ### 10.2 未通过 / 未解决（已量化、留证）
 - **（原 P0 候选，已解除）导出 exe 退出 0xC0000374**：修复前试导出包/旧发布包曾复现；加入 FX 池释放修复后，FREEZE 构建与最终发布包的退出码矩阵（selftest×2 / perf / quit / 窗口 selftest）**全部 EXIT=0，未再复现**。保留历史崩溃材料 `开发产物/release_verify/crash_evidence/`，建议下阶段在 WER dump 可用时做一次符号化确认（非阻塞，§7.4）。
-- `--quality N` 命令行参数在启动时被 `_apply_user_settings` 重置为存档值/默认 2（P2 测试工具缺陷）：`main.gd` 先在 `_ready` 读取命令行写入 `_quality`，随后 `_apply_user_settings(false)` 又按 `Settings.sanitize_quality(_settings.get("quality", 2))` 覆盖。只影响 `--perf --quality N` 这一测试入口；玩家路径与五档循环数据（`_run_perf` 内部 `_apply_quality(4..0)`）不受影响。修复方法：在 `_apply_user_settings` 质量赋值后重读 `_cmdline_value("--quality")`，冻结后未改代码（§12.2）。
+- `--quality N` 命令行参数在启动时被 `_apply_user_settings` 重置为存档值/默认 2（P2 测试工具缺陷）：`main.gd` 先在 `_ready` 读取命令行写入 `_quality`，随后 `_apply_user_settings(false)` 又按 `Settings.sanitize_quality(_settings.get("quality", 2))` 覆盖。只影响 `--perf --quality N` 这一测试入口；玩家路径与五档循环数据（`_run_perf` 内部 `_apply_quality(4..0)`）不受影响。修复方法：在 `_apply_user_settings` 质量赋值后重读 `_cmdline_value("--quality")`。**决策：冻结期不修**——该修改会改变发布字节，需重新导出并重跑整套发布验收，而缺陷不影响玩家路径与默认渲染；列下阶段任务（§12.2）。
 - 导出 exe 退出期偶发 `WARNING: 4 ObjectDB instances were leaked at exit`（FREEZE 矩阵 selftest_2 / perf_1 各一次，退出码 0）：源码工程与发布位置复测均未出现；与 headless Dummy 音频退出竞态同类，属引擎退出诊断，已留证，不影响可执行性（§7.4）。
 - headless Dummy 音频退出竞态 8 对象 + Orphan StringName：引擎侧，应用清理无效（实测），仅日志告警、不影响退出码；保留证据（§7.4）。
 - probe_fx_p4 鸟群起飞/降落 1 项 FAIL：基线 `8f80b13` 已复现，既有行为回归，非本轮引入；是否修需玩法口径（§7.5）。
