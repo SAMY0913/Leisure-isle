@@ -50,7 +50,7 @@
 
 - 原实现仅门廊左侧一盏吊灯（local -2.80, 3.20, 6.55），light_sources range 6.5 / intensity 1.35，halo 基底 2.10 → 夜景偏亮成光球。
 - 现实现：**左右镜像两盏**（±2.80, 3.20, 6.55），同一 `lantern_mat`；灯体 0.30×0.40×0.30、上盖 0.38×0.06×0.38、下盖 0.36×0.05×0.36、吊杆 cyl 0.018×0.52；halo 基底 1.10（main.gd 统一 ×0.55）；light_sources 两条各 range 6.0 / intensity 1.05 / color (1, 0.78, 0.48)。main.gd 由单 `_lantern_halo` 改为 `_lantern_halos` 数组逐个写 albedo，保持昼夜 glow 公式不变。
-- 亮度参照：world 路灯 intensity 1.35 / range 7.5 / halo 1.18；门廊灯与其同视觉等级；夜景截图无过曝、左右对称、墙面/门板/台阶层次可辨（`porch_wide_night.png`、`lamp_left_night.png`、`lamp_right_night.png`；黄昏 `porch_wide_dusk.png` 未点亮，符合既有昼夜系统）。
+- 亮度参照：world 路灯 intensity 1.35 / range 7.5 / halo 1.18；门廊灯与其同视觉等级；夜景截图无过曝、左右对称、墙面/门板/台阶层次可辨（`开发产物/p7v3/shots/door/porch_wide_night.png`、`lamp_left_night.png`、`lamp_right_night.png`；黄昏 `porch_wide_dusk.png` 未点亮，符合既有昼夜系统）。
 - 灯光预算说明：toon/grass shader 上限 12 盏，默认画质 budget=9（6 盏路灯 + 灯塔 + 室内吊灯 + 阁楼灯1 已占满），门廊两盏 1.05 不在解析光预算内；V2 默认画质下单盏 1.35 同样排不进（1.65/1.6/1.5 之后已满），故默认画质无回归；最高画质 budget=12 时 V2 曾有 1 盏进入，现两盏 1.05 均排在 fireplace(1.3) 之后未进入——门廊亮度由灯体 self_lit + halo 承担，夜景截图正常。若后续需要在最高画质恢复动态光，最小改动是合并为位于 ±2.80 中点的一个 shared light source（energy≈1.36）。
 
 ## 5. 任务 C：自由视角键位、速度与点击交互
