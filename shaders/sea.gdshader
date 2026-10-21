@@ -61,6 +61,12 @@ global uniform vec3 g_spot_origin;
 global uniform vec3 g_spot_dir;
 global uniform vec4 g_spot_color;
 global uniform vec4 g_spot_params;
+// P8 阶段 6：天气共享参数（雨势/风暴/风力；海面只做低成本增强，不改 7 组波系数——
+// isle_waves.gd 的 CPU 波高与船体浮力严格同源，wave_height/wave_detail 必须保持原契约）
+global uniform vec4 g_weather;
+global uniform vec4 g_weather2;
+global uniform vec4 g_wind_dir;
+global uniform float g_lightning; // 闪电瞬时亮度 0..1（海面整体泛光）
 
 float hash12(vec2 p) {
 	vec3 p3 = fract(vec3(p.xyx) * 0.1031);
@@ -372,6 +378,15 @@ void fragment() {
 	foam_shore += smoothstep(0.82, 0.97, fn2) * exp(-max(depth - 0.4, 0.0) * 1.6) * 0.30;
 	float foam_crest = smoothstep(0.54, 0.90, (h / max(0.15, wave_height)) + (fn2 - 0.5) * 0.35);
 	float foam = clamp(foam_shore + foam_crest * 0.24, 0.0, 1.0) * foam_amount;
+	// 天气增强：有风→额外白浪帽；风暴→泡沫整体增多（台风是复合事件，不是黑屏滤镜）
+	float wind_f = clamp(g_weather2.z, 0.0, 1.0);
+	float storm_f = clamp(g_weather2.y, 0.0, 1.0);
+	if (wind_f > 0.22) {
+		float fn_white = fbm3(wp * 1.9 - vec2(t * 0.34, -t * 0.21) + 31.0);
+		float crest2 = smoothstep(0.50 - storm_f * 0.16, 0.92, h / max(0.15, wave_height) + (fn_white - 0.5) * 0.55 + storm_f * 0.10);
+		foam = clamp(foam + crest2 * smoothstep(0.22, 0.95, wind_f) * (0.26 + 0.24 * storm_f) * foam_amount, 0.0, 1.0);
+	}
+	foam = clamp(foam * (1.0 + storm_f * 0.62), 0.0, 1.0);
 	if (sea_foam_detail > 0.5) {
 		// 泡沫二层：把边缘打散成絮状，避免一条硬边
 		float fn3 = fbm3(wp * 3.10 - vec2(t * 0.16, t * 0.08) + 21.0);
@@ -389,6 +404,18 @@ void fragment() {
 	float foam_light = clamp(0.32 + clamp(sun_i, 0.0, 1.5) * 0.42 + clamp(moon_i, 0.0, 1.2) * 0.10, 0.10, 1.0);
 	col = mix(col, water_foam.rgb * foam_light, clamp(foam, 0.0, 1.0) * 0.60);
 	col *= 1.0 + 0.06 * clamp(sun_i, 0.0, 2.0) * (1.0 - foam);
+	// 雨点打在水面的细碎涟漪/亮点（低成本噪声，不建逐滴碰撞）
+	float rain_f = clamp(g_weather.x, 0.0, 1.0);
+	if (rain_f > 0.01) {
+		vec2 rp = wp * 3.4 + vec2(t * 0.72, -t * 0.94);
+		float ring = vnoise(rp) * vnoise(rp * 1.73 + 11.0);
+		float rimp = smoothstep(0.52, 0.94, ring);
+		col += water_foam.rgb * rimp * rain_f * 0.055 * (0.55 + 0.45 * clamp(sun_i, 0.0, 1.5));
+	}
+	// 风暴压暗水面，避免台风天海面比天空还亮
+	col *= 1.0 - storm_f * 0.18;
+	// 闪电：海面被瞬时照亮（按水色提亮，不做整屏白闪）
+	col += (col * 0.35 + water_foam.rgb * 0.05) * g_lightning;
 
 	// 远处雾气 + 8bit 抖动
 	float dist = length(CAMERA_POSITION_WORLD - wpos);

@@ -878,9 +878,9 @@ static func petals(parent: Node3D, pos: Vector3) -> Dictionary:
 static func leaves(parent: Node3D, pos: Vector3) -> Dictionary:
 	var p := GPUParticles3D.new()
 	p.name = "Leaves"
-	p.amount = 64
-	p.lifetime = 10.0
-	p.preprocess = 8.0
+	p.amount = 96
+	p.lifetime = 9.0
+	p.preprocess = 6.0
 	p.emitting = false
 	p.position = pos
 	p.visibility_aabb = AABB(Vector3(-14, -14, -14), Vector3(28, 18, 28))
@@ -889,13 +889,13 @@ static func leaves(parent: Node3D, pos: Vector3) -> Dictionary:
 	pm.spread = 70.0
 	pm.initial_velocity_min = 0.05
 	pm.initial_velocity_max = 0.32
-	pm.gravity = Vector3(0.10, -0.18, 0.05)
+	pm.gravity = Vector3(0.10, -0.55, 0.05)
 	pm.scale_min = 0.6
 	pm.scale_max = 1.25
 	pm.angular_velocity_min = -160.0
 	pm.angular_velocity_max = 160.0
 	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_SPHERE
-	pm.emission_sphere_radius = 4.4
+	pm.emission_sphere_radius = 3.6
 	var grad := Gradient.new()
 	grad.offsets = PackedFloat32Array([0.0, 0.12, 0.82, 1.0])
 	grad.colors = PackedColorArray([Color(1, 1, 1, 0.0), Color(1, 1, 1, 0.95), Color(1, 1, 1, 0.85), Color(1, 1, 1, 0.0)])
@@ -904,7 +904,7 @@ static func leaves(parent: Node3D, pos: Vector3) -> Dictionary:
 	pm.color_ramp = gt
 	p.process_material = pm
 	var quad := QuadMesh.new()
-	quad.size = Vector2(0.30, 0.20)
+	quad.size = Vector2(0.36, 0.24)
 	var mat := StandardMaterial3D.new()
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
@@ -917,7 +917,8 @@ static func leaves(parent: Node3D, pos: Vector3) -> Dictionary:
 	quad.material = mat
 	p.draw_pass_1 = quad
 	parent.add_child(p)
-	return {"node": p, "mat": mat}
+	# pm 一并返回：main 每帧按共享风场改 direction/gravity，让落叶随风漂而不是固定方向
+	return {"node": p, "mat": mat, "pm": pm}
 
 ## 32×32 程序化叶片贴图：两头尖、主脉略暗；不引入任何外部贴图资产。
 static func leaf_texture() -> ImageTexture:
@@ -927,7 +928,8 @@ static func leaf_texture() -> ImageTexture:
 		for x in range(size):
 			var nx := (float(x) + 0.5) / float(size) * 2.0 - 1.0
 			var ny := (float(y) + 0.5) / float(size) * 2.0 - 1.0
-			var wdt := maxf(0.0, 1.0 - absf(ny) * 1.15)
+			# 叶片轮廓：椭圆主体 + 两端收尖（不再是菱形），避免落叶近看像纸片方块
+			var wdt := pow(maxf(0.0, 1.0 - ny * ny), 0.62) * 0.92
 			var a := 1.0 if absf(nx) <= wdt else 0.0
 			var shade := 0.82 + 0.18 * (1.0 - absf(nx) / maxf(wdt, 0.001))
 			img.set_pixel(x, y, Color(shade, shade, shade, a))

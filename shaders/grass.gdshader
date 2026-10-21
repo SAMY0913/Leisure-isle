@@ -11,6 +11,11 @@ global uniform vec4 g_fog_color : source_color;
 global uniform float g_fog_near;
 global uniform float g_fog_far;
 global uniform float g_wind_time;
+// P8 阶段 6：天气共享参数
+global uniform vec4 g_weather;    // x rain, y snow, z wetness, w snow_cover
+global uniform vec4 g_weather2;   // x cloud, y storm, z wind, w indoor
+global uniform vec4 g_wind_dir;   // x/z 风向，z 风力 0..1
+global uniform float g_lightning; // 闪电瞬时亮度 0..1（雷暴/台风；与天空同一来源）
 global uniform float g_light_count;
 global uniform vec4 g_l0_pos;
 global uniform vec4 g_l0_col;
@@ -45,8 +50,11 @@ void vertex() {
 	vec3 origin = MODEL_MATRIX[3].xyz;
 	float ph = g_wind_time * 1.9 + origin.x * 0.37 + origin.z * 0.29;
 	float sway = sin(ph) * 0.55 + sin(ph * 2.3 + 1.7) * 0.18;
-	v.x += sway * h * h * 0.42 * wind;
-	v.z += cos(ph * 0.81) * h * h * 0.26 * wind;
+	// 天气风力：小风保持原来的轻晃，大风/台风时摆幅明显加大并整体偏向风向。
+	float wg = 0.55 + clamp(g_wind_dir.z, 0.0, 1.0) * 1.25;
+	float gust = 0.88 + 0.22 * sin(g_wind_time * 0.61 + origin.z * 0.5);
+	v.x += (sway * h * h * 0.42 * wg + g_wind_dir.x * clamp(g_wind_dir.z, 0.0, 1.0) * h * h * 0.30) * wind * gust;
+	v.z += (cos(ph * 0.81) * h * h * 0.26 * wg + g_wind_dir.y * clamp(g_wind_dir.z, 0.0, 1.0) * h * h * 0.30) * wind * gust;
 	v.y *= 1.0;
 	VERTEX = v;
 	v_uv = UV;
@@ -67,6 +75,9 @@ void fragment() {
 	float ndl = dot(Nw, normalize(g_sun_dir_view)) * 0.5 + 0.5;
 	float cel = smoothstep(0.25, 0.85, ndl);
 	vec3 base = tint.rgb * v_lcol * tx.rgb * (0.6 + 0.4 * v_h);
+	// 湿润压暗 + 积雪时草叶发白（深雪时 main 会进一步降低草材质透明度，露出一片雪地）
+	base *= 1.0 - clamp(g_weather.z, 0.0, 1.0) * 0.22;
+	base = mix(base, vec3(0.90, 0.93, 1.0), clamp(g_weather.w, 0.0, 1.0) * 0.55);
 	vec3 ambient = mix(g_ambient_ground.rgb, g_ambient_sky.rgb, 0.72) * 0.62;
 	float moon = max(dot(Nw, normalize(g_moon_dir_view)), 0.0);
 	vec3 col = base * (ambient + g_sun_color.rgb * cel * 0.78 + g_moon_color.rgb * moon * 0.22);
@@ -96,7 +107,9 @@ void fragment() {
 	float fres = pow(1.0 - clamp(dot(Nw, V), 0.0, 1.0), 2.0);
 	col += g_sun_color.rgb * fres * 0.10;
 	float dist = length(CAMERA_POSITION_WORLD - v_world);
-	col = mix(col, g_fog_color.rgb, smoothstep(g_fog_near, g_fog_far, dist) * 0.8);
+	float fogf = smoothstep(g_fog_near, g_fog_far, dist) * 0.8;
+	col = mix(col, g_fog_color.rgb, fogf);
+	col += (base * 0.36 + vec3(0.016, 0.020, 0.028)) * g_lightning * (1.0 - fogf * 0.85);
 	ALBEDO = col;
 	ALPHA = tx.a * transparency;
 	ALPHA_SCISSOR_THRESHOLD = 0.34;

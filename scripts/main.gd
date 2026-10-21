@@ -10,6 +10,7 @@ const P8_SHOTS_DIR := "D:/休闲小岛幻境/开发产物/p8/shots/"
 const P8_MOON_DIR := "D:/休闲小岛幻境/开发产物/p8/moon/"
 const P8_SEASON_DIR := "D:/休闲小岛幻境/开发产物/p8/seasons/"
 const P8_WEATHER_DIR := "D:/休闲小岛幻境/开发产物/p8/weather/"
+const P8_WFX_DIR := "D:/休闲小岛幻境/开发产物/p8/weatherfx/"
 const VIGNETTE_SHADER := "res://shaders/vignette.gdshader"
 const SKY_SHADER := "res://shaders/sky.gdshader"
 const SEA_SHADER := "res://shaders/sea.gdshader"
@@ -22,6 +23,8 @@ const ISLE_VILLAGER := preload("res://scripts/isle_villager.gd")
 const ISLE_CALENDAR := preload("res://scripts/isle_calendar.gd")
 # P8 阶段 4：季节视觉参数表（纯函数；只把日历季节权重换成颜色/稀疏度/落叶量，不新建环境系统）。
 const ISLE_SEASON := preload("res://scripts/isle_season.gd")
+# P8 阶段 6：天气视觉（降水粒子工厂；只创建一次，运行期只改参数，不重建几何）。
+const ISLE_WEATHER_FX := preload("res://scripts/isle_weather_fx.gd")
 
 # ---- 灯塔旋转 / 光束参数（真实旋转透镜参考：Kīlauea Point 约 20 秒一圈，用作基础周期配置项） ----
 const LIGHTHOUSE_ROTATION_PERIOD := 20.0   # 秒/圈（1× 时间流速下的基础周期）
@@ -51,6 +54,8 @@ var _p8shots := false
 var _p8moon := false      # --p8moon：八相月球专项截图（固定日期样本，不依赖现实时间）
 var _p8seasons := false   # --p8seasons：四季视觉专项截图（固定日期样本）
 var _p8weather := false   # --p8weather：天气面板与天气状态专项截图（固定日期样本）
+var _p8wfx := false       # --p8wfx：天气视觉专项截图（雨/雪/台风/室内/低画质，固定日期样本）
+var _p8perf := false      # --p8perf：天气视觉性能对比（晴/阴/雨/雷暴/雪/台风 × 画质档）
 var _p8_moon_clear := false   # 月相诊断截图：临时清空云层，避免云遮住月盘判相
 
 # ---- 时间 ----
@@ -88,6 +93,15 @@ var _weather_snow := 0.0
 var _weather_storm := 0.0
 var _weather_wetness := 0.0
 var _weather_snow_depth := 0.0
+# 阶段 6：天气视觉（降水粒子 + 共享 uniform 的连续参数）
+var _weather_fx: Dictionary = {}
+var _weather_visual_wind := 0.0      # 平滑后的风力 0..1（避免天气切换时草树摆动突变）
+var _weather_indoor := 0.0          # 相机在小屋内部的程度 0..1（降水淡出；0.3s 平滑）
+var _lightning_flash := 0.0         # 闪电瞬时亮度 0..1（雷暴/台风的视觉身份；暂停冻结，不参与权威模拟）
+var _lightning_clock := 0.0         # 闪电累计时钟（只在模拟推进时增长）
+var _lightning_wait := 2.5          # 距下一次闪电的秒数（仅视觉，随机间隔）
+var _weather_gloom := 0.0           # 云量/风暴合成的阴天程度 0..1
+var _weather_wind_dir_smooth := Vector2(0.0, -1.0)
 
 # ---- 天文 / 主题 ----
 var _astro: Dictionary = {}
@@ -296,7 +310,9 @@ func _ready() -> void:
 	_p8moon = "--p8moon" in OS.get_cmdline_args() or "--p8moon" in OS.get_cmdline_user_args()
 	_p8seasons = "--p8seasons" in OS.get_cmdline_args() or "--p8seasons" in OS.get_cmdline_user_args()
 	_p8weather = "--p8weather" in OS.get_cmdline_args() or "--p8weather" in OS.get_cmdline_user_args()
-	_shots = "--shots" in OS.get_cmdline_args() or "--shots" in OS.get_cmdline_user_args() or _p7shots or _p8shots or _p8moon or _p8seasons or _p8weather
+	_p8wfx = "--p8wfx" in OS.get_cmdline_args() or "--p8wfx" in OS.get_cmdline_user_args()
+	_p8perf = "--p8perf" in OS.get_cmdline_args() or "--p8perf" in OS.get_cmdline_user_args()
+	_shots = "--shots" in OS.get_cmdline_args() or "--shots" in OS.get_cmdline_user_args() or _p7shots or _p8shots or _p8moon or _p8seasons or _p8weather or _p8wfx
 	_transition = "--transition" in OS.get_cmdline_args() or "--transition" in OS.get_cmdline_user_args()
 	_selftest = "--selftest" in OS.get_cmdline_args() or "--selftest" in OS.get_cmdline_user_args()
 	_perf = "--perf" in OS.get_cmdline_args() or "--perf" in OS.get_cmdline_user_args()
@@ -305,11 +321,11 @@ func _ready() -> void:
 	# 岛民自主开门会引入真实竞态，故自测时不创建岛民；岛民自身由 P7-V4 专用探针覆盖。
 	if _selftest:
 		_no_villager = true
-	if _perf:
+	if _perf or _p8perf:
 		DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
 	# 读取用户设置：菜单、时钟、画质、音量、窗口模式共用同一份数据。
 	# 自动化运行（截图/性能/自测/转场）使用默认设置，保证结果可复现且不受玩家配置影响。
-	var automation := _shots or _perf or _selftest or _transition or _p7shots or _p8shots or _p8moon or _p8seasons or _p8weather
+	var automation := _shots or _perf or _selftest or _transition or _p7shots or _p8shots or _p8moon or _p8seasons or _p8weather or _p8wfx or _p8perf
 	_settings = Settings.defaults() if automation else Settings.load_settings()
 	_setup_time_api()
 	_time_source = String(_settings.get("time_source", "sim"))
@@ -362,6 +378,10 @@ func _ready() -> void:
 		_run_p8seasonshots()
 	elif _p8weather:
 		_run_p8weathershots()
+	elif _p8wfx:
+		_run_p8wfxs()
+	elif _p8perf:
+		_run_p8perf()
 	elif _p7shots:
 		_run_p7shots()
 	elif _shots:
@@ -433,6 +453,15 @@ func _setup_globals() -> void:
 	_add_global("g_fog_near", RenderingServer.GLOBAL_VAR_TYPE_FLOAT)
 	_add_global("g_fog_far", RenderingServer.GLOBAL_VAR_TYPE_FLOAT)
 	_add_global("g_wind_time", RenderingServer.GLOBAL_VAR_TYPE_FLOAT)
+	# P8 阶段 6：天气共享参数（所有 toon/grass/sea/sky 共用；只注册一次）
+	# g_weather = (rain, snow, wetness, snow_cover)
+	_add_global("g_weather", RenderingServer.GLOBAL_VAR_TYPE_VEC4)
+	# g_weather2 = (cloud, storm, wind, indoor)
+	_add_global("g_weather2", RenderingServer.GLOBAL_VAR_TYPE_VEC4)
+	# g_wind_dir = (dir_x, dir_z, strength, gust_phase)
+	_add_global("g_wind_dir", RenderingServer.GLOBAL_VAR_TYPE_VEC4)
+	# g_lightning：闪电瞬时亮度 0..1（sky/toon/grass/sea 共用，同一来源）
+	_add_global("g_lightning", RenderingServer.GLOBAL_VAR_TYPE_FLOAT)
 	_add_global("g_outline_color", RenderingServer.GLOBAL_VAR_TYPE_COLOR)
 	RenderingServer.global_shader_parameter_set("g_outline_color", Color(0.12, 0.13, 0.17))
 	# 局部灯光（unshaded toon 材质不吃引擎灯光，这里自算最多 6 盏，见 toon.gdshader）
@@ -561,7 +590,7 @@ func _build_world() -> void:
 	_fx["fireflies"] = IsleFx.fireflies(fx_holder, Vector3(-3.0, 2.0, 3.5))
 	_fx["petals"] = IsleFx.petals(fx_holder, Vector3(IsleMath.BIG_TREE_X, 5.0, IsleMath.BIG_TREE_Z))
 	# P8 四季：秋叶（同一树冠附近缓慢飘落；由季节权重控制开关/密度，不为每片叶建节点）。
-	_fx["leaves"] = IsleFx.leaves(fx_holder, Vector3(IsleMath.BIG_TREE_X, 6.4, IsleMath.BIG_TREE_Z))
+	_fx["leaves"] = IsleFx.leaves(fx_holder, Vector3(IsleMath.BIG_TREE_X, 13.6, IsleMath.BIG_TREE_Z))
 	_ripples = IsleFx.Ripples.new()
 	_ripples.name = "Ripples"
 	fx_holder.add_child(_ripples)
@@ -590,6 +619,8 @@ func _build_world() -> void:
 		_villager = ISLE_VILLAGER.build(holder, _cottage)
 	# P8 四季：建立季节视觉条目（复制材质，避免污染 isle_math 的全局材质缓存）。
 	_setup_season_visuals()
+	# P8 阶段 6：建立天气视觉（雨/雪粒子只建一次；运行期只改 amount_ratio/emitting/材质参数）。
+	_setup_weather_fx()
 
 # ============================================================
 # 相机
@@ -1070,6 +1101,254 @@ func _apply_weather_view() -> void:
 	_weather_snow = p_int if ptype == "snow" else 0.0
 	var wdir := deg_to_rad(float(_weather_state.get("wind_dir", 135.0)))
 	_weather_wind_dir = Vector2(sin(wdir), -cos(wdir))
+	# 积雪覆盖到一定程度后，草叶逐渐淡出，露出被 toon 积雪覆盖的地面（不做逐帧几何替换）。
+	var snow_t := clampf(_weather_snow_depth, 0.0, 1.0)
+	var grass_alpha := 1.0 - smoothstep(0.16, 0.58, snow_t) * 0.92
+	for item in _grass_season_mats:
+		(item["mat"] as ShaderMaterial).set_shader_parameter("transparency", grass_alpha)
+
+# ============================================================
+# P8 阶段 6：天气视觉（降水粒子 + 共享 uniform）
+# ============================================================
+const WEATHER_FX_FOLLOW := 34.0    # 降水区域水平跟随相机的夹紧半径（米）
+
+## 创建降水粒子（雨/雪各一个 GPUParticles3D；只建一次）。
+func _setup_weather_fx() -> void:
+	_weather_fx = ISLE_WEATHER_FX.build(self)
+	for key in ["rain", "snow"]:
+		var entry: Dictionary = _weather_fx.get(key, {})
+		var node := entry.get("node", null) as GPUParticles3D
+		if node != null:
+			entry["base_y"] = node.position.y
+	_place_weather_drips()
+	print("[WEATHERFX] rain=%d snow=%d drip=%d splash=%d" % [
+		int((_weather_fx.get("rain", {}).get("base_amount", 0))),
+		int((_weather_fx.get("snow", {}).get("base_amount", 0))),
+		int((_weather_fx.get("drip", {}).get("base_amount", 0))),
+		int((_weather_fx.get("splash", {}).get("base_amount", 0)))])
+
+## 屋檐滴水线：按小屋主体遮挡盒 + 正面方向摆到正面屋檐外侧（只建一次）。
+func _place_weather_drips() -> void:
+	var entry: Dictionary = _weather_fx.get("drip", {})
+	var node := entry.get("node", null) as GPUParticles3D
+	if node == null or _cottage.is_empty():
+		return
+	var raw: Variant = _cottage.get("beam_occluders", [])
+	if not (raw is Array) or (raw as Array).is_empty():
+		return
+	var b: Variant = (raw as Array)[0]
+	if not (b is Dictionary):
+		return
+	var bd: Dictionary = b
+	var center: Vector3 = bd.get("center", Vector3.ZERO)
+	var half: Vector3 = bd.get("half", Vector3.ZERO)
+	var yaw := float(bd.get("yaw", 0.0))
+	# 小屋世界旋转 = -yaw；局部 +Z 为正面，旋转后正面方向 = (sin θ, 0, cos θ)
+	var rot_y := -yaw
+	var front := Vector3(sin(rot_y), 0.0, cos(rot_y))
+	# 主体盒顶面 = 檐口（roof_base），屋顶前坡外挑约 0.5m、檐口比主体盒顶低约 0.33m。
+	# 滴水线必须放在屋顶外挑边缘，否则会被屋顶挡住，从正面完全看不到。
+	var eave := center + front * (half.z + 0.46)
+	eave.y = center.y + half.y - 0.33
+	node.position = eave
+	node.rotation.y = rot_y
+	var pm := entry.get("pm", null) as ParticleProcessMaterial
+	if pm != null:
+		pm.emission_box_extents = Vector3(half.x + 0.42, 0.05, 0.16)
+	entry["placed"] = true
+
+## 每帧推进天气视觉：平滑风、室内判定、粒子跟随/密度/颜色、共享 shader uniform。
+## 这里不改变天气状态，也不新建权威时间；所有参数都来自 _weather_* 投影。
+func _update_weather_fx(delta: float) -> void:
+	if _weather_fx.is_empty():
+		return
+	var advancing := _mode == Mode.PLAYING and (not _paused or _time_source == "real")
+	_weather_visual_wind = lerpf(_weather_visual_wind, clampf(_weather_wind, 0.0, 1.0), 1.0 - exp(-1.6 * delta))
+	var target_dir := _weather_wind_dir
+	if target_dir.length_squared() < 0.0001:
+		target_dir = Vector2(0.0, -1.0)
+	target_dir = target_dir.normalized()
+	var smoothed := _weather_wind_dir_smooth.lerp(target_dir, 1.0 - exp(-0.9 * delta))
+	_weather_wind_dir_smooth = smoothed.normalized() if smoothed.length_squared() > 0.0001 else target_dir
+	_weather_gloom = clampf(_weather_cloud * 0.62 + _weather_storm * 0.5 - 0.06, 0.0, 1.0)
+	# 相机在小屋实体盒内 → 室内程度 0→1（平滑），降水随之淡出，避免雨雪穿过屋顶盖在室内画面上
+	var indoor_target := 1.0 if _camera_inside_cottage() else 0.0
+	_weather_indoor = lerpf(_weather_indoor, indoor_target, 1.0 - exp(-8.0 * delta))
+	var cp := _cam.global_position
+	var follow := Vector2(clampf(cp.x, -WEATHER_FX_FOLLOW, WEATHER_FX_FOLLOW),
+		clampf(cp.z, -WEATHER_FX_FOLLOW, WEATHER_FX_FOLLOW))
+	# 室内不再整体关掉降水：雨雪粒子由 precip.gdshader 按小屋实体盒逐粒子剔除，
+	# 这样相机在室内时看不到穿过屋顶的雨雪，但从窗户仍能看到屋外在下雨/下雪。
+	var rain_amt := clampf(_weather_rain, 0.0, 1.0)
+	var snow_amt := clampf(_weather_snow, 0.0, 1.0)
+	var day_f := clampf((_sun_alt + 8.0) / 28.0, 0.10, 1.15)
+	var fogc: Color = _pal.get("fog", Color(0.74, 0.82, 0.92))
+	_weather_precip_room_uniforms()
+	_weather_apply_precip("rain", rain_amt, follow, day_f, fogc, 0.55 + 0.45 * clampf(_weather_storm, 0.0, 1.0))
+	_weather_apply_precip("snow", snow_amt, follow, day_f, fogc, 0.95)
+	# 屋檐滴水：中雨以上才出现（雨越大越密）；位置固定在正面屋檐，不跟随相机。
+	var drip_amt := clampf((rain_amt - 0.22) / 0.78, 0.0, 1.0)
+	_weather_apply_precip("drip", drip_amt, follow, day_f, fogc, 0.0)
+	# 地面水花：只在雨天出现；积雪覆盖后自动减弱（雪地上不会有雨点水花）。
+	var splash: Dictionary = _weather_fx.get("splash", {})
+	if not splash.is_empty():
+		var snode := splash.get("node", null) as MultiMeshInstance3D
+		var smat := splash.get("mat", null) as ShaderMaterial
+		var splash_amt := clampf(rain_amt * 1.1, 0.0, 1.0) * (1.0 - smoothstep(0.18, 0.48, _weather_snow_depth))
+		if snode != null:
+			snode.visible = splash_amt > 0.03
+		if smat != null:
+			smat.set_shader_parameter("strength", splash_amt)
+	# 天气共享 uniform：toon/grass/sea/sky 同一个来源，不各自维护一份天气状态
+	RenderingServer.global_shader_parameter_set("g_weather", Vector4(
+		clampf(_weather_rain, 0.0, 1.0), clampf(_weather_snow, 0.0, 1.0),
+		clampf(_weather_wetness, 0.0, 1.0), clampf(_weather_snow_depth, 0.0, 1.0)))
+	RenderingServer.global_shader_parameter_set("g_weather2", Vector4(
+		clampf(_weather_cloud, 0.0, 1.0), clampf(_weather_storm, 0.0, 1.0),
+		_weather_visual_wind, clampf(_weather_indoor, 0.0, 1.0)))
+	RenderingServer.global_shader_parameter_set("g_wind_dir", Vector4(
+		_weather_wind_dir_smooth.x, _weather_wind_dir_smooth.y, _weather_visual_wind, _frame_t))
+	# 落叶随风：秋叶的方向/横漂跟着同一套风场（不再固定 (0.12,1,0.06)）
+	var leaf_wind: Dictionary = _fx.get("leaves", {})
+	var leaf_pm := leaf_wind.get("pm", null) as ParticleProcessMaterial
+	if leaf_pm != null:
+		var wv := _weather_visual_wind
+		var wd := _weather_wind_dir_smooth
+		leaf_pm.direction = Vector3(wd.x * wv * 1.6, 1.0, wd.y * wv * 1.6).normalized()
+		leaf_pm.gravity = Vector3(wd.x * wv * 0.55, -0.55 - 0.10 * wv, wd.y * wv * 0.55)
+	# 闪电（雷暴/台风）：只影响视觉，不推进权威时间；模拟暂停时亮度冻结
+	_update_lightning(delta, advancing)
+
+## 闪电：雷暴/台风的瞬时照明。只写全局 uniform（sky/toon/grass/sea 同一来源），
+## 不创建光源、不改权威时间；模拟暂停时亮度冻结，避免暂停画面还在闪。
+func _update_lightning(delta: float, advancing: bool) -> void:
+	var type_id := String(_weather_state.get("type", "clear"))
+	var active := clampf(_weather_storm, 0.0, 1.0) > 0.55 and (
+		type_id == "thunder" or type_id == "typhoon" or type_id == "heavy_rain")
+	if active and advancing:
+		_lightning_clock += delta
+		_lightning_wait -= delta
+		if _lightning_wait <= 0.0:
+			# 间隔由天气种子与累计时钟决定，4.5~13 秒一次；只影响观感
+			var seed_v := float(_weather_state.get("seed", 20261022))
+			_lightning_wait = 4.5 + fposmod(_lightning_clock * 0.37 + seed_v * 0.0013, 8.5)
+			_lightning_flash = 1.0
+	if advancing:
+		_lightning_flash = maxf(0.0, _lightning_flash - delta * 5.4)
+		if _lightning_flash < 0.08:
+			_lightning_flash = 0.0
+	RenderingServer.global_shader_parameter_set("g_lightning", _lightning_flash if active else 0.0)
+
+## 把小屋主体遮挡盒写进降水 shader，供逐粒子室内剔除（与 _camera_inside_cottage 同一套盒）。
+func _weather_precip_room_uniforms() -> void:
+	if _weather_fx.is_empty() or _cottage.is_empty():
+		return
+	var raw: Variant = _cottage.get("beam_occluders", [])
+	if not (raw is Array) or (raw as Array).is_empty():
+		return
+	var b: Variant = (raw as Array)[0]
+	if not (b is Dictionary):
+		return
+	var bd: Dictionary = b
+	var center: Vector3 = bd.get("center", Vector3.ZERO)
+	var half: Vector3 = bd.get("half", Vector3.ZERO)
+	var yaw := float(bd.get("yaw", 0.0))
+	for key in ["rain", "snow"]:
+		var entry: Dictionary = _weather_fx.get(key, {})
+		var mat := entry.get("mat", null) as ShaderMaterial
+		if mat != null:
+			mat.set_shader_parameter("room_center", center)
+			mat.set_shader_parameter("room_half", half)
+			mat.set_shader_parameter("room_yaw", yaw)
+
+## 单个降水系统：开/关、密度、跟随位置、风向倾斜、颜色随天色。
+func _weather_apply_precip(key: String, amount: float, follow: Vector2, day_f: float,
+		fogc: Color, wind_push: float) -> void:
+	var entry: Dictionary = _weather_fx.get(key, {})
+	var node := entry.get("node", null) as GPUParticles3D
+	if node == null:
+		return
+	var on := amount > 0.015
+	node.emitting = on
+	node.visible = on
+	if not on:
+		return
+	if key != "drip":
+		var base_y := float(entry.get("base_y", node.position.y))
+		node.position = Vector3(follow.x, base_y, follow.y)
+	node.amount_ratio = clampf(amount * 1.15, 0.0, 1.0)
+	var pm := entry.get("pm", null) as ParticleProcessMaterial
+	if pm != null:
+		var dir := Vector3(_weather_wind_dir_smooth.x * wind_push * _weather_visual_wind, -1.0,
+			_weather_wind_dir_smooth.y * wind_push * _weather_visual_wind).normalized()
+		pm.direction = dir
+	var mat := entry.get("mat", null) as ShaderMaterial
+	if mat != null:
+		var base_c := Color(0.86, 0.91, 1.0) if key == "rain" else Color(0.98, 0.99, 1.0)
+		var lit := base_c.lerp(fogc.lerp(base_c, 0.5), 0.35)
+		var br := 0.55 + 0.55 * day_f
+		mat.set_shader_parameter("albedo_color", Color(lit.r * br, lit.g * br, lit.b * br, 1.0))
+
+## 相机是否在小屋的实体遮挡盒内（复用 Phase6 的 beam_occluders，不另建室内判定数据）。
+func _camera_inside_cottage() -> bool:
+	if _cottage.is_empty() or _cam == null:
+		return false
+	var raw: Variant = _cottage.get("beam_occluders", [])
+	if not (raw is Array) or (raw as Array).is_empty():
+		return false
+	var p := _cam.global_position
+	for b in (raw as Array):
+		if not (b is Dictionary):
+			continue
+		var bd: Dictionary = b
+		if not (bd.has("center") and bd.has("half")):
+			continue
+		var c: Vector3 = bd["center"]
+		var h: Vector3 = bd["half"]
+		var yaw := float(bd.get("yaw", 0.0))
+		var lp := p - c
+		var cs := cos(-yaw)
+		var sn := sin(-yaw)
+		var q := Vector3(cs * lp.x - sn * lp.z, lp.y, sn * lp.x + cs * lp.z)
+		if absf(q.x) < h.x - 0.30 and absf(q.y) < h.y - 0.15 and absf(q.z) < h.z - 0.30:
+			return true
+	return false
+
+# ============================================================
+# 天气对调色板的整体配光（天空/雾/日光/水面）；只做颜色混合，不替换天文/调色板算法
+# ============================================================
+## 阴雨/风暴时把调色板采样结果往冷灰方向压：天色协调而不是叠一层黑罩。
+## 会写 _weather_gloom 供其它系统读取；不修改季节/天文/天气状态本身。
+func _grade_palette_for_weather(p: Dictionary) -> void:
+	var cloud := clampf(_weather_cloud, 0.0, 1.0)
+	var storm := clampf(_weather_storm, 0.0, 1.0)
+	var rain := clampf(maxf(_weather_rain, _weather_snow), 0.0, 1.0)
+	var gloom := clampf(cloud * 0.62 + storm * 0.50 - 0.06, 0.0, 1.0)
+	_weather_gloom = gloom
+	var cool := Color(0.56, 0.62, 0.72)
+	var storm_shade := Color(0.34, 0.38, 0.47)
+	var dim := 1.0 - 0.52 * gloom
+	for key in ["skyZenith", "skyHorizon", "skyHaze"]:
+		p[key] = _grade_color(p[key], cool, gloom * 0.52, dim)
+	p["sunGlow"] = _grade_color(p["sunGlow"], cool, gloom * 0.60, 1.0 - 0.62 * gloom)
+	p["sunDisk"] = _grade_color(p["sunDisk"], cool, gloom * 0.55, 1.0 - 0.80 * gloom)
+	p["cloudLight"] = _grade_color(p["cloudLight"], Color(0.62, 0.66, 0.74), gloom * 0.55, 1.0 - 0.22 * gloom)
+	p["cloudShade"] = _grade_color(p["cloudShade"], storm_shade, gloom * 0.62, 1.0 - 0.18 * gloom)
+	p["fog"] = _grade_color(p["fog"], Color(0.52, 0.58, 0.66), clampf(rain * 0.45 + gloom * 0.30, 0.0, 0.8), 1.0 - 0.16 * gloom)
+	p["hemiSky"] = _grade_color(p["hemiSky"], cool, gloom * 0.35, 1.0 - 0.26 * gloom)
+	p["hemiGround"] = _grade_color(p["hemiGround"], cool, gloom * 0.25, 1.0 - 0.22 * gloom)
+	p["sunColor"] = _grade_color(p["sunColor"], Color(0.86, 0.90, 0.96), gloom * 0.55, 1.0 - 0.45 * gloom)
+	p["sunI"] = float(p["sunI"]) * (1.0 - 0.58 * gloom)
+	p["starAlpha"] = float(p["starAlpha"]) * (1.0 - 0.92 * maxf(cloud, rain))
+	p["moonDiskI"] = float(p["moonDiskI"]) * (1.0 - 0.35 * gloom)
+	p["waterDeep"] = _grade_color(p["waterDeep"], storm_shade, gloom * 0.35, 1.0 - 0.22 * gloom)
+	p["waterMid"] = _grade_color(p["waterMid"], storm_shade, gloom * 0.32, 1.0 - 0.20 * gloom)
+	p["waterShallow"] = _grade_color(p["waterShallow"], storm_shade, gloom * 0.25, 1.0 - 0.16 * gloom)
+	p["waterGlitterI"] = float(p["waterGlitterI"]) * (1.0 - 0.75 * gloom)
+
+func _grade_color(c: Color, target: Color, mix_amt: float, mul: float) -> Color:
+	var out := (c as Color).lerp(target, clampf(mix_amt, 0.0, 1.0)) * mul
+	return Color(out.r, out.g, out.b, 1.0)
 
 func _weather_available_types() -> Array:
 	if _weather_state.is_empty():
@@ -1141,6 +1420,8 @@ func _tick(delta: float) -> void:
 	# P8 阶段 5：天气只读权威时钟；放在光照之前，阶段 6 的光照/天空/海面参数消费同帧天气。
 	_update_weather(delta)
 	_update_lighting()
+	# P8 阶段 6：天气视觉（粒子跟随/室内隐藏/共享 uniform）；放在光照之后以复用当帧天空配色。
+	_update_weather_fx(delta)
 	# P8 阶段 4：季节是日历（_sim_seconds）的只读投影；视觉属性和权威时间同一帧刷新。
 	_update_season(delta)
 	# P7-V4：岛民 tick 放在光照之后（当帧 _astro/_sun_alt/_events 已刷新），用真实帧 delta；
@@ -1224,6 +1505,8 @@ func _update_lighting() -> void:
 	_theme_t = IsleMath.theme_time(_sun_alt, _rising)
 	_pal = IslePalette.sample(_theme_t)
 	var p := _pal
+	# P8 阶段 6：天气整体配光（云量/风暴 → 天色/雾/日光/水面）；只改颜色，不改天文与调色板算法。
+	_grade_palette_for_weather(p)
 	# 画质档雾距缩放（fog_scale 是 isle_quality 定义但此前从未被渲染消费的键）：
 	# 只缩放自定义 shader 的雾起止距离；雾色仍由调色板决定，低档稍近、极致档稍远。
 	var fog_scale := clampf(float(_quality_state.get("fog_scale", 1.0)), 0.6, 1.4)
@@ -1257,10 +1540,19 @@ func _update_lighting() -> void:
 	_sky_mat.set_shader_parameter("moon_disk_i", moon_disk_eff)
 	_sky_mat.set_shader_parameter("star_alpha", float(p["starAlpha"]))
 	_sky_mat.set_shader_parameter("moon_alpha", moon_alpha_eff)
-	var cloud_op := clampf(float(p["cloudOpacity"]) * 1.35 + 0.10, 0.0, 0.95)
+	var cloud_op := clampf(maxf(float(p["cloudOpacity"]) * 1.35 + 0.10, 0.10 + _weather_cloud * 0.95), 0.0, 0.985)
 	if _p8_moon_clear:
 		cloud_op = 0.0
 	_sky_mat.set_shader_parameter("cloud_opacity", cloud_op)
+	# 阴雨/风暴强制足够的云层档位：低画质也不能出现“下雨却无云”的割裂，且台风云要成片移动
+	var want_detail := float(_quality_state.get("sky_cloud_detail", 2.0))
+	if _weather_cloud > 0.30:
+		want_detail = maxf(want_detail, 1.0)
+	if _weather_cloud > 0.55 or _weather_storm > 0.20:
+		want_detail = maxf(want_detail, 2.0)
+	if _weather_storm > 0.45:
+		want_detail = maxf(want_detail, 3.0)
+	_sky_mat.set_shader_parameter("cloud_detail", want_detail)
 	_sky_mat.set_shader_parameter("moon_phase", _moon_illum)
 	_sky_mat.set_shader_parameter("moon_waxing", 1.0 if _moon_waxing else 0.0)
 	_sky_mat.set_shader_parameter("time_s", _frame_t)
@@ -1281,12 +1573,17 @@ func _update_lighting() -> void:
 	_sea_mat.set_shader_parameter("moon_i", float(p["moonI"]))
 	_sea_mat.set_shader_parameter("glitter_i", float(p["waterGlitterI"]))
 	_sea_mat.set_shader_parameter("moon_phase", _moon_illum)
-	_dbg_fog_near = float(p["fogNear"]) * fog_scale
-	_dbg_fog_far = float(p["fogFar"]) * fog_scale
+	# 雨雪/风暴时雾更近更浓（自定义雾，不依赖 Environment 体积雾）
+	var wet_fog := clampf(maxf(_weather_rain, _weather_snow) * 0.70 + _weather_storm * 0.50, 0.0, 1.0)
+	_dbg_fog_near = float(p["fogNear"]) * fog_scale * (1.0 - 0.18 * wet_fog)
+	_dbg_fog_far = float(p["fogFar"]) * fog_scale * (1.0 - 0.34 * wet_fog)
 	_sea_mat.set_shader_parameter("fog_near", _dbg_fog_near)
 	_sea_mat.set_shader_parameter("fog_far", _dbg_fog_far)
 	_sea_mat.set_shader_parameter("time_s", _frame_t)
-	_sea_mat.set_shader_parameter("cloud_opacity", clampf(float(p["cloudOpacity"]) * 1.35 + 0.10, 0.0, 0.95))
+	_sea_mat.set_shader_parameter("cloud_opacity", cloud_op)
+	# 风暴/大风时泡沫增多（不动 7 组波系数与 wave_height，船体浮力契约保持不变）
+	_sea_mat.set_shader_parameter("foam_amount", clampf(
+		float(_quality_state.get("sea_foam", 0.78)) * (1.0 + 0.32 * _weather_storm) + _weather_wind * 0.10, 0.0, 1.5))
 	# SSR 深度重建用相机矩阵（每帧随相机变换更新；shader 内零矩阵即自动跳过 SSR）
 	# GDScript 无 Projection*Transform3D；Projection(Transform3D) 构造器存在，顺序必须 projection * view_inverse（世界→裁剪）。
 	var ssr_view: Transform3D = _cam.global_transform.affine_inverse()
@@ -1300,8 +1597,8 @@ func _update_lighting() -> void:
 	RenderingServer.global_shader_parameter_set("g_ambient_sky", _lin(p["hemiSky"]) * float(p["hemiI"]))
 	RenderingServer.global_shader_parameter_set("g_ambient_ground", _lin(p["hemiGround"]) * float(p["hemiI"]))
 	RenderingServer.global_shader_parameter_set("g_fog_color", _lin(p["fog"]))
-	RenderingServer.global_shader_parameter_set("g_fog_near", float(p["fogNear"]) * fog_scale)
-	RenderingServer.global_shader_parameter_set("g_fog_far", float(p["fogFar"]) * fog_scale)
+	RenderingServer.global_shader_parameter_set("g_fog_near", _dbg_fog_near)
+	RenderingServer.global_shader_parameter_set("g_fog_far", _dbg_fog_far)
 	RenderingServer.global_shader_parameter_set("g_wind_time", _frame_t)
 	RenderingServer.global_shader_parameter_set("g_outline_color", _lin(p["outline"]))
 	# 夜间局部灯光 → 全局 uniform（toon/grass/glass 在片元里自算点光衰减）
@@ -3267,6 +3564,47 @@ func _run_selftest() -> void:
 		and not (_hud.get("_weather_panel") as Control).visible
 	_hud.set_hud_visible(true, false)
 	results.append(["P8 天气面板展开收折与 H 同步", w_panel_open and w_panel_closed and w_panel_hidden])
+	# --- P8 阶段 6：天气视觉（降水系统 / 室内剔除数据 / 画质降级 / 积雪累积） ---
+	_jump_datetime(2026, 7, 15, 12, 20, 0)
+	_on_weather_type_requested("heavy_rain")
+	_update_weather(0.0, true)
+	_update_weather_fx(0.0)
+	var rain_entry: Dictionary = _weather_fx.get("rain", {})
+	var snow_entry: Dictionary = _weather_fx.get("snow", {})
+	var drip_entry: Dictionary = _weather_fx.get("drip", {})
+	var splash_entry: Dictionary = _weather_fx.get("splash", {})
+	var rain_node := rain_entry.get("node", null) as GPUParticles3D
+	var snow_node := snow_entry.get("node", null) as GPUParticles3D
+	var drip_node := drip_entry.get("node", null) as GPUParticles3D
+	var splash_node := splash_entry.get("node", null) as MultiMeshInstance3D
+	var rain_mat := rain_entry.get("mat", null) as ShaderMaterial
+	var room_half: Variant = rain_mat.get_shader_parameter("room_half") if rain_mat != null else null
+	var rain_ok: bool = rain_node != null and rain_node.emitting and rain_node.visible 		and drip_node != null and drip_node.emitting and drip_node.visible 		and splash_node != null and splash_node.visible 		and snow_node != null and not snow_node.emitting
+	var room_ok: bool = room_half is Vector3 and (room_half as Vector3).z > 0.5
+	# 室内判定：把相机临时放到小屋内部点，_camera_inside_cottage() 必须为真（shader 剔除用的同一套盒）
+	var cam_tf: Transform3D = _cam.global_transform
+	var cam_inside: bool = false
+	if not _cottage.is_empty():
+		_cam.global_position = _cottage.get("interior_pos", Vector3(0.35, 10.9, 0.0))
+		cam_inside = _camera_inside_cottage()
+	_cam.global_transform = cam_tf
+	results.append(["P8 降水系统与室内剔除数据就绪", rain_ok and room_ok and cam_inside])
+	# 低画质：降水必须仍然可见（不能因为降档把天气全部关掉）
+	_apply_quality(0)
+	_update_weather_fx(0.0)
+	var low_rain_ok: bool = rain_node != null and rain_node.emitting and rain_node.amount_ratio > 0.05
+	_apply_quality(2)
+	# 冬季手动大雪：按模拟秒累积后地面积雪量上升，降水类型为雪
+	_jump_datetime(2027, 1, 15, 10, 0, 0)
+	_on_weather_type_requested("heavy_snow")
+	_update_weather(0.0, true)
+	_p8_wfx_accumulate(18000.0)
+	var snow_depth_now := float(_weather_state.get("snow_depth", 0.0))
+	var snow_ok: bool = String(_weather_state.get("precip_type", "")) == "snow" 		and snow_depth_now > 0.3 and snow_node != null and snow_node.emitting
+	results.append(["P8 低画质仍保留降水且积雪随降雪累积", low_rain_ok and snow_ok])
+	_on_weather_auto_requested(true)
+	_update_weather(0.0, true)
+	_update_weather_fx(0.0)
 	_time_source = old_source
 	_update_lighting()
 	# 汇总
@@ -4501,7 +4839,7 @@ func _apply_audio_volume() -> void:
 
 func _apply_window_mode(mode_name: String) -> void:
 	# Phase6：窗口化 / 独占全屏 / 无边框三态。自动测试保持固定窗口。
-	if _shots or _perf or _selftest or _transition:
+	if _shots or _perf or _p8perf or _selftest or _transition:
 		return
 	if DisplayServer.get_name() == "headless":
 		return
@@ -4540,7 +4878,7 @@ func _apply_resolution(target: Variant = null, force: bool = false) -> void:
 	# 自动截图 / 性能 / 转场测试保持固定窗口；自测通过 force 做一次真实窗口验证后恢复
 	if DisplayServer.get_name() == "headless":
 		return
-	if not force and (_shots or _perf or _transition):
+	if not force and (_shots or _perf or _p8perf or _transition):
 		return
 	var win := get_window()
 	if win != null:
@@ -4653,6 +4991,15 @@ func _apply_quality(q: int) -> void:
 			if not gp.has_meta("base_amount"):
 				gp.set_meta("base_amount", gp.amount)
 			gp.amount = maxi(6, int(round(float(gp.get_meta("base_amount")) * float(pratio))))
+	# 天气降水同样随画质档缩放（低档仍保留可见雨雪，不是直接关掉）
+	for key in ["rain", "snow", "drip"]:
+		var wentry: Dictionary = _weather_fx.get(key, {})
+		var wnode = wentry.get("node", null)
+		if wnode is GPUParticles3D:
+			var wgp := wnode as GPUParticles3D
+			if not wgp.has_meta("base_amount"):
+				wgp.set_meta("base_amount", wgp.amount)
+			wgp.amount = maxi(12, int(round(float(wgp.get_meta("base_amount")) * float(pratio))))
 
 ## 五档兜底参数表（isle_quality.gd 缺键时补齐；数值即真实渲染参数）。
 func _fallback_quality_params(q: int) -> Dictionary:
@@ -4952,6 +5299,239 @@ func _run_p8weathershots() -> void:
 	await _save_shot("p8_weather_04_pills", P8_WEATHER_DIR)
 	print("[P8WEATHER] done")
 	get_tree().quit()
+
+
+## P8 阶段 6 天气视觉截图（--p8wfx）：固定日期样本，逐类天气拍宽景/近景/夜景/室内/低画质。
+## 湿润度与积雪由权威天气实例在同一时刻累积（手动模式 + 直接喂模拟秒），不是硬编码 uniform。
+func _run_p8wfxs() -> void:
+	_mode = Mode.PLAYING
+	_started = true
+	_paused = true            # 固定时刻：天气不会在截图期间漂移
+	_menu.instant_finish()
+	_blending = ""
+	_hud.set_hud_visible(false, false)
+	_auto_orbit = false
+	_shot_beam_lock = true
+	_time_source = "sim"
+	await get_tree().create_timer(0.9).timeout
+	# 1) 晴 / 阴：天气整体配光的两端，云量与天色必须肉眼可辨
+	_p8_wfx_apply(2026, 7, 15, 12, 20, "clear", 0.0)
+	_p8_camera_island()
+	await get_tree().create_timer(1.2).timeout
+	await _save_shot("p8_wfx_00_summer_clear", P8_WFX_DIR)
+	_p8_wfx_print("clear")
+	_p8_wfx_apply(2026, 7, 15, 12, 20, "overcast", 0.0)
+	await get_tree().create_timer(1.2).timeout
+	await _save_shot("p8_wfx_01_summer_overcast", P8_WFX_DIR)
+	_p8_wfx_print("overcast")
+	# 2) 大雨：白天宽景（雨丝/湿地/雨雾/海面雨纹）
+	_p8_wfx_apply(2026, 7, 15, 12, 20, "heavy_rain", 900.0)
+	await get_tree().create_timer(1.8).timeout
+	await _save_shot("p8_wfx_02_summer_heavy_rain_day", P8_WFX_DIR)
+	_p8_wfx_print("heavy_rain_day")
+	# 3) 大雨夜景：雨丝在天色转暗后仍需可见，且窗灯/灯塔不受影响
+	_p8_wfx_apply(2026, 7, 15, 21, 40, "heavy_rain", 600.0)
+	await get_tree().create_timer(1.8).timeout
+	await _save_shot("p8_wfx_03_summer_heavy_rain_night", P8_WFX_DIR)
+	_p8_wfx_print("heavy_rain_night")
+	# 4) 秋季台风：复合环境事件（云动/风/海面/雨斜），不是黑屏滤镜
+	_p8_wfx_apply(2026, 9, 20, 15, 30, "typhoon", 600.0)
+	await get_tree().create_timer(2.2).timeout
+	await _save_shot("p8_wfx_04_autumn_typhoon", P8_WFX_DIR)
+	_p8_wfx_print("typhoon")
+	# 5) 大雪：白天宽景（地面/屋顶/树冠上侧积雪）
+	_p8_wfx_apply(2027, 1, 15, 10, 30, "heavy_snow", 30000.0)
+	await get_tree().create_timer(2.2).timeout
+	await _save_shot("p8_wfx_05_winter_heavy_snow_day", P8_WFX_DIR)
+	_p8_wfx_print("heavy_snow_day")
+	# 6) 大雪近景：树冠/枝干上侧积雪细节
+	_p8_camera_tree()
+	await get_tree().create_timer(1.2).timeout
+	await _save_shot("p8_wfx_06_winter_snow_tree", P8_WFX_DIR)
+	# 7) 雪夜：雪在暗天色下仍可见
+	_p8_wfx_apply(2027, 1, 15, 21, 10, "mid_snow", 24000.0)
+	_p8_camera_island()
+	await get_tree().create_timer(2.0).timeout
+	await _save_shot("p8_wfx_07_winter_snow_night", P8_WFX_DIR)
+	_p8_wfx_print("snow_night")
+	# 8) 室内：相机在小屋内部时降水淡出，不能有雨丝盖到室内画面上
+	_p8_wfx_apply(2026, 7, 15, 12, 20, "heavy_rain", 900.0)
+	_p8_camera_inside()
+	await get_tree().create_timer(1.8).timeout
+	await _save_shot("p8_wfx_08_rain_indoor", P8_WFX_DIR)
+	_p8_wfx_print("rain_indoor")
+	# 9) 雨中地面近景：地面渐湿 + 雨点水花（近距离才能看清）
+	_p8_camera_ground_rain()
+	await get_tree().create_timer(1.6).timeout
+	await _save_shot("p8_wfx_09_rain_ground_close", P8_WFX_DIR)
+	# 10) 正面屋檐近景：屋檐滴水线（雨越大越密）
+	_p8_camera_eave()
+	await get_tree().create_timer(1.6).timeout
+	await _save_shot("p8_wfx_10_rain_eave_close", P8_WFX_DIR)
+	# 11) 水花近景：直接俯拍第一个水花锚点，确认雨点打在地面的水花环
+	_p8_camera_splash()
+	await get_tree().create_timer(1.2).timeout
+	await _save_shot("p8_wfx_11_rain_splash_close", P8_WFX_DIR)
+	# 12) 低画质大雨：最低档仍能看出下雨，不允许"低画质直接没天气"
+	_apply_quality(0)
+	_p8_camera_island()
+	await get_tree().create_timer(2.0).timeout
+	await _save_shot("p8_wfx_12_rain_low_quality", P8_WFX_DIR)
+	_p8_wfx_print("rain_low_quality")
+	# 13) 雷暴闪电：固定时刻 + 人为把脉冲拉到峰值截图（真实运行由 _update_lightning 以 4.5~13s 随机间隔触发）
+	_apply_quality(2)
+	_p8_wfx_apply(2026, 7, 15, 21, 40, "thunder", 900.0)
+	_p8_camera_island()
+	_lightning_flash = 1.0
+	_update_weather(0.0, true)
+	_update_weather_fx(0.0)
+	await get_tree().create_timer(0.25).timeout
+	await _save_shot("p8_wfx_13_summer_thunder_flash", P8_WFX_DIR)
+	_p8_wfx_print("thunder_flash")
+	_lightning_flash = 0.0
+	_update_weather_fx(0.0)
+	# 14) 秋叶随风：秋日强风 + 树旁近景，落叶粒子按共享风向横漂（不再固定方向）
+	_p8_wfx_apply(2026, 10, 20, 16, 30, "strong_wind", 0.0)
+	_p8_camera_tree()
+	await get_tree().create_timer(2.4).timeout
+	await _save_shot("p8_wfx_14_autumn_leaves_wind", P8_WFX_DIR)
+	_p8_wfx_print("autumn_leaves_wind")
+	print("[P8WFX] done")
+	get_tree().quit()
+
+## 应用一组固定日期 + 手动天气，并按模拟秒累积湿润/积雪（只推进天气实例，不推进权威时钟）。
+func _p8_wfx_apply(year: int, month: int, day: int, hour: int, minute: int,
+		type_id: String, accum_seconds: float) -> void:
+	_jump_datetime(year, month, day, hour, minute, 0)
+	var avail: Array = _weather_state.get("available_types", [])
+	if not avail.has(type_id):
+		push_warning("[P8WFX] type not legal this season: %s" % type_id)
+		return
+	_on_weather_type_requested(type_id)
+	# 切到新天气后先复位到该天气的即时稳态（湿润/积雪不继承上一组的残留），再按模拟秒累积
+	_weather.reset(_sim_seconds)
+	_update_weather(0.0, true)
+	_p8_wfx_accumulate(accum_seconds)
+	_update_lighting()
+
+func _p8_wfx_accumulate(seconds: float) -> void:
+	if seconds <= 0.0 or _weather == null:
+		return
+	var left := seconds
+	while left > 0.0:
+		var step := minf(240.0, left)
+		_weather.tick(_sim_seconds, step, true)
+		left -= step
+	_weather_prev_t = _sim_seconds
+	_update_weather(0.0, true)
+	_update_weather_fx(0.0)
+
+func _p8_wfx_print(tag: String) -> void:
+	var st := _weather_state
+	var parts: Array = []
+	for key in ["rain", "snow"]:
+		var entry: Dictionary = _weather_fx.get(key, {})
+		var node := entry.get("node", null) as GPUParticles3D
+		if node != null:
+			parts.append("%s_emit=%s ratio=%.2f" % [key, str(node.emitting), node.amount_ratio])
+	print("[P8WFX] %s type=%s ptype=%s cloud=%.2f storm=%.2f wind=%.2f wet=%.2f snow_depth=%.2f indoor=%.2f %s" % [
+		tag, String(st.get("type", "")), String(st.get("precip_type", "")),
+		float(st.get("cloud", 0.0)), float(st.get("storm", 0.0)), float(st.get("wind_strength", 0.0)),
+		float(st.get("wetness", 0.0)), float(st.get("snow_depth", 0.0)), _weather_indoor,
+		" ".join(parts)])
+
+# ============================================================
+# P8 阶段 6 性能对比（--p8perf）：天气视觉在 5 档画质下的帧率/绘制开销
+# ============================================================
+func _run_p8perf() -> void:
+	_mode = Mode.PLAYING
+	_started = true
+	_paused = true              # 固定日期/时刻，天气由手动类型锁死，采样期间不漂移
+	_menu.instant_finish()
+	_blending = ""
+	_hud.set_hud_visible(false, false)
+	_auto_orbit = false
+	_shot_beam_lock = true
+	_time_source = "sim"
+	Engine.max_fps = 0
+	_apply_quality(2)
+	_p8_camera_island()
+	await get_tree().create_timer(1.2).timeout
+	print("[P8PERF] begin viewport=%s quality=%d rain_base=%d snow_base=%d drip_base=%d splash_base=%d" % [
+		str(get_viewport().get_visible_rect().size), _quality,
+		int(_weather_fx.get("rain", {}).get("base_amount", 0)),
+		int(_weather_fx.get("snow", {}).get("base_amount", 0)),
+		int(_weather_fx.get("drip", {}).get("base_amount", 0)),
+		int(_weather_fx.get("splash", {}).get("base_amount", 0))])
+	var scenes: Array = [
+		["clear", 2026, 7, 15, 12, 20, "clear", 0.0, 2],
+		["overcast", 2026, 7, 15, 12, 20, "overcast", 0.0, 2],
+		["heavy_rain", 2026, 7, 15, 12, 20, "heavy_rain", 900.0, 2],
+		["thunder", 2026, 7, 15, 18, 40, "thunder", 600.0, 2],
+		["heavy_snow", 2027, 1, 15, 10, 30, "heavy_snow", 30000.0, 2],
+		["typhoon", 2026, 9, 20, 15, 30, "typhoon", 600.0, 2],
+		["heavy_rain_q0", 2026, 7, 15, 12, 20, "heavy_rain", 900.0, 0],
+		["heavy_rain_q4", 2026, 7, 15, 12, 20, "heavy_rain", 900.0, 4],
+	]
+	for sc in scenes:
+		_apply_quality(int(sc[8]))
+		Engine.max_fps = 0
+		_p8_wfx_apply(int(sc[1]), int(sc[2]), int(sc[3]), int(sc[4]), int(sc[5]), String(sc[6]), float(sc[7]))
+		_p8_camera_island()
+		await get_tree().create_timer(1.6).timeout
+		var st := await _sample_frames(180)
+		var wstate := _weather_state
+		print("[P8PERF] %-16s q=%d fps=%.1f frame_ms=%.2f cpu_ms=%.2f objects=%d draw_calls=%d vram_mb=%.1f rain=%.2f snow=%.2f wet=%.2f snow_depth=%.2f" % [
+			String(sc[0]), int(sc[8]), float(st["fps"]), float(st["frame_ms"]), float(st["cpu_ms"]),
+			int(st["objects"]), int(st["calls"]), float(st["vram"]),
+			_weather_rain, _weather_snow,
+			float(wstate.get("wetness", 0.0)), float(wstate.get("snow_depth", 0.0))])
+	_apply_quality(2)
+	print("[P8PERF] done")
+	get_tree().quit()
+
+## 雨中地面近景：花园外侧贴地 1.6 m 机位，能看清地面湿润与雨点水花。
+func _p8_camera_ground_rain() -> void:
+	var ground := Vector3(-7.82, 9.72, -6.20)
+	var target := ground + Vector3(0.9, 0.12, 1.5)
+	_pose_look(target + Vector3(2.4, 3.4, 2.8), target, 54.0)
+
+## 正面屋檐近景：用房屋遮挡盒推出正面屋檐世界位置，从斜下方看滴水线。
+func _p8_camera_eave() -> void:
+	var eave := Vector3(0.8, 13.4, 2.9)
+	var front := Vector3(0.0, 0.0, 1.0)
+	if not _cottage.is_empty():
+		var raw: Variant = _cottage.get("beam_occluders", [])
+		if raw is Array and not (raw as Array).is_empty() and (raw as Array)[0] is Dictionary:
+			var bd: Dictionary = (raw as Array)[0]
+			var center: Vector3 = bd.get("center", Vector3.ZERO)
+			var half: Vector3 = bd.get("half", Vector3.ZERO)
+			var yaw := float(bd.get("yaw", 0.0))
+			var rot_y := -yaw
+			front = Vector3(sin(rot_y), 0.0, cos(rot_y))
+			eave = center + front * (half.z + 0.46)
+			eave.y = center.y + half.y - 0.33
+	var eye := eave + front * 5.6 + Vector3(0.0, -2.6, 0.0)
+	_pose_look(eye, eave + Vector3(0.0, -0.7, 0.0), 54.0)
+
+## 水花近景：直接俯拍 WeatherSplash 的第一个锚点（确定性种子，位置固定）。
+func _p8_camera_splash() -> void:
+	var splash: Dictionary = _weather_fx.get("splash", {})
+	var mm := splash.get("mm", null) as MultiMesh
+	var p := Vector3(-6.0, 9.8, -3.0)
+	if mm != null and mm.instance_count > 0:
+		p = mm.get_instance_transform(0).origin
+	_pose_look(p + Vector3(0.9, 2.4, 1.1), p + Vector3(0.0, 0.15, 0.0), 46.0)
+
+## 室内机位：放在小屋一层内部（复用 cottage.interior_pos），朝前窗/门方向看。
+func _p8_camera_inside() -> void:
+	var ip: Vector3 = _cottage.get("interior_pos", Vector3(0.35, 10.9, 0.0))
+	# front_window_world 是窗框位置数组（每扇窗一个世界点），取第一扇作为视线目标
+	var fw: Vector3 = ip + Vector3(0.0, 0.0, 3.0)
+	var raw: Variant = _cottage.get("front_window_world", [])
+	if raw is Array and not (raw as Array).is_empty():
+		fw = (raw as Array)[0]
+	_pose_look(ip + Vector3(0.0, 0.32, 0.0), fw, 52.0)
 
 ## P8 截图机位：默认观景轨道（与 perf noon_clear 一致，便于跨轮对比）。
 func _p8_camera_island() -> void:

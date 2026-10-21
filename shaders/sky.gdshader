@@ -25,6 +25,12 @@ uniform float moon_phase = 1.0;
 uniform float moon_waxing = 1.0;
 uniform float time_s = 0.0;
 
+// P8 阶段 6：天气共享参数（main.gd 每帧写入；类型固定 vec4，避免重编译）
+global uniform vec4 g_weather;    // x rain, y snow, z wetness, w snow_cover
+global uniform vec4 g_weather2;   // x cloud, y storm, z wind, w indoor
+global uniform vec4 g_wind_dir;   // x/z 风向（世界水平），z 风力 0..1
+global uniform float g_lightning; // 闪电瞬时亮度 0..1（雷暴/台风；与地面同一来源）
+
 float hash12(vec2 p) {
 	vec3 p3 = fract(vec3(p.xyx) * 0.1031);
 	p3 += dot(p3, p3.yzx + 33.33);
@@ -78,13 +84,16 @@ vec4 cloud_layers(vec3 d, float y, float cos_sun, float sun_up) {
 		return vec4(0.0);
 	}
 	vec2 sun_flat = normalize(sun_dir.xz + vec2(0.0001, 0.0001));
+	// 风向驱动云层移动：风速越大，云飘得越快（阴雨/台风时云明显在走）
+	vec2 wdir = normalize(g_wind_dir.xy + vec2(0.0001, 0.0001));
+	float wspeed = clamp(g_wind_dir.z, 0.0, 1.0);
 	vec3 out_col = vec3(0.0);
 	float out_a = 0.0;
 
 	// --- 常驻薄卷云：不依赖低云强度，保证正午/晴天天空也有可读的云层细节 ---
 	{
 		vec2 cp = d.xz / (y + 0.30) * 0.24;
-		vec2 drift = vec2(time_s * 0.0012, -time_s * 0.0007);
+		vec2 drift = vec2(time_s * 0.0012, -time_s * 0.0007) + wdir * time_s * (0.0004 + wspeed * 0.0035);
 		vec2 warp = vec2(
 			fbm3(cp * 2.0 + vec2(1.7, -time_s * 0.0009)),
 			fbm3(cp * 2.0 + vec2(6.4, time_s * 0.0008))
@@ -102,7 +111,7 @@ vec4 cloud_layers(vec3 d, float y, float cos_sun, float sun_up) {
 	// --- 高层：细长丝云 ---
 	if (cloud_detail >= 0.5) {
 		vec2 cp = d.xz / (y + 0.24) * 0.40;
-		vec2 drift = vec2(time_s * 0.0042, time_s * 0.0016);
+		vec2 drift = vec2(time_s * 0.0042, time_s * 0.0016) + wdir * time_s * (0.0012 + wspeed * 0.0085);
 		vec2 warp = vec2(
 			fbm3(cp * 1.6 + vec2(2.3, -time_s * 0.0015)),
 			fbm3(cp * 1.6 + vec2(8.1, time_s * 0.0012))
@@ -124,7 +133,7 @@ vec4 cloud_layers(vec3 d, float y, float cos_sun, float sun_up) {
 	// --- 低层：成团体积云（有厚度感，仅高画质） ---
 	if (cloud_detail > 1.5) {
 		vec2 cp = d.xz / (y + 0.34) * 0.92;
-		vec2 drift = vec2(-time_s * 0.0026, time_s * 0.0010);
+		vec2 drift = vec2(-time_s * 0.0026, time_s * 0.0010) + wdir * time_s * (0.0008 + wspeed * 0.0060);
 		vec2 warp = vec2(
 			fbm3(cp * 1.9 + vec2(4.0, time_s * 0.001)),
 			fbm3(cp * 1.9 + vec2(-2.0, 0.0))
@@ -148,7 +157,7 @@ vec4 cloud_layers(vec3 d, float y, float cos_sun, float sun_up) {
 	if (cloud_detail > 2.5) {
 		vec2 cp = d.xz / (y + 0.52) * 0.62;
 		cp.x *= 0.42;
-		vec2 drift = vec2(time_s * 0.0060, time_s * 0.0018);
+		vec2 drift = vec2(time_s * 0.0060, time_s * 0.0018) + wdir * time_s * (0.0020 + wspeed * 0.0130);
 		float n = fbm4(cp * vec2(1.0, 2.6) + drift) * 0.66
 			+ fbm3(cp * 4.2 - drift * 0.6 + vec2(3.0, 7.0)) * 0.34;
 		float n2 = fbm3(cp * vec2(1.0, 2.6) + drift + sun_flat * 0.12) * 0.66
@@ -161,6 +170,8 @@ vec4 cloud_layers(vec3 d, float y, float cos_sun, float sun_up) {
 		out_col = mix(out_col, c, m);
 		out_a = max(out_a, m);
 	}
+	// 风暴时云体整体压暗（天色协调由 main 侧调色板混色负责，这里只压云自身的明度）
+	out_col *= 1.0 - clamp(g_weather2.y, 0.0, 1.0) * 0.20;
 	return vec4(out_col, clamp(out_a, 0.0, 1.0));
 }
 
@@ -298,6 +309,11 @@ void sky() {
 
 	// 云层（cloud_detail 0..3）
 	vec4 cl = cloud_layers(d, y, cos_sun, sun_up);
+	// 闪电：整片天空按云量整体提亮（不单独点亮某朵云，避免孤立亮块）
+	// 同一 g_lightning 同时照亮地面/海面，形成"天空先亮、场景随后被照亮"的一帧。
+	float lgt = clamp(g_lightning, 0.0, 1.0);
+	float cloud_cov = clamp(g_weather2.x, 0.0, 1.0);
+	col += vec3(0.18, 0.21, 0.29) * lgt * (0.30 + 0.70 * cloud_cov) * (0.30 + 0.70 * smoothstep(-0.05, 0.60, y));
 	col = mix(col, cl.rgb, cl.a);
 
 	// 8bit 输出抖动

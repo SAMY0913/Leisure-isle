@@ -12,6 +12,11 @@ global uniform vec4 g_fog_color : source_color;
 global uniform float g_fog_near;
 global uniform float g_fog_far;
 global uniform float g_wind_time;
+// P8 阶段 6：天气共享参数
+global uniform vec4 g_weather;    // x rain, y snow, z wetness, w snow_cover
+global uniform vec4 g_weather2;   // x cloud, y storm, z wind, w indoor
+global uniform vec4 g_wind_dir;   // x/z 风向，z 风力 0..1
+global uniform float g_lightning; // 闪电瞬时亮度 0..1（雷暴/台风；与天空同一来源）
 global uniform float g_light_count;
 global uniform vec4 g_l0_pos; // xyz world position, w range
 global uniform vec4 g_l0_col; // rgb color, w intensity
@@ -109,8 +114,14 @@ void vertex() {
 	if (wind > 0.0) {
 		float h = max(v.y, 0.0);
 		float ph = g_wind_time * 1.7 + wind_phase + (MODEL_MATRIX[3].x + MODEL_MATRIX[3].z) * 0.45;
-		v.x += sin(ph) * 0.055 * h * wind;
-		v.z += cos(ph * 0.83 + 1.7) * 0.04 * h * wind;
+		// 风力同时放大摆幅并给一个顺风向的偏置：小风仍是原来的轻晃，大风/台风才明显歪向一侧。
+		float wamp = 0.55 + clamp(g_wind_dir.z, 0.0, 1.0) * 1.15;
+		float gust = 0.85 + 0.25 * sin(g_wind_time * 0.73 + wind_phase * 2.1);
+		float ox = sin(ph) * 0.055 + sin(ph * 2.7 + 1.3) * 0.016;
+		float oz = cos(ph * 0.83 + 1.7) * 0.040 + cos(ph * 3.1) * 0.012;
+		float push = clamp(g_wind_dir.z, 0.0, 1.0) * 0.055 * h * wind * gust;
+		v.x += (ox * h * wamp + g_wind_dir.x * push) * wind;
+		v.z += (oz * h * wamp + g_wind_dir.y * push) * wind;
 	}
 	VERTEX = v;
 	v_world = (MODEL_MATRIX * vec4(v, 1.0)).xyz;
@@ -193,6 +204,9 @@ void fragment() {
 		base *= v_lcol;
 	}
 	base *= foliage_tint;
+	// 雨后的湿润：整体压暗一点，再在受光后加一层低强度湿面反光（不引入透明/排序问题）
+	float wet = clamp(g_weather.z, 0.0, 1.0);
+	base *= 1.0 - 0.26 * wet;
 	vec3 V = normalize(CAMERA_POSITION_WORLD - v_world);
 	vec3 col;
 	if (self_lit > 0.5) {
@@ -242,6 +256,24 @@ void fragment() {
 			float sndl = clamp(dot(Nw, normalize(g_spot_origin - v_world)) * 0.5 + 0.5, 0.0, 1.0);
 			col += base * g_spot_color.rgb * g_spot_color.a * scone * satt * (0.14 + 0.86 * sndl);
 		}
+		// 湿面反光：视线越掠射越亮，白天最明显，夜里几乎看不见
+		float wet_sheen = pow(1.0 - clamp(dot(Nw, V), 0.0, 1.0), 3.5) * wet * 0.16;
+		col += g_sun_color.rgb * wet_sheen;
+		// 积雪：只挂“朝上的面”，用世界坐标噪声打散边界；厚度 g_weather.w 越大，越斜的面也开始挂雪。
+		// 低处（沙滩/岸边）按世界高度淡出，避免整座岛像被白漆刷过一遍。
+		float snow_amt = clamp(g_weather.w, 0.0, 1.0);
+		float snow_cov = smoothstep(0.02, 0.42, snow_amt);
+		float up_mask = smoothstep(0.0, 1.0 - clamp(snow_amt, 0.0, 0.95) * 0.88, clamp(Nw.y, 0.0, 1.0));
+		float nz = detail_noise(v_world.xz * 0.42 + v_world.y * 0.7);
+		float patchy = 0.62 + 0.38 * nz;
+		patchy *= 0.82 + 0.18 * detail_noise(v_world.xz * 1.7 + v_world.y * 1.3);
+		float snow_line = smoothstep(1.05, 3.20, v_world.y);
+		float snow_m = clamp(up_mask * snow_cov * patchy * snow_line, 0.0, 1.0);
+		if (snow_m > 0.001) {
+			vec3 snow_col = vec3(0.90, 0.93, 0.99) * clamp(
+				ambient * 1.85 + g_sun_color.rgb * (0.26 + 0.52 * cel) + g_moon_color.rgb * 0.80, 0.0, 1.6);
+			col = mix(col, snow_col, snow_m * 0.84);
+		}
 		int lc_n = int(g_light_count);
 		if (lc_n > 0) {
 			col += add_point_light(base, Nw, g_l0_pos, g_l0_col);
@@ -261,5 +293,9 @@ void fragment() {
 	float dist = length(CAMERA_POSITION_WORLD - v_world);
 	float fogf = smoothstep(g_fog_near, g_fog_far, dist);
 	col = mix(col, g_fog_color.rgb, fogf);
+	// 闪电：按受光面反照率提亮（保持颜色，不给整屏刷白），朝上的面更亮；
+	// 远处被雾/霾罩住的物体不应和近景一样亮，否则远岛会像"浮空白块"。
+	col += (base * 0.44 + vec3(0.020, 0.024, 0.032)) * g_lightning
+		* (0.55 + 0.45 * clamp(Nw.y, 0.0, 1.0)) * (1.0 - fogf * 0.85);
 	ALBEDO = col;
 }
