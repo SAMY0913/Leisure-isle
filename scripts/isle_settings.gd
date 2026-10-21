@@ -65,6 +65,16 @@ const FOV_DEFAULT := 42.0
 const FOV_MIN := 35.0
 const FOV_MAX := 65.0
 
+## P8 天气：自动天气种子（同一 seed + 同一模拟时刻 = 同一天气，可复跑）、
+## 自动/手动模式与手动天气类型。天气面板会实时改这三项，因此一并持久化。
+const WEATHER_SEED_DEFAULT := 20261022
+const WEATHER_DEFAULT_TYPE := "clear"
+const WEATHER_TYPES := [
+	"clear", "partly", "overcast", "windy", "strong_wind",
+	"light_rain", "mid_rain", "heavy_rain",
+	"light_snow", "mid_snow", "heavy_snow", "thunder", "typhoon",
+]
+
 ## 音频分组：每组一条 AudioBus，界面滑块只改总线音量。
 const AUDIO_GROUPS := [
 	{"key": "volume_master", "bus": "Master", "label": "主音量", "hint": "全部游戏声音的最终音量"},
@@ -86,6 +96,9 @@ const DEFAULTS := {
 	"resolution": RESOLUTION_DEFAULT,
 	"time_source": DEFAULT_TIME_SOURCE,
 	"timezone": DEFAULT_TIMEZONE,
+	"weather_seed": WEATHER_SEED_DEFAULT,
+	"weather_auto": true,
+	"weather_type": WEATHER_DEFAULT_TYPE,
 	"volume_master": 0.8,
 	"volume_ambient": 0.7,
 	"volume_birds": 0.8,
@@ -232,6 +245,26 @@ static func sanitize_fov(value: Variant) -> float:
 	return roundf(clampf(v, FOV_MIN, FOV_MAX))
 
 
+## P8 天气种子：正整数；非法/越界回落默认（保证同一配置可复跑）。
+static func sanitize_weather_seed(value: Variant) -> int:
+	var v := int(value)
+	if v <= 0 or v > 2147483647:
+		return WEATHER_SEED_DEFAULT
+	return v
+
+
+static func sanitize_weather_auto(value: Variant) -> bool:
+	return bool(value)
+
+
+## 手动天气类型：只认 13 种已知 id（雪/台风是否可选由面板按季节过滤）。
+static func sanitize_weather_type(value: Variant) -> String:
+	var text := str(value).strip_edges()
+	if WEATHER_TYPES.has(text):
+		return text
+	return WEATHER_DEFAULT_TYPE
+
+
 static func sanitize_volume(value: Variant) -> float:
 	var v := float(value)
 	if not is_finite(v):
@@ -337,6 +370,12 @@ static func load_settings(path: String = PATH) -> Dictionary:
 				out[key] = sanitize_time_source(value)
 			"timezone":
 				out[key] = sanitize_timezone(value)
+			"weather_seed":
+				out[key] = sanitize_weather_seed(value)
+			"weather_auto":
+				out[key] = sanitize_weather_auto(value)
+			"weather_type":
+				out[key] = sanitize_weather_type(value)
 			_:
 				if VOLUME_KEYS.has(key):
 					out[key] = sanitize_volume(value)
@@ -360,6 +399,9 @@ static func save_settings(values: Dictionary, path: String = PATH) -> void:
 	snapshot["day_length"] = sanitize_day_length(snapshot.get("day_length", DAY_LENGTH_DEFAULT))
 	snapshot["fov"] = sanitize_fov(snapshot.get("fov", FOV_DEFAULT))
 	snapshot["quality"] = sanitize_quality(snapshot.get("quality", DEFAULTS["quality"]))
+	snapshot["weather_seed"] = sanitize_weather_seed(snapshot.get("weather_seed", WEATHER_SEED_DEFAULT))
+	snapshot["weather_auto"] = sanitize_weather_auto(snapshot.get("weather_auto", true))
+	snapshot["weather_type"] = sanitize_weather_type(snapshot.get("weather_type", WEATHER_DEFAULT_TYPE))
 	var overrides: Variant = snapshot.get("quality_overrides", {})
 	snapshot["quality_overrides"] = (overrides as Dictionary).duplicate(true) if overrides is Dictionary else {}
 	for key in VOLUME_KEYS:

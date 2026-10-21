@@ -9,6 +9,7 @@ const P7_SHOTS_DIR := "D:/休闲小岛幻境/开发产物/p7/shots/"
 const P8_SHOTS_DIR := "D:/休闲小岛幻境/开发产物/p8/shots/"
 const P8_MOON_DIR := "D:/休闲小岛幻境/开发产物/p8/moon/"
 const P8_SEASON_DIR := "D:/休闲小岛幻境/开发产物/p8/seasons/"
+const P8_WEATHER_DIR := "D:/休闲小岛幻境/开发产物/p8/weather/"
 const VIGNETTE_SHADER := "res://shaders/vignette.gdshader"
 const SKY_SHADER := "res://shaders/sky.gdshader"
 const SEA_SHADER := "res://shaders/sea.gdshader"
@@ -49,6 +50,7 @@ var _p7shots := false
 var _p8shots := false
 var _p8moon := false      # --p8moon：八相月球专项截图（固定日期样本，不依赖现实时间）
 var _p8seasons := false   # --p8seasons：四季视觉专项截图（固定日期样本）
+var _p8weather := false   # --p8weather：天气面板与天气状态专项截图（固定日期样本）
 var _p8_moon_clear := false   # 月相诊断截图：临时清空云层，避免云遮住月盘判相
 
 # ---- 时间 ----
@@ -69,6 +71,23 @@ var _grass_season_mats: Array = []  # 草材质 + 原始 tint（与画质草密�
 var _season_apply_count := 0
 var _winter_plum: MultiMeshInstance3D = null   # 冬季树梢花簇（红梅意象；只在冬季权重高时出现）
 var _winter_plum_anchors: Array = []          # {pos: Vector3, rot: float, scale: float}
+
+# ---- 天气（P8 阶段 5：独立确定性状态机；只读 _sim_seconds，不新建时钟） ----
+const ISLE_WEATHER := preload("res://scripts/isle_weather.gd")
+const WEATHER_STATE_INTERVAL := 0.10   # 天气 → HUD/视觉参数的刷新节流（10 Hz；权重变化慢，无需每帧）
+var _weather: RefCounted = null
+var _weather_state: Dictionary = {}
+var _weather_timer := 0.0
+var _weather_prev_t := -1.0
+# 天气状态投影出的连续参数（阶段 6 由共享 shader uniform / 材质参数消费；阶段 5 先供 HUD 与断言读取）
+var _weather_cloud := 0.0
+var _weather_wind := 0.0
+var _weather_wind_dir := Vector2(0.0, -1.0)
+var _weather_rain := 0.0
+var _weather_snow := 0.0
+var _weather_storm := 0.0
+var _weather_wetness := 0.0
+var _weather_snow_depth := 0.0
 
 # ---- 天文 / 主题 ----
 var _astro: Dictionary = {}
@@ -276,7 +295,8 @@ func _ready() -> void:
 	_p8shots = "--p8shots" in OS.get_cmdline_args() or "--p8shots" in OS.get_cmdline_user_args()
 	_p8moon = "--p8moon" in OS.get_cmdline_args() or "--p8moon" in OS.get_cmdline_user_args()
 	_p8seasons = "--p8seasons" in OS.get_cmdline_args() or "--p8seasons" in OS.get_cmdline_user_args()
-	_shots = "--shots" in OS.get_cmdline_args() or "--shots" in OS.get_cmdline_user_args() or _p7shots or _p8shots or _p8moon or _p8seasons
+	_p8weather = "--p8weather" in OS.get_cmdline_args() or "--p8weather" in OS.get_cmdline_user_args()
+	_shots = "--shots" in OS.get_cmdline_args() or "--shots" in OS.get_cmdline_user_args() or _p7shots or _p8shots or _p8moon or _p8seasons or _p8weather
 	_transition = "--transition" in OS.get_cmdline_args() or "--transition" in OS.get_cmdline_user_args()
 	_selftest = "--selftest" in OS.get_cmdline_args() or "--selftest" in OS.get_cmdline_user_args()
 	_perf = "--perf" in OS.get_cmdline_args() or "--perf" in OS.get_cmdline_user_args()
@@ -289,7 +309,7 @@ func _ready() -> void:
 		DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
 	# 读取用户设置：菜单、时钟、画质、音量、窗口模式共用同一份数据。
 	# 自动化运行（截图/性能/自测/转场）使用默认设置，保证结果可复现且不受玩家配置影响。
-	var automation := _shots or _perf or _selftest or _transition or _p7shots or _p8shots or _p8moon or _p8seasons
+	var automation := _shots or _perf or _selftest or _transition or _p7shots or _p8shots or _p8moon or _p8seasons or _p8weather
 	_settings = Settings.defaults() if automation else Settings.load_settings()
 	_setup_time_api()
 	_time_source = String(_settings.get("time_source", "sim"))
@@ -309,6 +329,7 @@ func _ready() -> void:
 		if qo != "":
 			_quality = Settings.sanitize_quality(int(qo))
 	_init_time()
+	_setup_weather()
 	_setup_globals()
 	_build_environment()
 	_build_sea()
@@ -339,6 +360,8 @@ func _ready() -> void:
 		_run_p8moonshots()
 	elif _p8seasons:
 		_run_p8seasonshots()
+	elif _p8weather:
+		_run_p8weathershots()
 	elif _p7shots:
 		_run_p7shots()
 	elif _shots:
@@ -704,6 +727,11 @@ func _build_ui() -> void:
 		_hud.connect("pause_toggle_requested", _toggle_pause)
 	if _hud.has_signal("datetime_jump_requested"):
 		_hud.connect("datetime_jump_requested", _on_datetime_jump_requested)
+	# P8 阶段 5：天气面板的自动开关与手动类型选择；状态仍只有 _weather 一份。
+	if _hud.has_signal("weather_auto_requested"):
+		_hud.connect("weather_auto_requested", _on_weather_auto_requested)
+	if _hud.has_signal("weather_type_requested"):
+		_hud.connect("weather_type_requested", _on_weather_type_requested)
 	# P5：T 面板的时间来源切换与设置菜单共用同一状态源（main._settings["time_source"]）
 	if _hud.has_signal("time_mode_requested"):
 		_hud.connect("time_mode_requested", _on_time_mode_requested)
@@ -982,6 +1010,110 @@ func _apply_season_keep(e: Dictionary, target: int) -> void:
 		mm.set_instance_transform(i, xf)
 
 # ============================================================
+# P8 阶段 5：天气（独立状态机；只读 _sim_seconds，不新建时钟）
+# ============================================================
+## 启动时建立天气状态机：种子/自动或手动/手动类型来自设置；--weather-seed / --weather-type
+## 可用于截图与性能测试复现指定天气（--weather-type 会强制手动模式）。
+func _setup_weather() -> void:
+	var seed_value := Settings.sanitize_weather_seed(_settings.get("weather_seed", Settings.WEATHER_SEED_DEFAULT))
+	var cli_seed := _cmdline_value("--weather-seed")
+	if cli_seed != "":
+		seed_value = Settings.sanitize_weather_seed(int(cli_seed))
+	var auto_on := Settings.sanitize_weather_auto(_settings.get("weather_auto", true))
+	var manual_type := Settings.sanitize_weather_type(_settings.get("weather_type", Settings.WEATHER_DEFAULT_TYPE))
+	var cli_type := _cmdline_value("--weather-type")
+	if cli_type != "":
+		var wanted := Settings.sanitize_weather_type(cli_type)
+		if wanted == cli_type.strip_edges():
+			manual_type = wanted
+			auto_on = false
+	_weather = ISLE_WEATHER.new()
+	_weather.configure(seed_value, "auto" if auto_on else "manual", manual_type)
+	_weather.reset(_sim_seconds)
+	_weather_prev_t = _sim_seconds
+	_weather_state = _weather.state()
+	_apply_weather_view()
+	print("[WEATHER] seed=%d mode=%s type=%s label=%s season=%s" % [
+		seed_value, String(_weather_state.get("mode", "auto")),
+		String(_weather_state.get("type", "clear")), String(_weather_state.get("label", "晴")),
+		String(_weather_state.get("season_label", "春季"))])
+
+## 每帧推进天气：模拟暂停/菜单时 advancing=false（调度与过渡冻结），时间跳变由 tick 内部 reset。
+## 状态投影到 _weather_* 连续参数供 HUD / 阶段 6 视觉消费；写入节流到 WEATHER_STATE_INTERVAL。
+func _update_weather(delta: float, force: bool = false) -> void:
+	if _weather == null:
+		return
+	var advancing := _mode == Mode.PLAYING and (not _paused or _time_source == "real")
+	if advancing or force or _weather_state.is_empty():
+		var t := _sim_seconds
+		var dt := t - _weather_prev_t if _weather_prev_t >= 0.0 else 0.0
+		_weather.tick(t, dt, advancing)
+		_weather_prev_t = t
+	_weather_timer -= delta
+	if not force and _weather_timer > 0.0:
+		return
+	_weather_timer = WEATHER_STATE_INTERVAL
+	_weather_state = _weather.state()
+	_apply_weather_view()
+
+func _apply_weather_view() -> void:
+	if _weather_state.is_empty():
+		return
+	_weather_cloud = clampf(float(_weather_state.get("cloud", 0.0)), 0.0, 1.0)
+	_weather_wind = clampf(float(_weather_state.get("wind_strength", 0.0)), 0.0, 1.0)
+	_weather_storm = clampf(float(_weather_state.get("storm", 0.0)), 0.0, 1.0)
+	_weather_wetness = clampf(float(_weather_state.get("wetness", 0.0)), 0.0, 1.0)
+	_weather_snow_depth = clampf(float(_weather_state.get("snow_depth", 0.0)), 0.0, 1.0)
+	var ptype := String(_weather_state.get("precip_type", "none"))
+	var p_int := float(_weather_state.get("precip_intensity", 0.0))
+	_weather_rain = p_int if ptype == "rain" else 0.0
+	_weather_snow = p_int if ptype == "snow" else 0.0
+	var wdir := deg_to_rad(float(_weather_state.get("wind_dir", 135.0)))
+	_weather_wind_dir = Vector2(sin(wdir), -cos(wdir))
+
+func _weather_available_types() -> Array:
+	if _weather_state.is_empty():
+		return []
+	return (_weather_state.get("available_types", []) as Array).duplicate()
+
+## 天气面板：自动/手动开关。切到手动时沿用当前天气作为起点（不硬切），
+## 并写回设置，让下次启动仍保持玩家选择。
+func _on_weather_auto_requested(enabled: bool) -> void:
+	if _weather == null:
+		return
+	_settings["weather_auto"] = enabled
+	if enabled:
+		_weather.set_mode("auto")
+	else:
+		var cur := String(_weather_state.get("type", "clear"))
+		var avail := _weather_available_types()
+		if not avail.has(cur):
+			cur = String(avail[0]) if not avail.is_empty() else "clear"
+		_settings["weather_type"] = cur
+		_weather.set_manual_type(cur)
+	_weather_available_types()
+	_settings_save_delay = 0.25 if not (_selftest or _perf or _shots or _transition) else -1.0
+	_update_weather(0.0, true)
+	_hud.show_toast("天气：自动" if enabled else "天气：手动 · %s" % String(_weather_state.get("label", "")))
+
+## 天气面板：手动选择类型。只接受当前季节的合法选项（雪仅冬季、台风主要夏秋），
+## 非法选项给出提示且不改状态；选择本身进入手动模式并写回设置。
+func _on_weather_type_requested(type_id: String) -> void:
+	if _weather == null:
+		return
+	var avail := _weather_available_types()
+	if not avail.has(type_id):
+		var label := String(ISLE_WEATHER.TYPE_LABELS.get(type_id, type_id))
+		_hud.show_toast("该季节不可选：%s" % label)
+		return
+	_settings["weather_type"] = type_id
+	_settings["weather_auto"] = false
+	_weather.set_manual_type(type_id)
+	_settings_save_delay = 0.25 if not (_selftest or _perf or _shots or _transition) else -1.0
+	_update_weather(0.0, true)
+	_hud.show_toast("天气：%s" % String(ISLE_WEATHER.TYPE_LABELS.get(type_id, type_id)))
+
+# ============================================================
 # 每帧
 # ============================================================
 func _process(delta: float) -> void:
@@ -1006,6 +1138,8 @@ func _tick(delta: float) -> void:
 			_apply_pose(_movie_pose())
 	_update_camera(delta)
 	_update_camera_light_dirs()
+	# P8 阶段 5：天气只读权威时钟；放在光照之前，阶段 6 的光照/天空/海面参数消费同帧天气。
+	_update_weather(delta)
 	_update_lighting()
 	# P8 阶段 4：季节是日历（_sim_seconds）的只读投影；视觉属性和权威时间同一帧刷新。
 	_update_season(delta)
@@ -1346,6 +1480,8 @@ func _update_ui(delta: float) -> void:
 			"day_length_sec": _day_length,
 			"quality": _hud_quality_label,
 			"auto_orbit": _auto_orbit,
+			# P8 阶段 5：天气面板数据（唯一状态源 _weather_state，面板只读）。
+			"weather": _weather_state,
 		})
 	if _blending.is_empty() and _mode == Mode.PLAYING and _started:
 		pass
@@ -1690,6 +1826,9 @@ func _handle_key(k: int) -> void:
 		_toggle_hud_visible()
 	elif k == KEY_T:
 		_hud.toggle_time_panel()
+	elif k == KEY_W:
+		if _hud.has_method("toggle_weather_panel"):
+			_hud.call("toggle_weather_panel")
 	elif k == KEY_F2:
 		_take_photo()
 	elif k == KEY_F3:
@@ -3066,6 +3205,68 @@ func _run_selftest() -> void:
 	_jump_datetime(2026, 7, 15, 10, 0, 0)
 	var plum_summer_hidden := _winter_plum != null and not _winter_plum.visible
 	results.append(["P8 冬季红梅花簇只出现在冬季", plum_summer_hidden])
+	# --- P8 阶段 5：天气状态机（固定日期样本；唯一权威时钟仍是 _sim_seconds） ---
+	_time_source = "sim"
+	_paused = false
+	_jump_datetime(2027, 1, 15, 10, 0, 0)
+	var wstate: Dictionary = _weather_state
+	var w_required := ["mode", "type", "label", "intensity", "transition", "cloud",
+		"wind_strength", "wind_dir", "precip_type", "precip_intensity", "wetness",
+		"snow_depth", "snow_trend", "season", "season_label", "available_types",
+		"hold_left", "hold_total", "auto", "manual_type", "seed"]
+	var w_contract := not wstate.is_empty()
+	for wk in w_required:
+		w_contract = w_contract and wstate.has(String(wk))
+	var w_avail: Array = wstate.get("available_types", [])
+	var w_winter_ok := String(wstate.get("season_label", "")) == "冬季" \
+		and (String(wstate.get("type", "")) in ISLE_WEATHER.TYPE_ORDER) \
+		and w_avail.has("light_snow") and not w_avail.has("typhoon")
+	results.append(["P8 天气状态契约与季节合法性", w_contract and w_winter_ok])
+	# 暂停：天气调度与过渡一起冻结（暂停不推进模拟时钟，也不补演天气过渡）
+	_paused = true
+	var w_frozen_t := _sim_seconds
+	var w_frozen_cloud := float(_weather_state.get("cloud", -1.0))
+	var w_frozen_type := String(_weather_state.get("type", ""))
+	_weather_prev_t = _sim_seconds - 400.0   # 若误把暂停当推进，会补 400 模拟秒的过渡
+	_update_weather(0.5)
+	_update_weather(0.5)
+	_update_weather(0.5, true)
+	var w_freeze_ok: bool = absf(float(_weather_state.get("cloud", -2.0)) - w_frozen_cloud) < 0.0001 \
+		and String(_weather_state.get("type", "")) == w_frozen_type \
+		and absf(_sim_seconds - w_frozen_t) < 0.0001
+	_paused = false
+	results.append(["P8 暂停冻结天气调度与过渡", w_freeze_ok])
+	# 手动：冬季可选雪；跨到夏季后同一手动类型立即回退为合法天气（不残留雪）
+	_on_weather_type_requested("light_snow")
+	_update_weather(0.0, true)
+	var w_manual_snow := String(_weather_state.get("manual_type", "")) == "light_snow" \
+		and String(_weather_state.get("type", "")) == "light_snow" \
+		and String(_weather_state.get("precip_type", "")) == "snow"
+	_jump_datetime(2026, 7, 15, 10, 0, 0)
+	var w_summer_avail: Array = _weather_state.get("available_types", [])
+	var w_summer_ok: bool = not w_summer_avail.has("light_snow") \
+		and (String(_weather_state.get("type", "")) in w_summer_avail) \
+		and String(_weather_state.get("precip_type", "")) != "snow"
+	# 夏季手动点"小雪"必须被拒绝，状态保持合法
+	_on_weather_type_requested("light_snow")
+	var w_reject_ok: bool = String(_weather_state.get("type", "")) in w_summer_avail \
+		and String(_weather_state.get("precip_type", "")) != "snow"
+	_on_weather_auto_requested(true)
+	results.append(["P8 手动天气按季节合法且跨季回退", w_manual_snow and w_summer_ok and w_reject_ok])
+	# 天气面板：W 键路径（toggle_weather_panel）展开/收折，且 H 隐藏界面时同步收起
+	if not bool(_hud.get("_weather_open")):
+		_hud.call("toggle_weather_panel")
+	var w_panel_open: bool = bool(_hud.get("_weather_open")) \
+		and (_hud.get("_weather_panel") as Control).visible
+	_hud.call("toggle_weather_panel")
+	var w_panel_closed: bool = not bool(_hud.get("_weather_open")) \
+		and not (_hud.get("_weather_panel") as Control).visible
+	_hud.call("toggle_weather_panel")
+	_hud.set_hud_visible(false, false)
+	var w_panel_hidden: bool = not bool(_hud.get("_weather_open")) \
+		and not (_hud.get("_weather_panel") as Control).visible
+	_hud.set_hud_visible(true, false)
+	results.append(["P8 天气面板展开收折与 H 同步", w_panel_open and w_panel_closed and w_panel_hidden])
 	_time_source = old_source
 	_update_lighting()
 	# 汇总
@@ -3365,6 +3566,8 @@ func _jump_datetime(year: int, month: int, day: int, hour: int, minute: int, sec
 	_update_lighting()
 	# 跳转后立即进入合法季节状态（不补演中间季节的视觉过渡）。
 	_update_season(0.0, true)
+	# 天气同样不补演：tick 检测到时间跳变会 reset，直接落到新时刻的合法天气。
+	_update_weather(0.0, true)
 	_hud.show_toast("已跳至 %s %02d:%02d" % [str(c["year"]) + "年" + str(c["month"]) + "月" + str(c["day"]) + "日", int(c["hour"]), int(c["minute"])])
 
 # ============================================================
@@ -4694,6 +4897,60 @@ func _run_p8shots() -> void:
 		var cal: Dictionary = ISLE_CALENDAR.parts(_sim_seconds)
 		print("[P8SHOTS] ", str(spec[0]), " ", str(cal.get("date_label", "")), " ", str(cal.get("season_label", "")), " weights=", str(cal.get("season_weights", [])))
 	print("[P8SHOTS] done")
+	get_tree().quit()
+
+## P8 阶段 5 天气专项截图（--p8weather）：固定日期 + 天气面板四个状态（自动/冬季手动雪/
+## 夏季合法选项/秋季台风）。天气由权威模拟时钟驱动，手动选择走与键盘 UI 相同的入口。
+func _run_p8weathershots() -> void:
+	_mode = Mode.PLAYING
+	_started = true
+	_paused = true            # 固定时刻：模拟时钟不走，天气不会在截图期间漂移
+	_menu.instant_finish()
+	_blending = ""
+	_auto_orbit = false
+	_shot_beam_lock = false
+	_time_source = "sim"
+	_hud.set_hud_visible(true, false)
+	_hud.call("_collapse_time_panel")
+	if not bool(_hud.get("_weather_open")):
+		_hud.call("toggle_weather_panel")
+	_jump_datetime(2027, 1, 15, 10, 0, 0)
+	_on_weather_auto_requested(true)
+	_p8_camera_island()
+	await get_tree().create_timer(1.0).timeout
+	await _save_shot("p8_weather_00_winter_auto", P8_WEATHER_DIR)
+	print("[P8WEATHER] auto ", String(_weather_state.get("season_label", "")),
+		" type=", String(_weather_state.get("type", "")),
+		" label=", String(_weather_state.get("label", "")),
+		" avail=", str(_weather_state.get("available_types", [])))
+	# 冬季手动选雪：选项合法，状态立即进入手动小雪
+	_on_weather_type_requested("light_snow")
+	await get_tree().create_timer(0.7).timeout
+	await _save_shot("p8_weather_01_winter_manual_snow", P8_WEATHER_DIR)
+	print("[P8WEATHER] manual ", String(_weather_state.get("mode", "")),
+		" type=", String(_weather_state.get("type", "")),
+		" precip=", String(_weather_state.get("precip_type", "")),
+		" snow_depth=", "%.2f" % float(_weather_state.get("snow_depth", 0.0)))
+	# 夏季：手动列表不含雪，自动天气合法
+	_jump_datetime(2026, 7, 15, 10, 0, 0)
+	_on_weather_auto_requested(true)
+	_p8_camera_island()
+	await get_tree().create_timer(0.9).timeout
+	await _save_shot("p8_weather_02_summer_auto", P8_WEATHER_DIR)
+	print("[P8WEATHER] summer avail=", str(_weather_state.get("available_types", [])))
+	# 秋季手动台风：复合强天气的合法选项
+	_jump_datetime(2026, 9, 20, 10, 0, 0)
+	if (_weather_state.get("available_types", []) as Array).has("typhoon"):
+		_on_weather_type_requested("typhoon")
+	await get_tree().create_timer(0.7).timeout
+	await _save_shot("p8_weather_03_autumn_typhoon", P8_WEATHER_DIR)
+	print("[P8WEATHER] typhoon type=", String(_weather_state.get("type", "")),
+		" storm=", "%.2f" % float(_weather_state.get("storm", 0.0)))
+	# 收折态胶囊（面板收起后左下角两枚胶囊并列）
+	_hud.call("toggle_weather_panel")
+	await get_tree().create_timer(0.5).timeout
+	await _save_shot("p8_weather_04_pills", P8_WEATHER_DIR)
+	print("[P8WEATHER] done")
 	get_tree().quit()
 
 ## P8 截图机位：默认观景轨道（与 perf noon_clear 一致，便于跨轮对比）。

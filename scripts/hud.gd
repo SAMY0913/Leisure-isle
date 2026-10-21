@@ -13,6 +13,10 @@ signal pause_toggle_requested
 ## P8：日历弹层请求跳到完整公历日期时间；合法性夹取与落地由 main._jump_datetime 统一负责。
 signal datetime_jump_requested(year: int, month: int, day: int, hour: int, minute: int)
 
+# P8 阶段 5：天气面板只发请求，天气状态唯一源在主循环的 IsleWeather 实例。
+signal weather_auto_requested(enabled: bool)
+signal weather_type_requested(type_id: String)
+
 const ScrubberCtl := preload("res://scripts/ui_time_scrubber.gd")
 ## P8 日历：把“年月日时分”离散编辑量换算成主时钟秒数（isle_calendar 为纯函数模块，不持有时钟）。
 const CalendarCtl := preload("res://scripts/isle_calendar.gd")
@@ -101,6 +105,25 @@ var _cal_value_labels: Dictionary = {}
 ## 用户已修改草稿但尚未跳转：此时不要用权威时钟回灌，避免把编辑内容冲掉。
 var _cal_dirty: bool = false
 var _cal_preview: Label
+
+# ---- P8 天气面板（可折叠；与时间面板同样的空闲自动收折 / H 同步收起）----
+const WeatherCtl := preload("res://scripts/isle_weather.gd")
+const WEATHER_PANEL_TOP := -338.0   # 内容高度约 270px + 内边距（12 个类型 3 行），不留空白
+var _weather_pill: Button
+var _weather_panel: PanelContainer
+var _weather_open: bool = false
+var _weather_idle: float = 0.0
+var _weather_big: Label
+var _weather_sub: Label
+var _weather_hold: Label
+var _weather_next: Label
+var _weather_auto_btn: Button
+var _weather_manual_btn: Button
+var _weather_type_grid: GridContainer
+var _weather_type_buttons: Dictionary = {}
+var _weather_types_sig: String = ""
+var _weather_mode_ui: String = ""
+var _weather_active_ui: String = ""
 
 func _ready() -> void:
 	layer = 5
@@ -217,7 +240,7 @@ func _build() -> void:
 	# top-right hints
 	_hint = VBoxContainer.new()
 	_hint.set_anchors_preset(Control.PRESET_TOP_RIGHT)
-	_hint.position = Vector2(-356, 24)
+	_hint.position = Vector2(-436, 24)
 	_hint.add_theme_constant_override("separation", 1)
 	_root.add_child(_hint)
 	var hints: Array = [
@@ -229,20 +252,20 @@ func _build() -> void:
 	for hspec in hints:
 		var l := _mk_label(hspec[0], hspec[1], hspec[2], 3)
 		l.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-		l.custom_minimum_size = Vector2(320, 0)
+		l.custom_minimum_size = Vector2(400, 0)
 		_hint.add_child(l)
 		_hint_lines.append(l)
 	var spacer := Control.new()
 	spacer.custom_minimum_size = Vector2(0, 6)
 	_hint.add_child(spacer)
-	var keys := _mk_label("空格 暂停 · Tab 天文历 · T 时间 · C 自动运镜 · H 隐藏界面", 11, Color(0.72, 0.66, 0.56, 0.85), 2)
+	var keys := _mk_label("空格 暂停 · Tab 天文历 · T 时间 · W 天气 · C 自动运镜 · H 隐藏界面", 11, Color(0.72, 0.66, 0.56, 0.85), 2)
 	keys.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	keys.custom_minimum_size = Vector2(320, 0)
+	keys.custom_minimum_size = Vector2(400, 0)
 	_hint.add_child(keys)
 	_hint_keys = keys
 	var keys2 := _mk_label("F2 截图 · F3 性能 · F11 全屏", 11, Color(0.72, 0.66, 0.56, 0.85), 2)
 	keys2.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	keys2.custom_minimum_size = Vector2(320, 0)
+	keys2.custom_minimum_size = Vector2(400, 0)
 	_hint.add_child(keys2)
 	_hint_keys2 = keys2
 	# compass
@@ -337,6 +360,8 @@ func _build() -> void:
 	_apply_auto_indicator()
 	# ---- collapsible 24h time console ----
 	_build_time_console()
+	# ---- P8 collapsible weather console ----
+	_build_weather_console()
 
 func _build_time_console() -> void:
 	# 折叠态：左下角一枚小胶囊，随时可展开，不长期遮挡画面
@@ -476,6 +501,251 @@ func _build_time_console() -> void:
 	_time_note.custom_minimum_size = Vector2(320, 0)
 	v.add_child(_time_note)
 
+# ---- P8 阶段 5：天气面板（自动 / 手动 + 季节合法选项；只读主循环的天气状态）----
+
+## 折叠态小胶囊放在时间胶囊右侧；展开态是独立的左下角小面板，不遮挡时间面板。
+func _build_weather_console() -> void:
+	_weather_pill = _mk_button("☁ 天气  --", 14, _toggle_weather_panel)
+	_weather_pill.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+	_weather_pill.offset_left = 204.0
+	_weather_pill.offset_right = 372.0
+	_weather_pill.offset_top = -66.0
+	_weather_pill.offset_bottom = -32.0
+	_weather_pill.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	_root.add_child(_weather_pill)
+
+	_weather_panel = PanelContainer.new()
+	_weather_panel.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+	_weather_panel.offset_left = 398.0
+	_weather_panel.offset_right = 754.0
+	_weather_panel.offset_top = WEATHER_PANEL_TOP
+	_weather_panel.offset_bottom = -32.0
+	_weather_panel.add_theme_stylebox_override("panel", _panel_style(Color(0.045, 0.055, 0.075, 0.72)))
+	_weather_panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	_weather_panel.visible = false
+	_root.add_child(_weather_panel)
+
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 6)
+	_weather_panel.add_child(v)
+
+	var header := HBoxContainer.new()
+	v.add_child(header)
+	var ttl := _mk_label("天气 · WEATHER", 15, ACCENT, 3)
+	ttl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	header.add_child(ttl)
+	var collapse := _mk_button("收折 ▾", 12, _toggle_weather_panel)
+	collapse.custom_minimum_size = Vector2(70, 28)
+	header.add_child(collapse)
+
+	_weather_big = _mk_label("--", 26, CREAM, 4)
+	_weather_big.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	v.add_child(_weather_big)
+
+	_weather_sub = _mk_label("", 11, Color(0.90, 0.84, 0.74, 0.95), 2)
+	_weather_sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	v.add_child(_weather_sub)
+
+	_weather_hold = _mk_label("", 10, Color(0.82, 0.76, 0.66, 0.92), 2)
+	_weather_hold.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	v.add_child(_weather_hold)
+
+	_weather_next = _mk_label("", 10, Color(0.80, 0.74, 0.62, 0.9), 2)
+	_weather_next.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	v.add_child(_weather_next)
+
+	var line := ColorRect.new()
+	line.color = Color(1.0, 0.88, 0.71, 0.16)
+	line.custom_minimum_size = Vector2(0, 1)
+	v.add_child(line)
+
+	# 自动 / 手动：与时间来源切换同一种双按钮交互，当前模式高亮。
+	var mode_row := HBoxContainer.new()
+	mode_row.add_theme_constant_override("separation", 8)
+	v.add_child(mode_row)
+	var mode_lbl := _mk_label("模式", 11, DIM, 2)
+	mode_lbl.custom_minimum_size = Vector2(32, 0)
+	mode_row.add_child(mode_lbl)
+	_weather_auto_btn = _mk_button("自动", 12, _on_weather_auto_pressed)
+	_weather_auto_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_weather_auto_btn.custom_minimum_size = Vector2(0, 28)
+	_weather_auto_btn.tooltip_text = "按季节权重与确定性随机自动推进天气"
+	mode_row.add_child(_weather_auto_btn)
+	_weather_manual_btn = _mk_button("手动", 12, _on_weather_manual_pressed)
+	_weather_manual_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_weather_manual_btn.custom_minimum_size = Vector2(0, 28)
+	_weather_manual_btn.tooltip_text = "锁定手动选择的天气，直到切回自动"
+	mode_row.add_child(_weather_manual_btn)
+
+	var pick_lbl := _mk_label("手动选择 · 仅列本季合法选项", 10, Color(0.68, 0.62, 0.53, 0.9), 2)
+	v.add_child(pick_lbl)
+	_weather_type_grid = GridContainer.new()
+	_weather_type_grid.columns = 4
+	_weather_type_grid.add_theme_constant_override("h_separation", 5)
+	_weather_type_grid.add_theme_constant_override("v_separation", 4)
+	v.add_child(_weather_type_grid)
+
+	var note := _mk_label("天气只影响观感，不改变任何进度 · W 收折", 10, Color(0.62, 0.57, 0.49, 0.82), 2)
+	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	note.custom_minimum_size = Vector2(320, 0)
+	v.add_child(note)
+
+func _toggle_weather_panel() -> void:
+	_weather_open = not _weather_open
+	_weather_panel.visible = _weather_open
+	_weather_idle = 0.0
+	if _weather_open:
+		_refresh_weather(_data)
+
+func toggle_weather_panel() -> void:
+	_toggle_weather_panel()
+
+## 收起天气面板的公共路径（收折按钮 / 空闲自动收折 / H 隐藏界面共用）。
+func _collapse_weather_panel() -> void:
+	_weather_open = false
+	_weather_panel.visible = false
+
+## 只读主循环传入的 weather 状态字典：胶囊与面板文字都从这里派生，不保存第二份天气状态。
+func _refresh_weather(d: Dictionary) -> void:
+	var w: Dictionary = d.get("weather", {})
+	if w.is_empty():
+		return
+	var label := str(w.get("label", "晴"))
+	var type_id := str(w.get("type", "clear"))
+	var auto_on := bool(w.get("auto", true))
+	var season_label := str(w.get("season_label", "春季"))
+	var intensity := clampf(float(w.get("intensity", 0.0)), 0.0, 1.0)
+	if _weather_pill != null:
+		var pill_text := "☁ 天气  " + label
+		if _weather_pill.text != pill_text:
+			_weather_pill.text = pill_text
+	if _weather_panel == null or not _weather_panel.visible:
+		return
+	if _weather_big.text != label:
+		_weather_big.text = label
+	var sub := "%s · %s · 强度 %d%%" % [season_label, "自动" if auto_on else "手动", int(round(intensity * 100.0))]
+	if _weather_sub.text != sub:
+		_weather_sub.text = sub
+	var hold_text := ""
+	if auto_on:
+		var hold_left := maxf(0.0, float(w.get("hold_left", 0.0)))
+		var hold_total := maxf(0.0, float(w.get("hold_total", 0.0)))
+		hold_text = "预计再持续 %s" % _weather_duration_text(hold_left)
+		if hold_total > 0.0:
+			hold_text += " · 本轮共 %s" % _weather_duration_text(hold_total)
+	else:
+		hold_text = "手动锁定中 · 天气不会自行变化"
+	if _weather_hold.text != hold_text:
+		_weather_hold.text = hold_text
+	var next_text := ""
+	if auto_on:
+		var nxt := str(w.get("next_label", ""))
+		var trans := clampf(float(w.get("transition", 0.0)), 0.0, 1.0)
+		if not nxt.is_empty() and nxt != label and trans > 0.02:
+			next_text = "过渡中 · 即将转为 %s" % nxt
+		elif not nxt.is_empty() and nxt != label:
+			next_text = "趋势 · 之后转为 %s" % nxt
+		else:
+			next_text = "趋势 · 持续%s" % label
+	else:
+		next_text = "切回自动后恢复季节权重随机"
+	if _weather_next.text != next_text:
+		_weather_next.text = next_text
+	_refresh_weather_types(w)
+	_apply_weather_mode_ui("auto" if auto_on else "manual", type_id)
+
+## 把模拟秒换算成游戏内时长文本（权威时钟仍是模拟秒；显示只做单位换算）。
+func _weather_duration_text(seconds: float) -> String:
+	var total_min := int(round(seconds / 60.0))
+	if total_min <= 0:
+		return "不足 1 分钟"
+	var hours := total_min / 60
+	var mins := total_min % 60
+	if hours <= 0:
+		return "%d 分钟" % mins
+	if mins <= 0:
+		return "%d 小时" % hours
+	return "%d 小时 %d 分" % [hours, mins]
+
+## 手动类型按钮只在季节/合法集合变化时重建，避免 0.12s 刷新周期反复创建控件。
+func _refresh_weather_types(w: Dictionary) -> void:
+	var avail: Array = w.get("available_types", [])
+	if avail.is_empty() or _weather_type_grid == null:
+		return
+	var sig := str(avail)
+	if sig == _weather_types_sig:
+		return
+	_weather_types_sig = sig
+	for child in _weather_type_grid.get_children():
+		_weather_type_grid.remove_child(child)
+		child.queue_free()
+	_weather_type_buttons.clear()
+	for raw in avail:
+		var type_id := str(raw)
+		var label := str(WeatherCtl.TYPE_LABELS.get(type_id, type_id))
+		var b := _mk_button(label, 11, Callable(self, "_on_weather_type_pressed").bind(type_id))
+		b.custom_minimum_size = Vector2(72, 26)
+		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		b.tooltip_text = "手动设为%s（进入手动模式）" % label
+		_weather_type_grid.add_child(b)
+		_weather_type_buttons[type_id] = b
+	_weather_mode_ui = ""
+	_weather_active_ui = ""
+
+func _style_weather_rest(b: Button) -> void:
+	b.add_theme_color_override("font_color", CREAM)
+	b.add_theme_color_override("font_hover_color", Color(1.0, 0.97, 0.9))
+	b.add_theme_stylebox_override("normal", _btn_style(Color(0.06, 0.075, 0.10, 0.72), Color(1.0, 0.9, 0.74, 0.18)))
+	b.add_theme_stylebox_override("hover", _btn_style(Color(0.11, 0.13, 0.17, 0.85), Color(1.0, 0.85, 0.64, 0.42)))
+	b.add_theme_stylebox_override("pressed", _btn_style(Color(0.16, 0.13, 0.11, 0.9), Color(1.0, 0.78, 0.52, 0.7)))
+
+func _style_weather_active(b: Button) -> void:
+	b.add_theme_color_override("font_color", ACCENT)
+	b.add_theme_color_override("font_hover_color", Color(1.0, 0.86, 0.66))
+	b.add_theme_stylebox_override("normal", _btn_style(Color(0.24, 0.17, 0.12, 0.95), ACCENT))
+	b.add_theme_stylebox_override("hover", _btn_style(Color(0.30, 0.21, 0.14, 0.98), Color(0.95, 0.72, 0.50)))
+	b.add_theme_stylebox_override("pressed", _btn_style(Color(0.20, 0.14, 0.10, 0.98), ACCENT))
+
+## 模式高亮 + 手动类型高亮；只在变化时重刷 stylebox（避免每帧分配资源）。
+func _apply_weather_mode_ui(mode: String, active_type: String) -> void:
+	var active_key := active_type if mode == "manual" else ""
+	if _weather_mode_ui == mode and _weather_active_ui == active_key:
+		return
+	_weather_mode_ui = mode
+	_weather_active_ui = active_key
+	if _weather_auto_btn != null:
+		if mode == "auto":
+			_style_weather_active(_weather_auto_btn)
+		else:
+			_style_weather_rest(_weather_auto_btn)
+	if _weather_manual_btn != null:
+		if mode == "manual":
+			_style_weather_active(_weather_manual_btn)
+		else:
+			_style_weather_rest(_weather_manual_btn)
+	for raw in _weather_type_buttons.keys():
+		var key := str(raw)
+		var b := _weather_type_buttons[raw] as Button
+		if b == null:
+			continue
+		if mode == "manual" and key == active_type:
+			_style_weather_active(b)
+		else:
+			_style_weather_rest(b)
+
+func _on_weather_auto_pressed() -> void:
+	_weather_idle = 0.0
+	weather_auto_requested.emit(true)
+
+func _on_weather_manual_pressed() -> void:
+	_weather_idle = 0.0
+	weather_auto_requested.emit(false)
+
+## 手动类型：只发请求；合法性由主循环按权威天气状态的 available_types 判定（非法会给 toast）。
+func _on_weather_type_pressed(type_id: String) -> void:
+	_weather_idle = 0.0
+	weather_type_requested.emit(type_id)
+
 func _draw_compass() -> void:
 	if _compass == null or _font == null:
 		return
@@ -528,6 +798,7 @@ func update_all(d: Dictionary) -> void:
 	_compass.queue_redraw()
 	_refresh_time_display()
 	_refresh_day_length_note(d)
+	_refresh_weather(d)
 	if _almanac_open:
 		_refresh_almanac()
 
@@ -1018,6 +1289,8 @@ func set_hud_visible(v: bool, animate: bool = true) -> void:
 			_almanac.visible = false
 		if _time_open:
 			_collapse_time_panel()
+		if _weather_open:
+			_collapse_weather_panel()
 		if _perf_panel != null:
 			_perf_panel.visible = false
 		hide_hover_hint()
@@ -1040,6 +1313,16 @@ func _process(delta: float) -> void:
 			_time_idle += delta
 			if _time_idle > 14.0:
 				_collapse_time_panel()
+	# 天气面板同样空闲自动收折（与时间面板一致的 14s，保持观景画面简洁）
+	if _weather_open:
+		var wmp := get_viewport().get_mouse_position()
+		var wover: bool = _weather_panel.get_global_rect().has_point(wmp)
+		if wover:
+			_weather_idle = 0.0
+		else:
+			_weather_idle += delta
+			if _weather_idle > 14.0:
+				_collapse_weather_panel()
 	if _hover_label != null and _hover_label.visible:
 		var mp := get_viewport().get_mouse_position()
 		var vs := get_viewport().get_visible_rect().size

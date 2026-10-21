@@ -106,6 +106,9 @@ var _values: Dictionary = {
     "window_mode": "windowed",
     "time_source": "sim",
     "timezone": S.DEFAULT_TIMEZONE,
+    "weather_seed": S.WEATHER_SEED_DEFAULT,
+    "weather_auto": true,
+    "weather_type": S.WEATHER_DEFAULT_TYPE,
 }
 
 # ---- ESC 菜单入场/退场动画状态（单一 Tween，反复开关不叠加、不跳变） ----
@@ -1359,6 +1362,9 @@ func get_settings() -> Dictionary:
         "resolution": S.sanitize_resolution(_values["resolution"]),
         "time_source": TimeSvc.sanitize_source(str(_values.get("time_source", "sim"))),
         "timezone": TimeSvc.resolve_zone(str(_values.get("timezone", ""))),
+        "weather_seed": S.sanitize_weather_seed(_values.get("weather_seed", S.WEATHER_SEED_DEFAULT)),
+        "weather_auto": S.sanitize_weather_auto(_values.get("weather_auto", true)),
+        "weather_type": S.sanitize_weather_type(_values.get("weather_type", S.WEATHER_DEFAULT_TYPE)),
     }
     for key in S.VOLUME_KEYS:
         out[key] = clampf(float(_values.get(key, S.audio_default(key))), 0.0, 1.0)
@@ -1395,6 +1401,12 @@ func set_settings(s: Dictionary) -> void:
         _values["time_source"] = TimeSvc.sanitize_source(str(s["time_source"]))
     if s.has("timezone"):
         _values["timezone"] = TimeSvc.resolve_zone(str(s["timezone"]))
+    if s.has("weather_seed"):
+        _values["weather_seed"] = S.sanitize_weather_seed(s["weather_seed"])
+    if s.has("weather_auto"):
+        _values["weather_auto"] = S.sanitize_weather_auto(s["weather_auto"])
+    if s.has("weather_type"):
+        _values["weather_type"] = S.sanitize_weather_type(s["weather_type"])
     if s.has("volume"):
         _values["volume_master"] = clampf(float(s["volume"]), 0.0, 1.0)
     for key in S.VOLUME_KEYS:
