@@ -158,10 +158,13 @@ func _section_stairs_day() -> void:
 	_look(Vector3(4.25, 4.32, -1.45), Vector3(4.12, 3.55, -3.38), 64.0)
 	await _settle(4)
 	await _shot("stairs_landing_day", "转角平台：到达口已无遮挡、平台踏面与上段起步")
-	# 5) 上段俯视
-	_look(Vector3(2.60, 5.05, -2.35), Vector3(4.20, 4.10, -3.60), 64.0)
+	# 5) 上段：透过二层洞口 R2 斜视 Flight B 的踏步序列与壁装扶手
+	#    P7-V3.1：原机位 (2.60, 5.05, -2.35) 落在"被楼梯井壁封住的空腔"里
+	#    （井壁覆盖 y 4.25~5.63 且 z>-2.60 一侧），画面几乎全是井壁，无法判读踏步。
+	#    产品几何无问题（verify 探针的踏步/平台/井壁断言全部通过），故只修探针机位。
+	_look(Vector3(1.40, 6.00, -2.70), Vector3(3.30, 4.30, -3.30), 75.0)
 	await _settle(4)
-	await _shot("stairs_upper_flight_day", "上段：靠后墙的 11 级踏步与壁装扶手")
+	await _shot("stairs_upper_flight_day", "上段：透过二层洞口 R2 看 Flight B 的 11 级踏步与壁装扶手（含支架）")
 	# 6) 从一层室内仰视楼梯井（验证洞口真实开透、无残留遮挡楼板）
 	_look(Vector3(2.05, 1.65, -0.35), Vector3(3.85, 4.55, -2.60), 70.0)
 	await _settle(4)
@@ -181,10 +184,11 @@ func _section_attic_day() -> void:
 	_look(Vector3(0.55, 7.05, -1.55), Vector3(3.40, 6.10, -2.85), 66.0)
 	await _settle(4)
 	await _shot("attic_hole_railing_day", "二层洞口与栏杆：真实开口、无残留遮挡楼板")
-	# 3) 从洞口上方往下看楼梯
-	_look(Vector3(2.62, 6.32, -1.90), Vector3(3.55, 4.25, -3.40), 70.0)
+	# 3) 从洞口上方往下看楼梯：透过 R1 同时看到转角平台、上段起步与洞口边缘
+	#    P7-V3.1：原机位偏高偏近，画面主要是阁楼地板与栏杆立柱，楼梯只占一角。
+	_look(Vector3(4.20, 6.30, -3.35), Vector3(3.30, 3.25, -3.30), 80.0)
 	await _settle(4)
-	await _shot("attic_stairs_look_down_day", "从二层洞口向下看：上段-平台-下段连续")
+	await _shot("attic_stairs_look_down_day", "从二层洞口 R1 向下看：转角平台 + 上段起步 + 洞口边缘")
 	# 4) 床区
 	_look(Vector3(1.40, 6.95, 0.65), Vector3(-3.15, 6.10, -1.10), 62.0)
 	await _settle(4)

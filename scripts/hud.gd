@@ -32,6 +32,8 @@ var _date: Label
 var _tz_line: Label
 var _hint: VBoxContainer
 var _hint_lines: Array = []
+var _hint_keys: Label
+var _hint_keys2: Label
 var _compass: Control
 var _almanac: PanelContainer
 var _almanac_toggle_hint: Label
@@ -215,10 +217,12 @@ func _build() -> void:
 	keys.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	keys.custom_minimum_size = Vector2(320, 0)
 	_hint.add_child(keys)
+	_hint_keys = keys
 	var keys2 := _mk_label("F2 截图 · F3 性能 · F11 全屏", 11, Color(0.72, 0.66, 0.56, 0.85), 2)
 	keys2.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	keys2.custom_minimum_size = Vector2(320, 0)
 	_hint.add_child(keys2)
+	_hint_keys2 = keys2
 	# compass
 	_compass = Control.new()
 	_compass.set_anchors_preset(Control.PRESET_CENTER_TOP)
@@ -681,6 +685,8 @@ func _apply_auto_indicator() -> void:
 		_auto_label.text = ("◉ 自动运镜 · 开 · 按 C 切换" if _auto_orbit else "○ 自动运镜 · 关 · 按 C 切换")
 
 ## P7-V3：自由视角下切换右上角操作提示（轨道视角↔飞行视角），避免两套操作说明互相误导演示。
+## P7-V3.1：同时收敛"快捷键行"——自由视角下 C（自动运镜）作用于轨道相机，飞行时按下
+## 只会切换一个看不见的状态，属于冲突说明，因此从飞行文案里去掉，并在退出时原样恢复。
 func set_fly_hints(active: bool) -> void:
 	var orbit_lines: Array = [
 		"左键拖动 · 旋转视角",
@@ -697,6 +703,12 @@ func set_fly_hints(active: bool) -> void:
 	var lines: Array = fly_lines if active else orbit_lines
 	for i in range(mini(_hint_lines.size(), lines.size())):
 		(_hint_lines[i] as Label).text = str(lines[i])
+	if _hint_keys != null:
+		_hint_keys.text = ("空格 暂停 · Tab 天文历 · T 时间 · H 隐藏界面" if active
+			else "空格 暂停 · Tab 天文历 · T 时间 · C 自动运镜 · H 隐藏界面")
+	if _hint_keys2 != null:
+		_hint_keys2.text = ("F2 截图 · F3 性能 · F11 全屏 · F 退出自由视角" if active
+			else "F2 截图 · F3 性能 · F11 全屏")
 
 func show_toast(text: String) -> void:
 	_toast.text = text
