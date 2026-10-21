@@ -289,6 +289,14 @@ static func _h(x: float, z: float) -> float:
         h += 0.32 * t3 * t3 * (3.0 - 2.0 * t3)
     return h
 
+## P7-V4 public walk-surface accessor: terrain height incl. meadow mounds, for characters/probes.
+static func surface_y(x: float, z: float) -> float:
+    return _h(x, z)
+
+## P7-V4 public trail accessor: signed distance to nearest trail edge (negative => on trail).
+static func trail_clearance(x: float, z: float) -> float:
+    return _path_clearance(x, z)
+
 static func _hn(x: float, z: float) -> Vector3:
     var e := 0.32
     var hl := _h(x - e, z)

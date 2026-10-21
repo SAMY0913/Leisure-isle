@@ -12,6 +12,8 @@ const SEA_SHADER := "res://shaders/sea.gdshader"
 const BEAM_SHADER := "res://shaders/beam.gdshader"
 # P7-V3.2 T1 开发模式尺度标尺：默认不创建，--scale-debug 时才实例化一次。
 const ScaleOverlay := preload("res://tools/scale_debug_overlay.gd")
+# P7-V4 岛民（程序化模型 + 动画 + 日程）：--no-villager 时不创建，仅用于性能基线对照。
+const ISLE_VILLAGER := preload("res://scripts/isle_villager.gd")
 
 # ---- 灯塔旋转 / 光束参数（真实旋转透镜参考：Kīlauea Point 约 20 秒一圈，用作基础周期配置项） ----
 const LIGHTHOUSE_ROTATION_PERIOD := 20.0   # 秒/圈（1× 时间流速下的基础周期）
@@ -109,6 +111,11 @@ var _post_ao_mi: MeshInstance3D
 var _hud = null
 var _menu = null
 var _door_open := false
+# P7-V4 岛民与门状态仲裁：玩家开门请求与 NPC 开门请求合并，共同决定 _door_open。
+var _villager: Node3D = null
+var _no_villager := false
+var _door_npc := false
+var _door_player := false
 var _window_mats: Array = []
 var _window_halos: Array = []
 var _lantern_mat: ShaderMaterial
@@ -247,6 +254,11 @@ func _ready() -> void:
 	_transition = "--transition" in OS.get_cmdline_args() or "--transition" in OS.get_cmdline_user_args()
 	_selftest = "--selftest" in OS.get_cmdline_args() or "--selftest" in OS.get_cmdline_user_args()
 	_perf = "--perf" in OS.get_cmdline_args() or "--perf" in OS.get_cmdline_user_args()
+	_no_villager = "--no-villager" in OS.get_cmdline_args() or "--no-villager" in OS.get_cmdline_user_args()
+	# --selftest 是既有功能的确定性回归基线（含"点击木门"这类对门状态的精确断言），
+	# 岛民自主开门会引入真实竞态，故自测时不创建岛民；岛民自身由 P7-V4 专用探针覆盖。
+	if _selftest:
+		_no_villager = true
 	if _perf:
 		DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
 	# 读取用户设置：菜单、时钟、画质、音量、窗口模式共用同一份数据。
@@ -495,6 +507,9 @@ func _build_world() -> void:
 	_build_lighthouse_beam()
 	_collect_beam_occluders()
 	_update_smoke_clock()
+	# P7-V4：岛民与场景同父（World），复用小区块合批与光照收集；只创建一次，运行期不重建。
+	if not _no_villager:
+		_villager = ISLE_VILLAGER.build(holder, _cottage)
 
 # ============================================================
 # 相机
@@ -687,6 +702,10 @@ func _tick(delta: float) -> void:
 	_update_camera(delta)
 	_update_camera_light_dirs()
 	_update_lighting()
+	# P7-V4：岛民 tick 放在光照之后（当帧 _astro/_sun_alt/_events 已刷新），用真实帧 delta；
+	# 世界时间/暂停/时间来源全部由 ctx 注入，角色自身不建时钟。
+	if _villager != null:
+		_villager.call("sim_tick", delta, _villager_ctx())
 	_update_lighthouse_beam(delta)
 	_update_smoke_clock()
 	_update_ui(delta)
@@ -1417,16 +1436,49 @@ func _click_at(screen_pos: Vector2) -> void:
 				return
 
 func _toggle_door() -> void:
+	# 玩家开关门：覆盖 NPC 请求，按当前状态反向切换；音效/提示只在此路径播放。
+	var want := not _door_open
+	_door_npc = false
+	_door_player = want
+	_set_door_state(want, false)
+
+## P7-V4：门状态唯一仲裁入口。
+## silent=true 为岛民请求（不播音效/提示）；玩家请求（silent=false）清掉 NPC 请求后优先生效。
+## 两者任一需要开即保持开启；目标角度与 P7 原实现完全一致。
+func _set_door_state(open: bool, silent: bool = true) -> void:
+	if silent:
+		_door_npc = open
+	else:
+		_door_player = open
 	var pivot: Node3D = _cottage.get("door_pivot", null) as Node3D
 	if pivot == null:
 		return
-	_door_open = not _door_open
+	var want := _door_npc or _door_player
+	if want == _door_open:
+		return
+	_door_open = want
 	var target := -1.85 if _door_open else 0.0
 	var tw := create_tween()
 	tw.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN_OUT)
 	tw.tween_property(pivot, "rotation:y", target, 0.95)
-	_sfx_door(_door_open)
-	_hud.show_toast("小屋的门开了" if _door_open else "小屋的门轻轻合上")
+	if not silent:
+		_sfx_door(_door_open)
+		_hud.show_toast("小屋的门开了" if _door_open else "小屋的门轻轻合上")
+
+## P7-V4：岛民每帧上下文。世界时间/时间来源/暂停全部来自 main 权威状态，
+## 角色不读系统时间、不建独立时钟；frozen 时岛民冻结动画与逻辑。
+func _villager_ctx() -> Dictionary:
+	var advancing := _mode == Mode.PLAYING and (not _paused or _time_source == "real")
+	return {
+		"sim_seconds": _sim_seconds,
+		"sim_rate": _sim_rate,
+		"sim_delta": _sim_delta if advancing else 0.0,
+		"sun_alt": _sun_alt,
+		"events": _events,
+		"time_jump": _time_jump,
+		"frozen": (_mode != Mode.PLAYING) or _paused,
+		"door_set": Callable(self, "_set_door_state"),
+	}
 
 # ============================================================
 # 自动截图
