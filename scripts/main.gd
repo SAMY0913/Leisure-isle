@@ -6,6 +6,8 @@ extends Node3D
 
 const SHOTS_DIR := "D:/休闲小岛幻境/开发产物/shots/"
 const P7_SHOTS_DIR := "D:/休闲小岛幻境/开发产物/p7/shots/"
+const P8_SHOTS_DIR := "D:/休闲小岛幻境/开发产物/p8/shots/"
+const P8_MOON_DIR := "D:/休闲小岛幻境/开发产物/p8/moon/"
 const VIGNETTE_SHADER := "res://shaders/vignette.gdshader"
 const SKY_SHADER := "res://shaders/sky.gdshader"
 const SEA_SHADER := "res://shaders/sea.gdshader"
@@ -14,6 +16,8 @@ const BEAM_SHADER := "res://shaders/beam.gdshader"
 const ScaleOverlay := preload("res://tools/scale_debug_overlay.gd")
 # P7-V4 岛民（程序化模型 + 动画 + 日程）：--no-villager 时不创建，仅用于性能基线对照。
 const ISLE_VILLAGER := preload("res://scripts/isle_villager.gd")
+# P8：公历日历/季节投影（纯函数）。权威时间仍只有本文件的 _sim_seconds，日历只是它的只读投影。
+const ISLE_CALENDAR := preload("res://scripts/isle_calendar.gd")
 
 # ---- 灯塔旋转 / 光束参数（真实旋转透镜参考：Kīlauea Point 约 20 秒一圈，用作基础周期配置项） ----
 const LIGHTHOUSE_ROTATION_PERIOD := 20.0   # 秒/圈（1× 时间流速下的基础周期）
@@ -39,6 +43,9 @@ var _shots := false
 var _transition := false
 var _selftest := false
 var _p7shots := false
+var _p8shots := false
+var _p8moon := false      # --p8moon：八相月球专项截图（固定日期样本，不依赖现实时间）
+var _p8_moon_clear := false   # 月相诊断截图：临时清空云层，避免云遮住月盘判相
 
 # ---- 时间 ----
 var _sim_seconds := 0.0
@@ -250,7 +257,9 @@ var _settings_save_delay := -1.0
 func _ready() -> void:
 	randomize()
 	_p7shots = "--p7shots" in OS.get_cmdline_args() or "--p7shots" in OS.get_cmdline_user_args()
-	_shots = "--shots" in OS.get_cmdline_args() or "--shots" in OS.get_cmdline_user_args() or _p7shots
+	_p8shots = "--p8shots" in OS.get_cmdline_args() or "--p8shots" in OS.get_cmdline_user_args()
+	_p8moon = "--p8moon" in OS.get_cmdline_args() or "--p8moon" in OS.get_cmdline_user_args()
+	_shots = "--shots" in OS.get_cmdline_args() or "--shots" in OS.get_cmdline_user_args() or _p7shots or _p8shots or _p8moon
 	_transition = "--transition" in OS.get_cmdline_args() or "--transition" in OS.get_cmdline_user_args()
 	_selftest = "--selftest" in OS.get_cmdline_args() or "--selftest" in OS.get_cmdline_user_args()
 	_perf = "--perf" in OS.get_cmdline_args() or "--perf" in OS.get_cmdline_user_args()
@@ -263,7 +272,7 @@ func _ready() -> void:
 		DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
 	# 读取用户设置：菜单、时钟、画质、音量、窗口模式共用同一份数据。
 	# 自动化运行（截图/性能/自测/转场）使用默认设置，保证结果可复现且不受玩家配置影响。
-	var automation := _shots or _perf or _selftest or _transition or _p7shots
+	var automation := _shots or _perf or _selftest or _transition or _p7shots or _p8shots or _p8moon
 	_settings = Settings.defaults() if automation else Settings.load_settings()
 	_setup_time_api()
 	_time_source = String(_settings.get("time_source", "sim"))
@@ -307,6 +316,10 @@ func _ready() -> void:
 		_run_perf()
 	elif _transition:
 		_run_transition()
+	elif _p8shots:
+		_run_p8shots()
+	elif _p8moon:
+		_run_p8moonshots()
 	elif _p7shots:
 		_run_p7shots()
 	elif _shots:
@@ -331,9 +344,30 @@ func _init_time() -> void:
 		# 所选“显示时区”只影响 HUD 文本（见 _display_datetime），不得平移天体位置（T7 修复）。
 		_sim_seconds = _abs_unix + float(IsleAstro.TZ_SECONDS)
 	else:
-		# 参考项目的氛围起点：傍晚 17:18
-		_sim_seconds = 17.0 * 3600.0 + 18.0 * 60.0
+		# P8：模拟模式从“今天（岛屿参考时区）傍晚 17:18”开始，完整公历日期可编辑；
+		# 起点仍是 17:18 的氛围时刻，只是日期不再固定为 1970-01-01。
+		var now_local := _abs_unix + float(IsleAstro.TZ_SECONDS)
+		var today_start := now_local - fposmod(now_local, 86400.0)
+		_sim_seconds = today_start + 17.0 * 3600.0 + 18.0 * 60.0
+	# P8 调试/截图入口：--p8date YYYY-MM-DD、--p8time HH:MM（模拟模式、自动化运行用）
+	_apply_p8_cli_time()
 	_events = IsleAstro.day_events(_sim_seconds)
+
+## 解析 --p8date/--p8time 覆盖模拟起始日期时间；现实时间模式忽略（时间不可被调试参数改写）。
+func _apply_p8_cli_time() -> void:
+	if _time_source == "real":
+		return
+	var darg := _cmdline_value("--p8date")
+	if darg != "":
+		var dp := darg.split("-")
+		if dp.size() == 3 and dp[0].is_valid_int() and dp[1].is_valid_int() and dp[2].is_valid_int():
+			_sim_seconds = ISLE_CALENDAR.to_local_seconds(int(dp[0]), int(dp[1]), int(dp[2]))
+	var targ := _cmdline_value("--p8time")
+	if targ != "":
+		var tp := targ.split(":")
+		if tp.size() >= 2 and tp[0].is_valid_int() and tp[1].is_valid_int():
+			var day_start := _sim_seconds - fposmod(_sim_seconds, 86400.0)
+			_sim_seconds = day_start + float(int(tp[0])) * 3600.0 + float(int(tp[1])) * 60.0
 
 ## 时区/现实时间模块是热加载的：不存在时退回旧行为，避免脚本报错。
 func _setup_time_api() -> void:
@@ -642,6 +676,11 @@ func _build_ui() -> void:
 	add_child(_hud)
 	_hud.time_adjust.connect(_on_time_adjust)
 	_hud.time_set.connect(_on_time_set)
+	# P8 阶段 3：可见暂停控件与空格键共用同一状态；日历弹层跳转统一走 _jump_datetime()。
+	if _hud.has_signal("pause_toggle_requested"):
+		_hud.connect("pause_toggle_requested", _toggle_pause)
+	if _hud.has_signal("datetime_jump_requested"):
+		_hud.connect("datetime_jump_requested", _on_datetime_jump_requested)
 	# P5：T 面板的时间来源切换与设置菜单共用同一状态源（main._settings["time_source"]）
 	if _hud.has_signal("time_mode_requested"):
 		_hud.connect("time_mode_requested", _on_time_mode_requested)
@@ -805,10 +844,21 @@ func _update_lighting() -> void:
 	_sky_mat.set_shader_parameter("sun_dir", _sun_dir_world)
 	_sky_mat.set_shader_parameter("moon_dir", _moon_dir_world)
 	_sky_mat.set_shader_parameter("sun_disk_i", float(p["sunDiskI"]))
-	_sky_mat.set_shader_parameter("moon_disk_i", float(p["moonDiskI"]))
+	# P8 阶段 3.2：月盘亮度 = 调色板色温 × 相位亮面 × 白天保留 × 真实高度可见性；
+	# 旧实现直接用调色板 moonAlpha/moonDiskI，正午会压到 0.1/0.05，白天即使月亮在地平线上也看不见。
+	var moon_up := _moon_visibility(moon_alt)
+	var moon_day_keep := clampf(1.0 - maxf(_sun_alt, 0.0) / 80.0, 0.45, 1.0)
+	var moon_phase_light := 0.35 + 0.65 * _moon_illum
+	var moon_base := clampf(maxf(float(p["moonDiskI"]), 0.80), 0.0, 1.4)
+	var moon_disk_eff := clampf(moon_base * moon_phase_light * moon_day_keep * moon_up, 0.0, 2.0)
+	var moon_alpha_eff := clampf(maxf(float(p["moonAlpha"]), 0.75) * moon_up, 0.0, 1.0)
+	_sky_mat.set_shader_parameter("moon_disk_i", moon_disk_eff)
 	_sky_mat.set_shader_parameter("star_alpha", float(p["starAlpha"]))
-	_sky_mat.set_shader_parameter("moon_alpha", float(p["moonAlpha"]))
-	_sky_mat.set_shader_parameter("cloud_opacity", clampf(float(p["cloudOpacity"]) * 1.35 + 0.10, 0.0, 0.95))
+	_sky_mat.set_shader_parameter("moon_alpha", moon_alpha_eff)
+	var cloud_op := clampf(float(p["cloudOpacity"]) * 1.35 + 0.10, 0.0, 0.95)
+	if _p8_moon_clear:
+		cloud_op = 0.0
+	_sky_mat.set_shader_parameter("cloud_opacity", cloud_op)
 	_sky_mat.set_shader_parameter("moon_phase", _moon_illum)
 	_sky_mat.set_shader_parameter("moon_waxing", 1.0 if _moon_waxing else 0.0)
 	_sky_mat.set_shader_parameter("time_s", _frame_t)
@@ -989,10 +1039,24 @@ func _update_ui(delta: float) -> void:
 	if _ui_timer <= 0.0:
 		_ui_timer = 0.12
 		_phase_update()
+		# P8：日历/季节是权威模拟秒数的只读投影；显示日期仍遵循显示时区（现实模式可切时区）。
+		var cal: Dictionary = ISLE_CALENDAR.parts(_sim_seconds)
 		_hud.update_all({
 			"clock": clock,
-			"date": "%d月%d日" % [int(dt["month"]), int(dt["day"])],
+			"date": "%04d年%d月%d日" % [int(dt["year"]), int(dt["month"]), int(dt["day"])],
 			"weekday": IsleAstro.weekday_cn(dt),
+			"year": int(dt["year"]),
+			"month": int(dt["month"]),
+			"day": int(dt["day"]),
+			"hour": int(dt["hour"]),
+			"minute": int(dt["minute"]),
+			"season": int(cal["season"]),
+			"season_id": str(cal["season_id"]),
+			"season_label": str(cal["season_label"]),
+			"season_t": float(cal["season_t"]),
+			"season_weights": cal["season_weights"],
+			"day_index": int(cal["day_index"]),
+			"p8_cal": cal,
 			"phase": _phase_name,
 			"phase_short": _phase_short,
 			"sun_alt": _sun_alt,
@@ -1045,22 +1109,19 @@ func _phase_update() -> void:
 		_phase_name = "深夜"
 		_phase_short = "NIGHT"
 
+## P8 阶段 3.2：月盘可见度只由真实天文高度决定（0=地平线下, 1=升到约 +3.4° 以上）。
+## 调色板的 moonAlpha/moonDiskI 只提供夜色/色温，不再单独决定“月亮出不出现”。
+func _moon_visibility(alt_deg: float) -> float:
+	return smoothstep(-0.02, 0.06, sin(deg_to_rad(alt_deg)))
+
+## 八相按日月视黄经距角 Δλ 每 45° 划分（NASA/USNO 定义），不再用照亮比例猜：
+## 照亮比例 0.5 附近对应上/下弦，旧阈值会把它误标成盈凸/亏凸。
 func _moon_name() -> String:
-	var i := _moon_illum
-	var wax := _moon_waxing
-	if i < 0.04:
-		return "新月"
-	if i < 0.22:
-		return "娥眉月" if wax else "残月"
-	if i < 0.40:
-		return "上弦月" if wax else "下弦月"
-	if i < 0.62:
-		return "盈凸月" if wax else "亏凸月"
-	if i < 0.80:
-		return "盈凸月" if wax else "亏凸月"
-	if i < 0.96:
-		return "满月前" if wax else "满月后"
-	return "满月"
+	if not _astro.has("moon_phase_deg"):
+		return "--"
+	var phase_deg := float(_astro["moon_phase_deg"])
+	var sector := int(floor(phase_deg / 45.0 + 0.5)) % 8
+	return ["新月", "娥眉月", "上弦月", "盈凸月", "满月", "亏凸月", "下弦月", "残月"][sector]
 
 # ============================================================
 # 状态切换
@@ -1348,11 +1409,7 @@ func _unhandled_input(event: InputEvent) -> void:
 
 func _handle_key(k: int) -> void:
 	if k == KEY_SPACE:
-		if _time_source == "real":
-			_hud.show_toast("现实时间模式：时间随现实时钟前进")
-			return
-		_paused = not _paused
-		_hud.show_toast("时间暂停" if _paused else "时间继续")
+		_toggle_pause()
 	elif k == KEY_R:
 		_toggle_time_source()
 	elif k == KEY_TAB:
@@ -1397,6 +1454,19 @@ func _handle_key(k: int) -> void:
 		_events = IsleAstro.day_events(_sim_seconds)
 		_sync_boat_clock()
 		_hud.show_toast("跳至 %s" % ["清晨", "正午", "黄金时刻", "日落", "夜晚"][k - KEY_1])
+
+## P8：暂停/继续的唯一入口。空格键与 HUD 可见暂停按钮都调用这里，共用 _paused 状态；
+## 现实时间模式下拒绝（时间跟随现实时钟，不能暂停）。
+func _toggle_pause() -> void:
+	if _time_source == "real":
+		_hud.show_toast("现实时间模式：时间随现实时钟前进")
+		return
+	_paused = not _paused
+	_hud.show_toast("时间暂停" if _paused else "时间继续")
+
+## P8：HUD 日历弹层请求跳转 → 立即落到合法状态（不补演中间天气/日程）。
+func _on_datetime_jump_requested(year: int, month: int, day: int, hour: int, minute: int) -> void:
+	_jump_datetime(year, month, day, hour, minute, 0)
 
 func _reset_camera() -> void:
 	_theta = IsleMath.CAM_START_THETA
@@ -2606,6 +2676,90 @@ func _run_selftest() -> void:
 		if ctl != null and ctl.has_method("debug_state"):
 			smoke_ok = (ctl.debug_state() as Dictionary).has("emitting")
 	results.append(["炊烟双时间窗时钟已接入", smoke_ok])
+	# --- P8（第七阶段）：完整公历 / 可见暂停 / 日历编辑跳转 ---
+	var cal_a: Dictionary = ISLE_CALENDAR.parts(ISLE_CALENDAR.to_local_seconds(2024, 2, 29, 23, 59, 59) + 1.0)
+	var cal_b: Dictionary = ISLE_CALENDAR.parts(ISLE_CALENDAR.to_local_seconds(2026, 12, 31, 23, 59, 59) + 1.0)
+	var cal_w: Array = ISLE_CALENDAR.parts(ISLE_CALENDAR.to_local_seconds(2026, 10, 22, 12, 0, 0)).get("season_weights", [])
+	var weights_sum := 0.0
+	for wv in cal_w:
+		weights_sum += float(wv)
+	results.append(["P8 公历跨闰日/跨年推进", int(cal_a.get("month", 0)) == 3 and int(cal_a.get("day", 0)) == 1 and int(cal_b.get("year", 0)) == 2027 and int(cal_b.get("month", 0)) == 1 and int(cal_b.get("day", 0)) == 1 and cal_w.size() == 4 and absf(weights_sum - 1.0) < 0.0001])
+	# 可见暂停按钮：与空格共用 main._paused，点击→暂停再点击→继续
+	_mode = Mode.PLAYING
+	_time_source = "sim"
+	_paused = false
+	_hud.set_hud_visible(true, false)
+	if not bool(_hud.get("_time_open")):
+		_hud.toggle_time_panel()
+	_ui_timer = 0.0
+	_update_ui(0.0)
+	await get_tree().process_frame
+	var pause_btn := _hud.get("_pause_btn") as Button
+	if pause_btn != null:
+		pause_btn.pressed.emit()
+	await get_tree().process_frame
+	_ui_timer = 0.0
+	_update_ui(0.0)
+	var paused_by_btn: bool = _paused and pause_btn != null and pause_btn.text == "继续"
+	if pause_btn != null:
+		pause_btn.pressed.emit()
+	await get_tree().process_frame
+	_ui_timer = 0.0
+	_update_ui(0.0)
+	var resumed_by_btn: bool = (not _paused) and pause_btn != null and pause_btn.text == "暂停"
+	results.append(["P8 可见暂停按钮与空格共享状态", paused_by_btn and resumed_by_btn])
+	# 暂停冻结权威时钟（模拟模式）；恢复后继续推进
+	_paused = true
+	var frozen_t := _sim_seconds
+	await get_tree().create_timer(0.4).timeout
+	var freeze_ok: bool = absf(_sim_seconds - frozen_t) < 0.0001
+	_paused = false
+	await get_tree().create_timer(0.3).timeout
+	results.append(["P8 暂停冻结权威时钟", freeze_ok and _sim_seconds > frozen_t + 0.05])
+	# 日历编辑区：打开→+1 天→跳转；权威时钟立刻落在草稿日期
+	_hud.call("_toggle_calendar")
+	var cal_open_ok: bool = bool(_hud.get("_cal_open")) and is_equal_approx((_hud.get("_time_panel") as Control).offset_top, -744.0)
+	_hud.call("_seed_cal_draft", true)
+	var draft0: Dictionary = _hud.get("_cal_draft")
+	_hud.call("_cal_step", "day", 1)
+	var draft1: Dictionary = _hud.get("_cal_draft")
+	var step_ok: bool = int(draft1.get("day", 0)) != int(draft0.get("day", 0)) or int(draft1.get("month", 1)) != int(draft0.get("month", 1))
+	_hud.call("_on_cal_jump")
+	await get_tree().process_frame
+	var cal_now: Dictionary = ISLE_CALENDAR.parts(_sim_seconds)
+	var jump_ok: bool = int(cal_now.get("year", 0)) == int(draft1.get("year", 0)) and int(cal_now.get("month", 0)) == int(draft1.get("month", 0)) and int(cal_now.get("day", 0)) == int(draft1.get("day", 0)) and int(cal_now.get("hour", 0)) == int(draft1.get("hour", 0)) and int(cal_now.get("minute", 0)) == int(draft1.get("minute", 0))
+	results.append(["P8 日历编辑后跳转即时生效", cal_open_ok and step_ok and jump_ok])
+	# 直接跨年跳转：合法状态，不补演中间时间
+	_jump_datetime(2026, 12, 31, 23, 59, 30)
+	_jump_datetime(2027, 1, 1, 0, 0, 15)
+	var cal_y: Dictionary = ISLE_CALENDAR.parts(_sim_seconds)
+	results.append(["P8 跨年跳转进入合法状态", int(cal_y.get("year", 0)) == 2027 and int(cal_y.get("month", 0)) == 1 and int(cal_y.get("day", 0)) == 1 and int(cal_y.get("hour", 0)) == 0 and int(cal_y.get("minute", 0)) == 0])
+	_hud.call("_close_calendar")
+	var cal_closed_ok: bool = not bool(_hud.get("_cal_open")) and is_equal_approx((_hud.get("_time_panel") as Control).offset_top, -524.0)
+	_hud.toggle_time_panel()
+	results.append(["P8 日历收折恢复面板高度", cal_closed_ok])
+	# --- P8 阶段 3.2：月球相位/位置/可见性（固定日期样本，不依赖现实时间） ---
+	var old_source := _time_source
+	_time_source = "sim"
+	_jump_datetime(2026, 10, 26, 12, 12, 0)   # 本地 10-26 12:12 = UTC 04:12 满月时刻
+	var moon_full_i := _moon_illum
+	var moon_full_name := _moon_name()
+	_jump_datetime(2026, 12, 9, 8, 52, 0)     # 本地 12-09 08:52 = UTC 00:52 新月时刻
+	var moon_new_i := _moon_illum
+	var moon_new_name := _moon_name()
+	_jump_datetime(2026, 10, 19, 0, 13, 0)    # 上弦时刻
+	var moon_q1_name := _moon_name()
+	_jump_datetime(2026, 11, 2, 4, 28, 0)     # 下弦时刻
+	var moon_q3_name := _moon_name()
+	results.append(["P8 月相随机跳日期更新", absf(moon_full_i - moon_new_i) > 0.5 and moon_full_name == "满月" and moon_new_name == "新月" and moon_q1_name == "上弦月" and moon_q3_name == "下弦月"])
+	# 可见性由真实高度决定：满月刚落 +2.3° 可见；新月日 18:00 已落到 −4° 必须不可见
+	_jump_datetime(2026, 10, 26, 18, 0, 0)
+	var vis_full := _moon_visibility(float(_astro["moon_alt"]))
+	_jump_datetime(2026, 12, 9, 18, 0, 0)
+	var vis_new := _moon_visibility(float(_astro["moon_alt"]))
+	results.append(["P8 月球可见性由真实高度决定", vis_full > 0.5 and vis_new <= 0.0001 and _moon_visibility(-90.0) <= 0.0001 and _moon_visibility(45.0) >= 0.9999])
+	_time_source = old_source
+	_update_lighting()
 	# 汇总
 	var passed := 0
 	for r in results:
@@ -2880,6 +3034,28 @@ func _on_time_set(sec_of_day: float) -> void:
 	_events = IsleAstro.day_events(_sim_seconds)
 	_events_timer = 0.0
 	_sync_boat_clock()
+
+## P8：完整公历日期时间跳转（唯一权威时钟仍是 _sim_seconds）。
+## 合法性：先按公历夹取（闰年/大小月/年月日时分秒范围），不抛错、不产生非法状态。
+## 不补演：直接落点，随后当帧重算 _events 并刷新光照；船只/生态按“跳时”对齐。
+func _jump_datetime(year: int, month: int, day: int, hour: int, minute: int, second: int = 0) -> void:
+	if _time_source == "real":
+		_hud.show_toast("现实时间模式：时间随现实时钟前进")
+		return
+	var c: Dictionary = ISLE_CALENDAR.clamp_parts(year, month, day, hour, minute, second)
+	var target: float = ISLE_CALENDAR.to_local_seconds(
+		int(c["year"]), int(c["month"]), int(c["day"]),
+		int(c["hour"]), int(c["minute"]), int(c["second"]))
+	if absf(target - _sim_seconds) < 0.001:
+		return
+	_time_jump += target - _sim_seconds
+	_sim_seconds = target
+	_events = IsleAstro.day_events(_sim_seconds)
+	_events_timer = 0.0
+	_sim_delta = 0.0
+	_sync_boat_clock()
+	_update_lighting()
+	_hud.show_toast("已跳至 %s %02d:%02d" % [str(c["year"]) + "年" + str(c["month"]) + "月" + str(c["day"]) + "日", int(c["hour"]), int(c["minute"])])
 
 # ============================================================
 # 右键平移（受约束：水平沿相机右向，竖直调整观察中心高度）
@@ -4170,6 +4346,182 @@ func _take_photo() -> void:
 # P7 专项截图（--p7shots）：黄昏归栖 / 夜间稳定 / 清晨恢复 / 船鸟联动
 # 仅用于视觉验收：只放慢太阳并固定机位，不改变正式运行的生态规则。
 # ============================================================
+## P8 截图序列：日历 / 季节 / 月相 / 天气视觉的可复跑证据（固定日期时刻，不依赖现实时间）。
+func _run_p8shots() -> void:
+	_mode = Mode.PLAYING
+	_started = true
+	_paused = false
+	_menu.instant_finish()
+	_blending = ""
+	_apply_pose(_play_pose())
+	_hud.set_hud_visible(false, false)
+	_auto_orbit = false
+	_shot_beam_lock = false
+	_day_length = 3600.0
+	await get_tree().create_timer(0.9).timeout
+	# 1) 时间面板 + 日历编辑区（可见暂停按钮、年月日时分编辑、跳转按钮）
+	_hud.set_hud_visible(true, false)
+	_hud.toggle_time_panel()
+	_hud.call("_toggle_calendar")
+	await get_tree().create_timer(0.4).timeout
+	await _save_shot("p8_00_time_panel_calendar", P8_SHOTS_DIR)
+	print("[P8SHOTS] p8_00_time_panel_calendar date=", ISLE_CALENDAR.full_label(_sim_seconds))
+	_hud.call("_toggle_calendar")
+	_hud.toggle_time_panel()
+	_hud.set_hud_visible(false, false)
+	# 2) 四季正午：固定日期，验证季节底色 / 花卉 / 季节标签（视觉在阶段 4 回填）
+	for spec in [
+		["p8_01_spring_noon", 2026, 3, 20, 12, 20],
+		["p8_02_summer_noon", 2026, 6, 21, 12, 20],
+		["p8_03_autumn_noon", 2026, 9, 23, 12, 20],
+		["p8_04_winter_noon", 2026, 12, 21, 12, 20],
+	]:
+		_jump_datetime(int(spec[1]), int(spec[2]), int(spec[3]), int(spec[4]), int(spec[5]))
+		_p8_camera_island()
+		_update_lighting()
+		await get_tree().create_timer(1.2).timeout
+		await _save_shot(str(spec[0]), P8_SHOTS_DIR)
+		var cal: Dictionary = ISLE_CALENDAR.parts(_sim_seconds)
+		print("[P8SHOTS] ", str(spec[0]), " ", str(cal.get("date_label", "")), " ", str(cal.get("season_label", "")), " weights=", str(cal.get("season_weights", [])))
+	print("[P8SHOTS] done")
+	get_tree().quit()
+
+## P8 截图机位：默认观景轨道（与 perf noon_clear 一致，便于跨轮对比）。
+func _p8_camera_island() -> void:
+	_cam_target = Vector3(0, 6, 0)
+	_theta = 0.74
+	_elev = 0.28
+	_radius = 82.0
+	_fov = 42.0
+	_apply_pose(_play_pose())
+
+## P8 阶段 3.2 月球专项截图（--p8moon）：八相固定日期 + 海上生明月/不见月两组实景。
+## 相时刻取自 HKO 2026 四相表（北京时），不依赖现实时间；每相在相邻主相窗口内挑选
+## “Δλ 接近目标且月亮有高度”的时刻，避免把新月拍在地平线下。
+func _run_p8moonshots() -> void:
+	_mode = Mode.PLAYING
+	_started = true
+	_paused = true            # 固定时刻：模拟时钟不走，月亮不会在截图期间漂移
+	_menu.instant_finish()
+	_blending = ""
+	_hud.set_hud_visible(false, false)
+	_auto_orbit = false
+	_shot_beam_lock = false
+	var old_source := _time_source
+	_time_source = "sim"
+	_p8_moon_clear = true     # 相诊断：云层清零，只保留月盘与星空
+	await get_tree().create_timer(0.9).timeout
+	# 2026 年 10–11 月一个朔望月的四个主相（北京时，取自 HKO MoonPhases_2026.xml）
+	var t_new1: float = ISLE_CALENDAR.to_local_seconds(2026, 10, 10, 23, 50, 0)
+	var t_q1: float = ISLE_CALENDAR.to_local_seconds(2026, 10, 19, 0, 13, 0)
+	var t_full: float = ISLE_CALENDAR.to_local_seconds(2026, 10, 26, 12, 12, 0)
+	var t_q3: float = ISLE_CALENDAR.to_local_seconds(2026, 11, 2, 4, 28, 0)
+	var t_new2: float = ISLE_CALENDAR.to_local_seconds(2026, 11, 9, 15, 2, 0)
+	var phases: Array = [
+		["p8_moon_00_new", 0.0, t_new1, t_new1],
+		["p8_moon_01_waxing_crescent", 45.0, t_new1, t_q1],
+		["p8_moon_02_first_quarter", 90.0, t_q1, t_q1],
+		["p8_moon_03_waxing_gibbous", 135.0, t_q1, t_full],
+		["p8_moon_04_full", 180.0, t_full, t_full],
+		["p8_moon_05_waning_gibbous", 225.0, t_full, t_q3],
+		["p8_moon_06_last_quarter", 270.0, t_q3, t_q3],
+		["p8_moon_07_waning_crescent", 315.0, t_q3, t_new2],
+	]
+	for spec in phases:
+		var label := str(spec[0])
+		var target_deg := float(spec[1])
+		var t: float
+		if is_equal_approx(float(spec[2]), float(spec[3])):
+			# 新月整夜在地平线下、且与太阳同向（白天会被太阳眩光淹没）：保留精确时刻，
+			# 截图即“无月可见”的证据；其余主相取 ±16h 内可见的替身时刻（数值验证在 probe）。
+			if target_deg < 1.0:
+				t = float(spec[2])
+			else:
+				t = _p8_moon_pick_near(float(spec[2]), target_deg)
+		else:
+			t = _p8_moon_pick_time(float(spec[2]), float(spec[3]), target_deg)
+		_sim_seconds = t
+		_events = IsleAstro.day_events(t)
+		_events_timer = 0.0
+		_update_lighting()
+		var a: Dictionary = IsleAstro.compute(t)
+		var alt := float(a["moon_alt"])
+		var az := float(a["moon_az"])
+		var phase_deg := float(a.get("moon_phase_deg", 0.0))
+		var md := IsleMath.sun_dir(alt, az)
+		if target_deg < 1.0:
+			# 新月：月亮在地平线下，相机改拍同一时刻的夜空（无月即为正确证据）。
+			md = IsleMath.sun_dir(38.0, 180.0)
+		var tgt := md * 260.0
+		_pose_look(tgt - md * 60.0, tgt, 14.0)
+		await get_tree().create_timer(0.55).timeout
+		await _save_shot(label, P8_MOON_DIR)
+		print("[P8MOON] ", label, " ", ISLE_CALENDAR.full_label(t),
+			" dlambda=", "%.1f" % phase_deg, " illum=", "%.3f" % float(a["moon_illum"]),
+			" k_expected=", "%.3f" % ((1.0 - cos(deg_to_rad(phase_deg))) * 0.5),
+			" name=", _moon_name(), " alt=", "%.1f" % alt, " alt_deg_ok=", alt > 5.0,
+			" az=", "%.1f" % az, " vis=", "%.2f" % _moon_visibility(alt))
+	# 实景：满月刚升（海上生明月）与同日新月的 18:00 对照，证明可见性由真实高度决定。
+	# 两者都在云层清零的条件下拍，否则黄昏 0.95 云量会把刚升起的月亮整块遮掉。
+	_p8_moon_clear = true
+	for spec2 in [["p8_moon_08_full_over_sea", 2026, 10, 26, 19, 0], ["p8_moon_09_new_over_sea", 2026, 11, 9, 18, 0]]:
+		_jump_datetime(int(spec2[1]), int(spec2[2]), int(spec2[3]), int(spec2[4]), int(spec2[5]))
+		_paused = true
+		var a2: Dictionary = IsleAstro.compute(_sim_seconds)
+		var md2 := IsleMath.sun_dir(float(a2["moon_alt"]), float(a2["moon_az"]))
+		# 相机侧移：把月亮放到画面一侧，避免月亮正好升在岛屿/灯塔正后方被挡。
+		var side := md2.cross(Vector3.UP).normalized()
+		var eye2 := -md2 * 95.0 + side * 26.0 + Vector3(0, 18, 0)
+		_pose_look(eye2, Vector3(0, 8, 0), 46.0)
+		_update_lighting()
+		await get_tree().create_timer(0.9).timeout
+		await _save_shot(str(spec2[0]), P8_MOON_DIR)
+		print("[P8MOON] ", str(spec2[0]), " alt=", "%.1f" % float(a2["moon_alt"]),
+			" vis=", "%.2f" % _moon_visibility(float(a2["moon_alt"])),
+			" name=", _moon_name())
+	_p8_moon_clear = false
+	_time_source = old_source
+	_update_lighting()
+	print("[P8MOON] done")
+	get_tree().quit()
+
+## 主相精确时刻的视觉替身：在 ±16h 内挑 |Δλ−target| 小、且月亮高度 12..58° 的时刻。
+func _p8_moon_pick_near(t_exact: float, target_deg: float) -> float:
+	var best := t_exact
+	var best_score := -1e9
+	var off := -16.0 * 3600.0
+	while off <= 16.0 * 3600.0:
+		var t := t_exact + off
+		var a: Dictionary = IsleAstro.compute(t)
+		var alt := float(a["moon_alt"])
+		var err := absf(fposmod(float(a.get("moon_phase_deg", 0.0)) - target_deg + 180.0, 360.0) - 180.0)
+		if alt > 12.0 and alt < 58.0 and err < 10.0:
+			var score := alt * 0.5 - err * 8.0 - absf(off) / 3600.0 * 0.5
+			if score > best_score:
+				best_score = score
+				best = t
+		off += 600.0
+	return best
+
+## 在 [t0,t1] 窗口内挑选：日月视黄经距角接近 target_deg、且月亮有正高度、高度不过高（便于看明暗边）的时刻。
+func _p8_moon_pick_time(t0: float, t1: float, target_deg: float) -> float:
+	if is_equal_approx(t0, t1):
+		return t0
+	var best := t0
+	var best_score := -1e9
+	var t := t0
+	while t <= t1:
+		var a: Dictionary = IsleAstro.compute(t)
+		var err := absf(fposmod(float(a.get("moon_phase_deg", 0.0)) - target_deg + 180.0, 360.0) - 180.0)
+		var alt := float(a["moon_alt"])
+		if err <= 6.0 and alt > 5.0:
+			var score := minf(alt, 50.0) - err * 5.0
+			if score > best_score:
+				best_score = score
+				best = t
+		t += 300.0
+	return best
+
 func _run_p7shots() -> void:
 	_mode = Mode.PLAYING
 	_started = true

@@ -257,20 +257,33 @@ void sky() {
 	col = mix(col, sun_c, disk * clamp(disk_vis, 0.0, 1.0));
 
 	// 月亮：相位阴影 + 月盘光晕
+	// P8 阶段 3.2：亮侧必须朝向太阳——把太阳方向投影到月盘切平面作为横轴，
+	// 而不是固定世界基（旧写法只在月亮低空时碰巧正确，月亮高悬时明暗边会反向）。
 	float cos_moon = clamp(dot(d, md), -1.0, 1.0);
 	vec3 upv = abs(md.y) > 0.985 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
-	vec3 mx = normalize(cross(upv, md));
+	vec3 sun_proj = sun_dir - md * dot(sun_dir, md);
+	float sun_proj_len = length(sun_proj);
+	vec3 mx = sun_proj_len > 1e-4
+		? sun_proj / sun_proj_len
+		: normalize(cross(upv, md)) * (moon_waxing > 0.0 ? 1.0 : -1.0);
 	vec3 my = cross(md, mx);
 	vec2 mp = vec2(dot(d, mx), dot(d, my)) / 0.013;
 	float mr = length(mp);
 	float mdisk = 1.0 - smoothstep(0.92, 1.0, mr);
 	if (mdisk > 0.001) {
-		float py = clamp(mp.y, -1.0, 1.0);
 		float illum = clamp(moon_phase, 0.0, 1.0);
-		float term = (1.0 - 2.0 * illum) * sqrt(max(1.0 - py * py, 0.0));
-		float lit = moon_waxing > 0.0
-			? smoothstep(term - 0.015, term + 0.015, mp.x)
-			: smoothstep(term - 0.015, term + 0.015, -mp.x);
+		// cosα=2k−1；法线 n=(px,py,pz)，pz 朝观察者；n·L = px·sinα + pz·cosα。
+		float cosa = clamp(2.0 * illum - 1.0, -1.0, 1.0);
+		float sina = sqrt(max(1.0 - cosa * cosa, 0.0));
+		float px = clamp(mp.x, -1.0, 1.0);
+		float py = clamp(mp.y, -1.0, 1.0);
+		float pz = sqrt(max(1.0 - px * px - py * py, 0.0));
+		float lit;
+		if (sina < 0.02) {
+			lit = cosa > 0.0 ? 1.0 : 0.0;   // 满月全亮 / 新月全暗
+		} else {
+			lit = smoothstep(-0.02, 0.02, px * sina + pz * cosa);
+		}
 		// 月面细节：极淡的环形山亮度起伏，避免纯色圆片
 		float crater = vnoise(mp * 3.4 + 5.0) * 0.5 + vnoise(mp * 8.0 - 2.0) * 0.5;
 		vec3 mooncol = mix(moon_disk_col.rgb * 0.05, moon_disk_col.rgb * (1.15 + 0.20 * crater), lit);

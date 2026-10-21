@@ -418,6 +418,9 @@ static func compute(local_seconds: float) -> Dictionary:
 		"moon_parallax": float(moon["parallax"]),
 		"moon_sd": float(moon["sd"]),
 		"moon_phase_angle": float(moon["phase_angle"]),
+		# P8 阶段 3.2：日月视黄经距角 Δλ（0=新月, 90=上弦, 180=满月, 270=下弦）。
+		# 八相命名/月盘明暗方向都应以它为唯一判据；照亮比例在 0.5 附近无法区分上/下弦。
+		"moon_phase_deg": fposmod(float(moon["lon"]) - float(sun["lam_deg"]), 360.0),
 		"jd": jd,
 	}
 

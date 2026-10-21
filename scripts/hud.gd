@@ -8,8 +8,17 @@ signal time_adjust(seconds_delta: float)
 signal time_set(seconds_of_day: float)
 ## 时间来源切换请求（"real" / "sim"）：HUD 只负责 UI 与信号，状态源与保存由 main / 设置菜单负责。
 signal time_mode_requested(mode: String)
+## P8：面板内可见的暂停按钮；与空格键共用同一个 main._paused 权威状态，HUD 只发请求。
+signal pause_toggle_requested
+## P8：日历弹层请求跳到完整公历日期时间；合法性夹取与落地由 main._jump_datetime 统一负责。
+signal datetime_jump_requested(year: int, month: int, day: int, hour: int, minute: int)
 
 const ScrubberCtl := preload("res://scripts/ui_time_scrubber.gd")
+## P8 日历：把“年月日时分”离散编辑量换算成主时钟秒数（isle_calendar 为纯函数模块，不持有时钟）。
+const CalendarCtl := preload("res://scripts/isle_calendar.gd")
+## 时间面板高度：普通态 / 日历展开态（只改布局，不改任何时间状态）。
+const TIME_PANEL_TOP := -524.0
+const TIME_PANEL_TOP_CAL := -744.0
 ## 现实时间模式：时区换算全部走 IANA 真值表（isle_time / isle_tz_data）。
 const TimeSvc := preload("res://scripts/isle_time.gd")
 
@@ -79,6 +88,19 @@ var _auto_label: Label
 var _auto_orbit: bool = true
 var _auto_orbit_available: bool = true
 var _time_daylen: Label
+
+# ---- P8 日历 / 可见暂停（完整公历编辑，主时钟仍是 main._sim_seconds）----
+const CAL_FIELDS := ["year", "month", "day", "hour", "minute"]
+var _pause_btn: Button
+var _time_date: Label
+var _cal_toggle: Button
+var _cal_section: VBoxContainer
+var _cal_open: bool = false
+var _cal_draft: Dictionary = {}
+var _cal_value_labels: Dictionary = {}
+## 用户已修改草稿但尚未跳转：此时不要用权威时钟回灌，避免把编辑内容冲掉。
+var _cal_dirty: bool = false
+var _cal_preview: Label
 
 func _ready() -> void:
 	layer = 5
@@ -333,7 +355,8 @@ func _build_time_console() -> void:
 	_time_panel.offset_left = 34.0
 	_time_panel.offset_right = 386.0
 	# 第五阶段：header 下新增“现实时间 / 模拟时间”切换行，面板相应加高。
-	_time_panel.offset_top = -444.0
+	# P8：再新增日期行 + 日历编辑区，面板高度由 TIME_PANEL_TOP / TIME_PANEL_TOP_CAL 控制。
+	_time_panel.offset_top = TIME_PANEL_TOP
 	_time_panel.offset_bottom = -84.0
 	_time_panel.add_theme_stylebox_override("panel", _panel_style(Color(0.045, 0.055, 0.075, 0.72)))
 	_time_panel.mouse_filter = Control.MOUSE_FILTER_STOP
@@ -373,6 +396,17 @@ func _build_time_console() -> void:
 	_time_big.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	v.add_child(_time_big)
 
+	# P8：日期 / 星期 / 季节 + 可见暂停按钮（与空格共享同一权威状态）
+	var date_row := HBoxContainer.new()
+	date_row.add_theme_constant_override("separation", 8)
+	v.add_child(date_row)
+	_time_date = _mk_label("", 12, Color(0.90, 0.84, 0.74, 0.95), 3)
+	_time_date.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	date_row.add_child(_time_date)
+	_pause_btn = _mk_button("暂停", 12, _on_pause_pressed)
+	_pause_btn.custom_minimum_size = Vector2(74, 28)
+	date_row.add_child(_pause_btn)
+
 	# 现实时间模式：面板内显示 “现实时间 · 时区 · UTC 偏移 · 只读预览”
 	_time_tz_line = _mk_label("", 11, Color(0.84, 0.78, 0.68, 0.92), 3)
 	_time_tz_line.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -410,6 +444,32 @@ func _build_time_console() -> void:
 		var qb := _mk_button(str(qspec[0]), 11, Callable(self, "_set_clock_target").bind(int(qspec[1]), int(qspec[2])))
 		quick.add_child(qb)
 		_quick_buttons.append(qb)
+
+	# P8：日历编辑入口 + 折叠编辑区（年 / 月 / 日 / 时 / 分，跳转仍走 main 权威时钟）
+	_cal_toggle = _mk_button("编辑日期与时间 ▾", 11, _toggle_calendar)
+	v.add_child(_cal_toggle)
+	_cal_section = VBoxContainer.new()
+	_cal_section.add_theme_constant_override("separation", 6)
+	_cal_section.visible = false
+	v.add_child(_cal_section)
+	_cal_row(_cal_section, "year", "年")
+	_cal_row(_cal_section, "month", "月")
+	_cal_row(_cal_section, "day", "日")
+	_cal_row(_cal_section, "hour", "时")
+	_cal_row(_cal_section, "minute", "分")
+	_cal_preview = _mk_label("", 11, Color(0.82, 0.76, 0.66, 0.92), 2)
+	_cal_preview.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_cal_section.add_child(_cal_preview)
+	var jump_row := HBoxContainer.new()
+	jump_row.add_theme_constant_override("separation", 8)
+	_cal_section.add_child(jump_row)
+	var jump_btn := _mk_button("跳转到该时刻", 12, _on_cal_jump)
+	jump_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	jump_btn.custom_minimum_size = Vector2(0, 30)
+	jump_row.add_child(jump_btn)
+	var reset_btn := _mk_button("回到当前", 11, _on_cal_reset)
+	reset_btn.custom_minimum_size = Vector2(84, 30)
+	jump_row.add_child(reset_btn)
 
 	_time_note = _mk_label(TIME_NOTE_SIM, 10, Color(0.68, 0.62, 0.53, 0.9), 2)
 	_time_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -460,6 +520,10 @@ func update_all(d: Dictionary) -> void:
 		date_text += "  · 真实时间"
 	_date.text = date_text
 	_update_time_mode(d)
+	_refresh_date_row(d)
+	_refresh_pause_state()
+	if _cal_open and not _cal_dirty:
+		_seed_cal_draft(false)
 	_heading = float(d.get("heading", 0.0))
 	_compass.queue_redraw()
 	_refresh_time_display()
@@ -532,6 +596,12 @@ func _apply_time_mode_labels() -> void:
 			note = "现实时间模式 · 时钟跟随系统真实时间（%s）；时间轴 / 快捷按钮已只读，仅预览当日时刻，不修改系统时间。" % tz
 		if _time_note.text != note:
 			_time_note.text = note
+	# P8：现实时间模式下暂停 / 日历编辑只读，避免 UI 承诺做不到的操作
+	if _cal_toggle != null:
+		_cal_toggle.disabled = real
+		_cal_toggle.modulate = Color(1.0, 1.0, 1.0, 0.45) if real else Color(1.0, 1.0, 1.0, 1.0)
+		if real and _cal_open:
+			_close_calendar()
 	_apply_time_mode_buttons()
 
 ## 时间来源按钮高亮：现实时间 / 模拟时间，与设置菜单同一状态源（data.time_source）。
@@ -611,6 +681,9 @@ func _toggle_time_panel() -> void:
 	_time_idle = 0.0
 	if _time_open:
 		_refresh_time_display()
+		_seed_cal_draft(false)
+	else:
+		_close_calendar()
 
 func toggle_time_panel() -> void:
 	_toggle_time_panel()
@@ -633,6 +706,171 @@ func _set_clock_target(hour: int, minute: int) -> void:
 	if delta_min <= -720:
 		delta_min += 1440
 	time_adjust.emit(float(delta_min) * 60.0)
+
+# ---- P8：日历编辑区（只读主时钟 _data，编辑草稿本地保存，跳转由 main 落地）----
+
+func _refresh_date_row(d: Dictionary) -> void:
+	if _time_date == null:
+		return
+	var line: String = str(d.get("date", ""))
+	var weekday: String = str(d.get("weekday", ""))
+	if not weekday.is_empty():
+		line += "  " + weekday
+	var season_label: String = str(d.get("season_label", ""))
+	if not season_label.is_empty():
+		line += "  ·  " + season_label
+	if _time_date.text != line:
+		_time_date.text = line
+
+## 暂停按钮文案 / 可用性：现实时间模式下时钟不可暂停，按钮置灰。
+func _refresh_pause_state() -> void:
+	if _pause_btn == null:
+		return
+	var paused := bool(_data.get("paused", false))
+	var real: bool = _time_source == "real"
+	var text := "继续" if paused else "暂停"
+	if _pause_btn.text != text:
+		_pause_btn.text = text
+	var tip := "暂停模拟时间（空格）"
+	if real:
+		tip = "现实时间模式：时钟跟随系统，不可暂停"
+	elif paused:
+		tip = "继续模拟时间（空格）"
+	if _pause_btn.tooltip_text != tip:
+		_pause_btn.tooltip_text = tip
+	_pause_btn.disabled = real
+	_pause_btn.modulate = Color(1.0, 1.0, 1.0, 0.45) if real else Color(1.0, 1.0, 1.0, 1.0)
+
+## 暂停按钮：只发请求，_paused 的唯一状态源在 main（与空格键同一函数）。
+func _on_pause_pressed() -> void:
+	if _time_source == "real":
+		show_toast("现实时间模式：时间随现实时钟前进")
+		return
+	_time_idle = 0.0
+	pause_toggle_requested.emit()
+
+## 展开 / 收折日历编辑区：只改布局与本 UI 草稿，不改任何时间状态。
+func _toggle_calendar() -> void:
+	_cal_open = not _cal_open
+	_cal_section.visible = _cal_open
+	_cal_toggle.text = "日期与时间 · 收起 ▴" if _cal_open else "编辑日期与时间 ▾"
+	_time_panel.offset_top = TIME_PANEL_TOP_CAL if _cal_open else TIME_PANEL_TOP
+	_time_idle = 0.0
+	if _cal_open:
+		_seed_cal_draft(true)
+
+## 折叠日历（收起时间面板 / 隐藏 HUD / 自动收折时调用）：不触发信号、不动时间状态。
+func _close_calendar() -> void:
+	if not _cal_open:
+		return
+	_cal_open = false
+	_cal_section.visible = false
+	_cal_toggle.text = "编辑日期与时间 ▾"
+	_time_panel.offset_top = TIME_PANEL_TOP
+
+## 收起时间面板的公共路径：同步收日历并恢复面板高度。
+func _collapse_time_panel() -> void:
+	_time_open = false
+	_time_panel.visible = false
+	_close_calendar()
+
+## 一行 [单位][−][数值][＋]；回调带字段名与增量，全部夹取走 isle_calendar.clamp_parts。
+func _cal_row(parent: VBoxContainer, field: String, title: String) -> void:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 6)
+	parent.add_child(row)
+	var lab := _mk_label(title, 12, DIM, 2)
+	lab.custom_minimum_size = Vector2(26, 0)
+	row.add_child(lab)
+	var minus := _mk_button("−", 15, Callable(self, "_cal_step").bind(field, -1))
+	minus.custom_minimum_size = Vector2(36, 28)
+	row.add_child(minus)
+	var val := _mk_label("--", 16, CREAM, 3)
+	val.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	val.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(val)
+	_cal_value_labels[field] = val
+	var plus := _mk_button("+", 15, Callable(self, "_cal_step").bind(field, 1))
+	plus.custom_minimum_size = Vector2(36, 28)
+	row.add_child(plus)
+
+## 从权威时钟回灌草稿（force=true 丢弃用户未跳转的编辑，用于“回到当前”）。
+func _seed_cal_draft(force: bool = false) -> void:
+	if not force and _cal_dirty:
+		return
+	_cal_draft = {
+		"year": int(_data.get("year", 2026)),
+		"month": int(_data.get("month", 1)),
+		"day": int(_data.get("day", 1)),
+		"hour": int(_data.get("hour", 0)),
+		"minute": int(_data.get("minute", 0)),
+	}
+	_cal_dirty = false
+	_refresh_cal_labels()
+
+func _refresh_cal_labels() -> void:
+	if _cal_value_labels.is_empty():
+		return
+	for field in CAL_FIELDS:
+		if not _cal_value_labels.has(field):
+			continue
+		var lab := _cal_value_labels[field] as Label
+		if field == "year":
+			lab.text = "%04d" % int(_cal_draft.get("year", 2026))
+		elif field == "month":
+			lab.text = "%02d" % int(_cal_draft.get("month", 1))
+		elif field == "day":
+			lab.text = "%02d" % int(_cal_draft.get("day", 1))
+		elif field == "hour":
+			lab.text = "%02d" % int(_cal_draft.get("hour", 0))
+		else:
+			lab.text = "%02d" % int(_cal_draft.get("minute", 0))
+	if _cal_preview != null:
+		var cal := CalendarCtl.parts(CalendarCtl.to_local_seconds(
+			int(_cal_draft.get("year", 2026)), int(_cal_draft.get("month", 1)),
+			int(_cal_draft.get("day", 1)), int(_cal_draft.get("hour", 0)),
+			int(_cal_draft.get("minute", 0)), 0))
+		_cal_preview.text = "%s  %s" % [str(cal.get("date_label", "")), str(cal.get("weekday_cn", ""))]
+
+## 单步编辑：年夹 1..9999；月 / 时 / 分跨边界回绕；日按当月天数夹取（由 clamp_parts 负责）。
+func _cal_step(field: String, delta: int) -> void:
+	var y := int(_cal_draft.get("year", 2026))
+	var mo := int(_cal_draft.get("month", 1))
+	var d := int(_cal_draft.get("day", 1))
+	var h := int(_cal_draft.get("hour", 0))
+	var mi := int(_cal_draft.get("minute", 0))
+	match field:
+		"year":
+			y = clampi(y + delta, CalendarCtl.MIN_YEAR, CalendarCtl.MAX_YEAR)
+		"month":
+			mo = wrapi(mo + delta, 1, 13)
+		"day":
+			d += delta
+		"hour":
+			h = wrapi(h + delta, 0, 24)
+		"minute":
+			mi = wrapi(mi + delta, 0, 60)
+		_:
+			return
+	_cal_draft = CalendarCtl.clamp_parts(y, mo, d, h, mi, 0)
+	_cal_dirty = true
+	_time_idle = 0.0
+	_refresh_cal_labels()
+
+func _on_cal_jump() -> void:
+	if _time_source == "real":
+		show_toast("现实时间模式 · 日期与时间只读")
+		return
+	_cal_dirty = false
+	_time_idle = 0.0
+	datetime_jump_requested.emit(
+		int(_cal_draft.get("year", 2026)), int(_cal_draft.get("month", 1)),
+		int(_cal_draft.get("day", 1)), int(_cal_draft.get("hour", 0)),
+		int(_cal_draft.get("minute", 0)))
+
+func _on_cal_reset() -> void:
+	_time_idle = 0.0
+	_seed_cal_draft(true)
 
 func _refresh_almanac() -> void:
 	if _values.is_empty():
@@ -779,8 +1017,7 @@ func set_hud_visible(v: bool, animate: bool = true) -> void:
 			_almanac_open = false
 			_almanac.visible = false
 		if _time_open:
-			_time_open = false
-			_time_panel.visible = false
+			_collapse_time_panel()
 		if _perf_panel != null:
 			_perf_panel.visible = false
 		hide_hover_hint()
@@ -802,8 +1039,7 @@ func _process(delta: float) -> void:
 		else:
 			_time_idle += delta
 			if _time_idle > 14.0:
-				_time_open = false
-				_time_panel.visible = false
+				_collapse_time_panel()
 	if _hover_label != null and _hover_label.visible:
 		var mp := get_viewport().get_mouse_position()
 		var vs := get_viewport().get_visible_rect().size
