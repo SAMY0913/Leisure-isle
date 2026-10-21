@@ -75,6 +75,10 @@ var _sensitivity := 1.0
 var _auto_orbit := true
 var _orbit_speed := 0.018   # 自动运镜角速度：开关时平滑增减，杜绝硬停/硬启
 
+# ---- P7-V2 自由飞行观景相机（scripts/isle_flycam.gd，纯逻辑件） ----
+var _flycam: IsleFlyCam = null
+var _flycam_look_base := 0.0022
+
 # ---- 拖拽 / 双击 ----
 var _dragging := false
 var _drag_moved := 0.0
@@ -175,6 +179,7 @@ var _boat_trip := 0
 var _boat_rest_until := -1.0       # 模拟秒时间戳：RESTING 至少停靠到该时刻
 var _wave_height := 0.5            # 与 sea.gdshader 的 wave_height 保持一致（GDScript 复算波高）
 var _sim_delta := 0.0              # 上一帧推进的模拟秒数（灯塔转速/远海等待共用同一时钟）
+var _sim_rate := 1.0               # P7-V2：上一帧模拟秒/真实秒（生态超前量按时间倍率换算用）
 var _time_jump := 0.0              # 手动调时/时间轴跳转的累计秒数（用于对齐远海等待与休息窗口）
 # 小船生命周期 / 灯光 / 淡出
 var _boat_fade_mats: Array = []    # 船体 ShaderMaterial 副本（fade_alpha 抖动淡出）
@@ -483,6 +488,23 @@ func _build_camera() -> void:
 	_cam.current = true
 	_apply_pose(_movie_pose())
 	_update_camera_light_dirs()
+	# P7-V2 自由飞行观景相机：只创建逻辑件，不创建/不接管 Camera3D；
+	# 轨道参数在进入时冻结、退出混合结束后原样恢复（见 _enter_flycam/_exit_flycam）。
+	_flycam = IsleFlyCam.new()
+	var fly_cfg := IsleFlyCam.default_config()
+	# P7-V2 校准（以自由视角水平观察范围 D 为基准，实测海岸线最大直径≈63.6m）：
+	#   边界半径 R=130m（≈2.0× 岛直径）→ D=2R=260m；
+	#   普通速度=D/25≈10.4 m/s（完整穿越约 25s，20–30s 区间）；
+	#   加速=D/12≈21.7 m/s（2.08×，完整穿越约 12s，10–15s 区间）；
+	#   最高高度 130m（≈2.0× 岛直径，可俯瞰全岛与周边海域）。
+	fly_cfg["center"] = Vector3(0.0, 0.0, 0.0)
+	fly_cfg["radius"] = 130.0
+	fly_cfg["max_y"] = 130.0
+	fly_cfg["speed_regular"] = 10.4
+	fly_cfg["speed_boost"] = 21.7
+	fly_cfg["vertical_speed"] = 5.5
+	_flycam_look_base = float(fly_cfg.get("look_sensitivity", 0.0022))
+	_flycam.configure(fly_cfg)
 
 func _menu_pose() -> Dictionary:
 	return {"target": Vector3(0, 4.2, 0), "theta": _movie_theta, "elev": 0.50, "r": 106.0, "fov": 36.0}
@@ -603,9 +625,11 @@ func _advance_sim(delta: float) -> void:
 		# 现实模式：唯一来源是系统绝对时间；天文/生态时钟固定用岛屿参考时区（UTC+8）。
 		_abs_unix = Time.get_unix_time_from_system()
 		_sim_seconds = _abs_unix + float(IsleAstro.TZ_SECONDS)
+		_sim_rate = 1.0
 	else:
 		var rate := 86400.0 / maxf(_day_length, 1.0)
 		_sim_seconds += delta * rate
+		_sim_rate = rate
 	var after := fposmod(_sim_seconds, 86400.0)
 	_sim_delta = _sim_seconds - sim_before
 	if after < before:
@@ -645,6 +669,12 @@ func _tick(delta: float) -> void:
 	_update_ui(delta)
 
 func _update_camera(delta: float) -> void:
+	# 自由视角期间只由 IsleFlyCam 写相机变换/FOV；轨道相机参数（_theta/_elev/_radius/_cam_target/_fov）
+	# 保持冻结，退出混合结束后下一帧 _play_pose() 即原样恢复，不会跳回初始机位。
+	if _flycam != null and _flycam.active:
+		_flycam.update(delta, Callable(IsleMath, "terrain_height"))
+		_flycam.apply_to(_cam)
+		return
 	if not _blending.is_empty():
 		_blend_t += delta
 		var w := clampf(_blend_t / BLEND_DUR, 0.0, 1.0)
@@ -691,6 +721,7 @@ func _eco_ctx() -> Dictionary:
 		"sim_seconds": _sim_seconds,
 		"time_source": _time_source,
 		"paused": _paused,
+		"sim_rate": _sim_rate,  # 模拟秒/真实秒：生态超前量 = 过渡时长 × 该倍率
 	}
 
 func _update_lighting() -> void:
@@ -791,7 +822,15 @@ func _update_lighting() -> void:
 		var tmp_lights: Array = [bl]
 		tmp_lights.append_array(_lights)
 		lights = tmp_lights
-	var active_lights := mini(lights.size(), mini(_light_budget, 12))
+	# P7-V2：路灯保底。即使玩家把 light_budget 调低（或旧存档预算很小），
+	# 6 盏路灯 + 可能的船灯也必须全部参与着色，不允许高级选项意外关掉道路照明。
+	var lamp_need := 0
+	for L0 in _lights:
+		if String((L0 as Dictionary).get("kind", "")) == "street_lamp":
+			lamp_need += 1
+	var boat_extra := maxi(lights.size() - _lights.size(), 0)
+	var active_lights := maxi(mini(_light_budget, 12), lamp_need + boat_extra)
+	active_lights = mini(active_lights, mini(lights.size(), 12))
 	for i in range(12):
 		if i < active_lights:
 			var L: Dictionary = lights[i]
@@ -995,6 +1034,9 @@ func _enter_playing() -> void:
 func _open_menu() -> void:
 	if _blending == "to_game":
 		return
+	# 防御：若外部流程在飞行中要求开菜单，先安全退出自由相机，杜绝两套相机同时写变换。
+	if _flycam != null and _flycam.active:
+		_flycam.request_exit()
 	_mode = Mode.MENU
 	_menu.open(true)
 	_hud.set_hud_visible(false, true)
@@ -1010,6 +1052,41 @@ func _toggle_auto_orbit() -> void:
 		_hud.set_auto_orbit(_auto_orbit, true)
 	if not (_selftest or _perf or _shots or _transition):
 		_settings_save_delay = 0.25
+
+# ============================================================
+# P7-V2 自由飞行观景相机（Minecraft 创造飞行习惯的观景相机，不移动任何场景物体）
+# ============================================================
+func _enter_flycam() -> void:
+	if _flycam == null or _flycam.active:
+		return
+	# 用户灵敏度随设置生效；进入瞬间从当前画面位姿起飞，不重置视角。
+	_flycam.configure({"look_sensitivity": _flycam_look_base * maxf(_sensitivity, 0.05)})
+	_flycam.enter(_cam.global_transform, _cam.fov)
+	_dragging = false
+	_panning = false
+	Input.set_default_cursor_shape(Input.CURSOR_ARROW)
+	if _hud != null:
+		_hud.hide_hover_hint()
+		_hud.show_toast(_flycam.help_text())
+
+func _exit_flycam() -> void:
+	if _flycam == null or not _flycam.active:
+		return
+	_flycam.request_exit()
+	if _hud != null:
+		_hud.show_toast("返回观景视角")
+
+## 探针接口：自由相机状态 + 被冻结等待恢复的轨道相机参数。
+func debug_flycam() -> Dictionary:
+	if _flycam == null:
+		return {"available": false}
+	var d: Dictionary = _flycam.debug_state()
+	d["available"] = true
+	d["orbit"] = {
+		"theta": _theta, "elev": _elev, "radius": _radius, "fov": _fov,
+		"target": _cam_target, "auto_orbit": _auto_orbit,
+	}
+	return d
 
 ## Phase6：灯塔光束遮挡盒。优先用 cottage 导出的贴合盒；缺失时退回房屋整体包围盒，
 ## 保证「光穿墙」在任何情况下都不会再出现（宁大勿小，但只覆盖建筑实体）。
@@ -1062,13 +1139,19 @@ func _node_global_aabb(root: Node3D) -> AABB:
 
 ## Phase6：炊烟双时间窗由统一模拟时钟驱动（11:00-13:00 / 17:00-19:00）。
 ## fx.gd 的 smoke() 返回字典，T5 会把 SmokeClock 节点挂在 smoke["ctl"] 上。
+## P7-V2：海鸥在烟囱上且时间跳入出烟窗口时，BirdFlock 会请求 max(起飞过渡)+0.6 秒的
+## 烟雾压制（安全回退，避免跳时瞬间烟穿鸟）；这里把该 hold 标志透传给炊烟控制器。
+## 正常提前起飞不触发 hold；压制原因由 fx 控制器记录，可从 debug_state()/smoke_debug() 读取。
 func _update_smoke_clock() -> void:
 	var smoke: Variant = _fx.get("smoke", null)
 	if not (smoke is Dictionary):
 		return
 	var ctl: Variant = (smoke as Dictionary).get("ctl", null)
 	if ctl != null and ctl.has_method("set_sim_seconds"):
-		ctl.set_sim_seconds(fposmod(_sim_seconds, 86400.0))
+		var hold := false
+		if _birds != null and _birds.has_method("smoke_hold_remaining"):
+			hold = float(_birds.smoke_hold_remaining()) > 0.0
+		ctl.set_sim_seconds(fposmod(_sim_seconds, 86400.0), hold)
 
 func _on_settings_changed(s: Dictionary) -> void:
 	_settings.merge(s, true)
@@ -1083,6 +1166,22 @@ func _on_settings_changed(s: Dictionary) -> void:
 # 输入
 # ============================================================
 func _unhandled_input(event: InputEvent) -> void:
+	# P7-V2 自由飞行视角：F 进入/退出；ESC 优先退出（不打开菜单）；
+	# 飞行期间吞掉其它输入，避免 Space 暂停、点击开门/涟漪、C 自动运镜与飞行冲突。
+	if _flycam != null and _flycam.active and not _shots:
+		var esc_hit := event is InputEventKey and (event as InputEventKey).pressed \
+			and not (event as InputEventKey).echo and (event as InputEventKey).keycode == KEY_ESCAPE
+		if event.is_action_pressed("fly_toggle") or esc_hit:
+			_exit_flycam()
+			get_viewport().set_input_as_handled()
+			return
+		_flycam.handle_event(event)
+		get_viewport().set_input_as_handled()
+		return
+	if event.is_action_pressed("fly_toggle") and _mode == Mode.PLAYING and not _shots and _blending.is_empty():
+		_enter_flycam()
+		get_viewport().set_input_as_handled()
+		return
 	# Phase6：自动运镜开关（正式 InputMap 动作 toggle_auto_orbit，默认 C 键）
 	if event.is_action_pressed("toggle_auto_orbit") and _mode == Mode.PLAYING and not _shots:
 		_toggle_auto_orbit()
@@ -1273,6 +1372,34 @@ func _shot_boat_cruise(route: Dictionary, frac: float) -> void:
 	var d: Vector3 = smp["dir"]
 	_boat_apply(p, atan2(d.x, d.z), _boat_route_speed, 1.0 / 60.0)
 	_apply_boat_fade()
+
+# ---- P7-V2 截图专用摆位：把指定海鸥放到某 kind 的真实栖点上并返回其 Node3D。
+# 仅用于截图取景（P7-V2 分布随机化后自然分布可能不在镜头里），不改生态规则、不改选点/可用性逻辑。
+func _stage_bird_for_shot(index: int, perch_kind: String) -> Node3D:
+	if _birds == null or not _birds.has_method("debug_force_perch") or not _birds.has_method("debug_perch_stats"):
+		return null
+	var arr: Array = _birds.get("_birds") as Array
+	if index < 0 or index >= arr.size():
+		return null
+	var st: Dictionary = _birds.call("debug_perch_stats")
+	for p_v in (st.get("perches", []) as Array):
+		var p: Dictionary = p_v
+		if String(p.get("kind", "")) != perch_kind:
+			continue
+		if int(p.get("used", 0)) >= int(p.get("slots", 1)):
+			continue
+		var pid := String(p.get("id", ""))
+		if pid == "":
+			continue
+		if not bool(_birds.call("debug_force_perch", index, pid)):
+			continue
+		var b: Dictionary = arr[index]
+		b["timer"] = 30.0  # 截图专用：保持停栖，避免计时起飞打断取景
+		var nv = b.get("node", null)
+		if nv is Node3D:
+			return nv as Node3D
+		return null
+	return null
 
 func _run_shots() -> void:
 	_mode = Mode.MENU
@@ -1581,8 +1708,9 @@ func _run_shots() -> void:
 	await get_tree().create_timer(3.0).timeout
 	await _save_shot("04_birds")
 	# 栖息鸟近景：找一只此刻停在栖枝上的个体，从侧后方 2.6m 拍站姿
-	var perched_node: Node3D = null
-	if _birds != null:
+	# P7-V2 截图专用摆位：预置一只到真实屋脊栖点，保证近景有主体（不改生态规则）
+	var perched_node: Node3D = _stage_bird_for_shot(9, "ridge")
+	if perched_node == null and _birds != null:
 		for b_v in (_birds.get("_birds") as Array):
 			var b: Dictionary = b_v
 			if int(b.get("state", -1)) == 3:
@@ -1756,6 +1884,9 @@ func _run_shots() -> void:
 	await _save_shot("06_smoke_noon")
 	# ---- P6 专项：海鸥停在真实瓦面（近景，验证脚接触瓦片） ----
 	_set_time_of_day(10.0 * 60.0)
+	# P7-V2 截图专用摆位：分布随机化后自然分布可能不在此机位，预置两只到真实屋脊栖点保证取景有主体（不改生态规则）
+	_stage_bird_for_shot(8, "ridge")
+	_stage_bird_for_shot(9, "ridge")
 	_pose_look(Vector3(4.5, 20.5, 3.0), Vector3(-0.11, 18.05, -3.54), 26.0)
 	await get_tree().create_timer(1.6).timeout
 	await _save_shot("06_bird_roof")
@@ -2398,6 +2529,28 @@ func _collect_lights() -> void:
 		_light_sources.append(src)
 	for src in (_world.get("light_sources", []) as Array):
 		_light_sources.append(src)
+	# P7-V2 夜间道路照明修复：路灯固定占位。
+	# 旧实现把所有光源按 energy 降序后按画质 _light_budget 截断；6 盏路灯 energy=1.35，
+	# 低/中档（budget 4/6）会被小屋灯（1.60/1.50/1.42…）整体挤出，夜里道路没有任何受光。
+	# 现在先单独收集 6 盏路灯并永远排在最前，剩余名额才按能量分给环境灯。
+	var lamp_lights: Array = []
+	var lamp_positions: Array = []
+	for l in (_world.get("lamps", []) as Array):
+		if not (l is Array) or (l as Array).size() < 3:
+			continue
+		var ld: Variant = (l as Array)[2]
+		if typeof(ld) != TYPE_DICTIONARY:
+			continue
+		var ldct: Dictionary = ld
+		var lp: Vector3 = ldct.get("pos", ldct.get("position", Vector3.ZERO))
+		lamp_positions.append(lp)
+		lamp_lights.append({
+			"pos": lp,
+			"color": ldct.get("color", ldct.get("col", Color(1.0, 0.76, 0.45))),
+			"energy": float(ldct.get("energy", ldct.get("intensity", 1.35))),
+			"range": maxf(float(ldct.get("range", ldct.get("radius", 7.5))), 0.6),
+			"kind": "street_lamp",
+		})
 	var norm: Array = []
 	for src in _light_sources:
 		if typeof(src) != TYPE_DICTIONARY:
@@ -2406,14 +2559,69 @@ func _collect_lights() -> void:
 		var pos: Vector3 = d.get("pos", d.get("position", Vector3.ZERO))
 		if d.has("node") and (d["node"] as Object) is Node3D:
 			pos = (d["node"] as Node3D).global_position
+		# world.light_sources 里也包含这 6 盏路灯：按位置去重，避免同一盏灯被算两次。
+		var dup := false
+		for lp2 in lamp_positions:
+			if pos.distance_squared_to(lp2) < 0.0025:
+				dup = true
+				break
+		if dup:
+			continue
 		var col: Color = d.get("color", d.get("col", Color(1.0, 0.72, 0.42)))
 		var energy := float(d.get("energy", d.get("intensity", 1.2)))
 		var rng := float(d.get("range", d.get("radius", 7.0)))
-		norm.append({"pos": pos, "color": col, "energy": energy, "range": maxf(rng, 0.6)})
-	# 取最重要的 12 盏（toon/grass shader 上限；实际参与着色的数量由画质 _light_budget 决定）
+		var kind := String(d.get("kind", "other"))
+		if kind == "other":
+			# 灯塔/码头灯是夜景里的地标光，单独打标签（探针与排序可核对）
+			var lh: Variant = _world.get("lighthouse_light", {})
+			if lh is Dictionary and (lh as Dictionary).has("pos"):
+				if pos.distance_squared_to((lh as Dictionary)["pos"] as Vector3) < 0.25:
+					kind = "lighthouse"
+			if kind == "other":
+				var dock: Variant = _world.get("dock", {})
+				if dock is Dictionary:
+					var dl: Variant = (dock as Dictionary).get("light", {})
+					if dl is Dictionary and (dl as Dictionary).has("pos"):
+						if pos.distance_squared_to((dl as Dictionary)["pos"] as Vector3) < 0.25:
+							kind = "dock"
+		norm.append({"pos": pos, "color": col, "energy": energy, "range": maxf(rng, 0.6), "kind": kind})
+	# 取最重要的 12 盏（toon/grass shader 上限）；路灯永远在最前，任意画质截断都不会丢道路照明。
 	norm.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a["energy"]) > float(b["energy"]))
-	_lights = norm.slice(0, 12)
+	var merged: Array = []
+	merged.append_array(lamp_lights)
+	merged.append_array(norm)
+	_lights = merged.slice(0, 12)
 	RenderingServer.global_shader_parameter_set("g_light_count", float(_lights.size()))
+
+## P7-V2 探针接口：当前参与着色的光源清单（含 kind 标签）与真实路灯世界坐标。
+func debug_light_state() -> Dictionary:
+	var arr: Array = []
+	for L in _lights:
+		arr.append({
+			"kind": String(L.get("kind", "other")),
+			"pos": L["pos"],
+			"color": L["color"],
+			"energy": float(L["energy"]),
+			"range": float(L["range"]),
+		})
+	var lamp_positions: Array = []
+	for l in (_world.get("lamps", []) as Array):
+		if l is Array and (l as Array).size() >= 3 and typeof((l as Array)[2]) == TYPE_DICTIONARY:
+			var ld: Dictionary = (l as Array)[2]
+			lamp_positions.append(ld.get("pos", ld.get("position", Vector3.ZERO)))
+	# 与 _update_lighting 的 active_lights 口径一致（不含临时船灯；船灯可见时实际再多 1 盏）。
+	var lamp_need := 0
+	for L in _lights:
+		if String((L as Dictionary).get("kind", "")) == "street_lamp":
+			lamp_need += 1
+	return {
+		"quality": _quality,
+		"budget": _light_budget,
+		"active": mini(_lights.size(), maxi(mini(_light_budget, 12), lamp_need)),
+		"lamp_count": lamp_positions.size(),
+		"lamp_positions": lamp_positions,
+		"lights": arr,
+	}
 
 # ============================================================
 # 船 / 风车 / 秋千 场景动效引用
@@ -3606,10 +3814,10 @@ func _apply_quality(q: int) -> void:
 ## 五档兜底参数表（isle_quality.gd 缺键时补齐；数值即真实渲染参数）。
 func _fallback_quality_params(q: int) -> Dictionary:
 	var tiers: Array = [
-		{"msaa_3d": 0, "msaa_2d": 0, "screen_space_aa": 1, "taa": false, "scaling_3d_scale": 0.82, "scaling_3d_mode": 0, "max_fps": 45, "sky_cloud_detail": 0.0, "sea_wave_detail": 0.35, "sea_foam": 0.35, "sea_reflection": 0.0, "sea_ssr": 0.0, "sea_mesh_scale": 0.55, "grass_density": 0.45, "particle_density": 0.45, "light_budget": 4, "glow_strength": 0.45, "tonemap": 0, "exposure": 1.0, "lod_bias": 0.8},
-		{"msaa_3d": 1, "msaa_2d": 0, "screen_space_aa": 1, "taa": false, "scaling_3d_scale": 0.95, "scaling_3d_mode": 0, "max_fps": 60, "sky_cloud_detail": 1.0, "sea_wave_detail": 0.65, "sea_foam": 0.6, "sea_reflection": 1.0, "sea_ssr": 0.0, "sea_mesh_scale": 0.8, "grass_density": 0.72, "particle_density": 0.65, "light_budget": 6, "glow_strength": 0.6, "tonemap": 1, "exposure": 1.0, "lod_bias": 1.0},
-		{"msaa_3d": 2, "msaa_2d": 1, "screen_space_aa": 1, "taa": false, "scaling_3d_scale": 1.0, "scaling_3d_mode": 0, "max_fps": 0, "sky_cloud_detail": 2.0, "sea_wave_detail": 1.0, "sea_foam": 0.78, "sea_reflection": 1.0, "sea_ssr": 0.0, "sea_mesh_scale": 1.0, "grass_density": 1.0, "particle_density": 0.85, "light_budget": 8, "glow_strength": 0.6, "tonemap": 2, "exposure": 1.0, "lod_bias": 1.1},
-		{"msaa_3d": 2, "msaa_2d": 1, "screen_space_aa": 2, "taa": false, "scaling_3d_scale": 1.2, "scaling_3d_mode": 0, "max_fps": 0, "sky_cloud_detail": 3.0, "sea_wave_detail": 1.45, "sea_foam": 0.9, "sea_reflection": 1.0, "sea_ssr": 0.6, "sea_mesh_scale": 1.3, "grass_density": 1.0, "particle_density": 1.0, "light_budget": 10, "glow_strength": 0.75, "tonemap": 3, "exposure": 1.03, "lod_bias": 1.3},
+		{"msaa_3d": 0, "msaa_2d": 0, "screen_space_aa": 1, "taa": false, "scaling_3d_scale": 0.82, "scaling_3d_mode": 0, "max_fps": 45, "sky_cloud_detail": 0.0, "sea_wave_detail": 0.35, "sea_foam": 0.35, "sea_reflection": 0.0, "sea_ssr": 0.0, "sea_mesh_scale": 0.55, "grass_density": 0.45, "particle_density": 0.45, "light_budget": 7, "glow_strength": 0.45, "tonemap": 0, "exposure": 1.0, "lod_bias": 0.8},
+		{"msaa_3d": 1, "msaa_2d": 0, "screen_space_aa": 1, "taa": false, "scaling_3d_scale": 0.95, "scaling_3d_mode": 0, "max_fps": 60, "sky_cloud_detail": 1.0, "sea_wave_detail": 0.65, "sea_foam": 0.6, "sea_reflection": 1.0, "sea_ssr": 0.0, "sea_mesh_scale": 0.8, "grass_density": 0.72, "particle_density": 0.65, "light_budget": 8, "glow_strength": 0.6, "tonemap": 1, "exposure": 1.0, "lod_bias": 1.0},
+		{"msaa_3d": 2, "msaa_2d": 1, "screen_space_aa": 1, "taa": false, "scaling_3d_scale": 1.0, "scaling_3d_mode": 0, "max_fps": 0, "sky_cloud_detail": 2.0, "sea_wave_detail": 1.0, "sea_foam": 0.78, "sea_reflection": 1.0, "sea_ssr": 0.0, "sea_mesh_scale": 1.0, "grass_density": 1.0, "particle_density": 0.85, "light_budget": 9, "glow_strength": 0.6, "tonemap": 2, "exposure": 1.0, "lod_bias": 1.1},
+		{"msaa_3d": 2, "msaa_2d": 1, "screen_space_aa": 2, "taa": false, "scaling_3d_scale": 1.2, "scaling_3d_mode": 0, "max_fps": 0, "sky_cloud_detail": 3.0, "sea_wave_detail": 1.45, "sea_foam": 0.9, "sea_reflection": 1.0, "sea_ssr": 0.6, "sea_mesh_scale": 1.3, "grass_density": 1.0, "particle_density": 1.0, "light_budget": 11, "glow_strength": 0.75, "tonemap": 3, "exposure": 1.03, "lod_bias": 1.3},
 		{"msaa_3d": 3, "msaa_2d": 1, "screen_space_aa": 2, "taa": true, "scaling_3d_scale": 1.5, "scaling_3d_mode": 0, "max_fps": 0, "sky_cloud_detail": 3.0, "sea_wave_detail": 2.0, "sea_foam": 1.0, "sea_reflection": 1.0, "sea_ssr": 1.0, "sea_mesh_scale": 1.6, "grass_density": 1.0, "particle_density": 1.15, "light_budget": 12, "glow_strength": 0.9, "tonemap": 3, "exposure": 1.06, "lod_bias": 1.5},
 	]
 	return (tiers[clampi(q, 0, tiers.size() - 1)] as Dictionary).duplicate(true)
@@ -3720,6 +3928,8 @@ func _sfx_ui() -> void:
 		_audio.play_ui_click()
 
 func _update_hover(delta: float) -> void:
+	if _flycam != null and _flycam.active:
+		return
 	if _mode != Mode.PLAYING or _shots or _perf or _selftest or _transition:
 		return
 	if _blending != "" or _dragging or _panning:

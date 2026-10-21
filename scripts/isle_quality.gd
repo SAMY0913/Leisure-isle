@@ -52,6 +52,8 @@ const KEY_SPECS := {
 }
 
 ## 五档参数。顺序 = QUALITY_NAMES 下标。全部差异都在"自定义 unshaded 管线"里真实可见。
+## P7-V2：light_budget 最低档从 4 提到 7 —— 6 盏路灯固定占位、不能被画质截断，
+## 低档至少保留 6 路灯 + 灯塔（夜路照明与高画质同源）；其余档位相应顺延给小屋灯。
 const QUALITY_PRESETS := [
 	# 0 低 · 流畅：能跑就行，但海/天/草仍有基本层次（不掉到"坏画面"）
 	{
@@ -59,7 +61,7 @@ const QUALITY_PRESETS := [
 		"scaling_3d_scale": 0.85, "scaling_3d_mode": 1, "max_fps": 60,
 		"sky_cloud_detail": 0, "sea_wave_detail": 0, "sea_foam": 0.0, "sea_reflection": 0.0,
 		"sea_ssr": 0.0, "sea_mesh_scale": 0.6,
-		"grass_density": 0.45, "particle_density": 0.5, "light_budget": 4,
+		"grass_density": 0.45, "particle_density": 0.5, "light_budget": 7,
 		"glow_strength": 0.55, "tonemap": 0, "exposure": 1.0,
 		"posts_ao": false, "ao_strength": 0.0, "volumetric_fog": false,
 		"fog_scale": 0.85, "lod_bias": 0.8,
@@ -70,7 +72,7 @@ const QUALITY_PRESETS := [
 		"scaling_3d_scale": 0.92, "scaling_3d_mode": 0, "max_fps": 60,
 		"sky_cloud_detail": 1, "sea_wave_detail": 1, "sea_foam": 0.62, "sea_reflection": 1.0,
 		"sea_ssr": 0.0, "sea_mesh_scale": 0.8,
-		"grass_density": 0.7, "particle_density": 0.75, "light_budget": 6,
+		"grass_density": 0.7, "particle_density": 0.75, "light_budget": 8,
 		"glow_strength": 0.75, "tonemap": 0, "exposure": 1.0,
 		"posts_ao": false, "ao_strength": 0.0, "volumetric_fog": false,
 		"fog_scale": 0.92, "lod_bias": 0.9,
@@ -81,7 +83,7 @@ const QUALITY_PRESETS := [
 		"scaling_3d_scale": 1.0, "scaling_3d_mode": 0, "max_fps": 0,
 		"sky_cloud_detail": 2, "sea_wave_detail": 2, "sea_foam": 0.86, "sea_reflection": 1.0,
 		"sea_ssr": 0.0, "sea_mesh_scale": 1.0,
-		"grass_density": 1.0, "particle_density": 1.0, "light_budget": 8,
+		"grass_density": 1.0, "particle_density": 1.0, "light_budget": 9,
 		"glow_strength": 1.0, "tonemap": 0, "exposure": 1.0,
 		"posts_ao": true, "ao_strength": 0.35, "volumetric_fog": false,
 		"fog_scale": 1.0, "lod_bias": 1.0,
@@ -92,7 +94,7 @@ const QUALITY_PRESETS := [
 		"scaling_3d_scale": 1.15, "scaling_3d_mode": 0, "max_fps": 0,
 		"sky_cloud_detail": 2, "sea_wave_detail": 3, "sea_foam": 0.92, "sea_reflection": 1.15,
 		"sea_ssr": 0.58, "sea_mesh_scale": 1.2,
-		"grass_density": 1.2, "particle_density": 1.2, "light_budget": 10,
+		"grass_density": 1.2, "particle_density": 1.2, "light_budget": 11,
 		"glow_strength": 1.08, "tonemap": 0, "exposure": 1.02,
 		"posts_ao": true, "ao_strength": 0.55, "volumetric_fog": false,
 		"fog_scale": 1.06, "lod_bias": 1.15,

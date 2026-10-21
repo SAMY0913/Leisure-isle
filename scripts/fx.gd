@@ -33,6 +33,22 @@ const PERCH_MAX_SLOPE := 1.047198     # 60°，超过视为不可停栖
 const BODY_TILT_MAX := 0.610865       # 35°，身体 up 最大倾角（与飞行 PITCH_MAX 一致）
 const PERCH_FOOT_LIFT := 0.02         # 脚底沿法线抬起，避免与瓦面 z-fighting
 
+# P7-V2：海鸥停栖待机 / 随机分散 / 烟囱禁停
+const BIRD_IDLE_GAP_MIN := 2.2
+const BIRD_IDLE_GAP_MAX := 7.5
+const BIRD_IDLE_NIGHT_GAP_MIN := 2.0
+const BIRD_IDLE_NIGHT_GAP_MAX := 6.0
+const BIRD_HOP_HEIGHT := 0.11
+const BIRD_HOP_DURATION := 0.34
+const BIRD_HOP_MAX_SLOPE := 0.174533        # 10°，轻跳只允许接近水平的安全面
+const BIRD_HOP_MIN_NORMAL_Y := 0.95
+const PERCH_ROOF_ZONE_MAX := 2              # 屋顶区（ridge/eave/chimney）同时占用上限
+const PERCH_RIDGE_ROW_MAX := 2              # 同一排屋脊同时占用上限
+const PERCH_ZONE_SAME_PENALTY := 0.35       # 同区已占用惩罚
+const PERCH_MIN_DIST_WEIGHT := 6.0          # 与其它落点最小距离评分尺度
+const PERCH_SMOKE_LEAD_BUFFER := 0.35       # 烟囱提前起飞安全缓冲（秒）
+
+
 # ============================================================
 # 共享资源缓存（全局只创建一次）
 # ============================================================
@@ -614,12 +630,18 @@ class ChimneySmoke extends Node3D:
 	var _ratio := 0.0
 	var _emitting := false
 	var _time_label := ""
+	var _hold := false
+	var _hold_count := 0
+	var _last_hold_reason := ""
 
 	func _exit_tree() -> void:
 		IsleFx._smoke_unregister(self)
 
 	## main 每帧调用；sim_seconds = 游戏内当天秒（0..86400），不用系统时间/独立计时器。
-	func set_sim_seconds(sim_seconds: float) -> void:
+	## main 每帧调用；sim_seconds = 游戏内当天秒（0..86400），不用系统时间/独立计时器。
+	## P7-V2：hold=true 时仍更新模拟时钟/窗口判断/time_label，但强制不冒烟
+	##（海鸥被时间跳转困在烟囱上、正在起飞的安全回退路径，避免粒子穿鸟）。
+	func set_sim_seconds(sim_seconds: float, hold: bool = false) -> void:
 		if particles == null or not is_instance_valid(particles):
 			return
 		var t: float = fposmod(sim_seconds, IsleFx.SMOKE_DAY_SECONDS)
@@ -642,7 +664,18 @@ class ChimneySmoke extends Node3D:
 			_ramp = 0.0
 		_in_window = in_win
 		_ratio = clampf(_ramp / IsleFx.SMOKE_RAMP_SECONDS, 0.0, 1.0) if in_win else 0.0
-		_emitting = in_win and _ratio > 0.001
+		var was_hold: bool = _hold
+		_hold = hold
+		if _hold:
+			# 安全回退：压住烟雾（每次压制只记一次 hold_count）
+			if not was_hold:
+				_hold_count += 1
+				_last_hold_reason = "bird_on_chimney"
+			_ramp = 0.0
+			_ratio = 0.0
+			_emitting = false
+		else:
+			_emitting = in_win and _ratio > 0.001
 		particles.amount_ratio = _ratio
 		if particles.emitting != _emitting:
 			particles.emitting = _emitting
@@ -667,6 +700,9 @@ class ChimneySmoke extends Node3D:
 			"created_count": created_count,
 			"ratio": _ratio,
 			"sim_seconds": _last_sim,
+			"hold": _hold,
+			"hold_count": _hold_count,
+			"hold_reason": _last_hold_reason,
 			"emitters": emitters,
 		}
 
@@ -1506,6 +1542,22 @@ class BirdFlock extends Node3D:
 	var _boat_skip_reason := ""
 	var _eco_paused := false
 
+	# P7-V2：停栖待机 / 随机分布 / 烟囱禁停 状态
+	var _perch_rng := RandomNumberGenerator.new()
+	var _sim_seconds_cur := -1.0
+	var _sim_seconds_prev := -1.0
+	var _sim_rate_cur := 60.0
+	var _sun_alt_cur := 0.0
+	var _chimney_evictions := 0
+	var _cap_fallbacks := 0
+	var _no_slot_skips := 0
+	var _idle_active_count := 0
+	var _idle_counts: Dictionary = {}
+	var _smoke_hold_t := 0.0
+	var _smoke_hold_count := 0
+	var _smoke_hold_reason := ""
+
+
 	func _ready() -> void:
 		_ensure_ready()
 
@@ -1515,6 +1567,7 @@ class BirdFlock extends Node3D:
 		_inited = true
 		_rng.seed = 55021
 		_vis_rng.seed = 77123
+		_perch_rng.seed = 90210
 
 	# ---------------- public API ----------------
 	## 由 main 传入 world + cottage 合并后的栖枝数组；元素可为
@@ -1625,12 +1678,147 @@ class BirdFlock extends Node3D:
 				"resp_timer": float(b.get("resp_timer", 0.0)),
 				"resp_w": float(b.get("resp_w", 0.0)),
 				"pos": node.position,
+
+				"idle_action": String(b.get("idle_action", "none")),
+				"idle_active": bool(b.get("idle_active", false)),
+				"perch_zone": _bird_perch_zone(b),
+
+
 			})
 		return out
 
 	## P7：帆船经过近海航段时的一次性海鸥联动。trip 为 main 的航次号；
 	## 同一次航行最多启动一次（成功或跳过都记为已处理，船在范围内持续移动时不会逐帧重试）。
 	## 只调用既有起飞/飞行/降落接口，不新建飞行 AI。返回 {ok, birds, reason, trip}。
+
+	# ============================================================
+	# P7-V2：调试接口（test-verify / 验收探针依赖）
+	# ============================================================
+	func debug_idle_state() -> Array:
+		var out: Array = []
+		for b_v in _birds:
+			var b: Dictionary = b_v
+			out.append({
+				"index": _bird_index(b),
+				"state": int(b["state"]),
+				"action": String(b.get("idle_action", "none")),
+				"active": bool(b.get("idle_active", false)),
+				"t": float(b.get("idle_t", 0.0)),
+				"dur": float(b.get("idle_dur", 0.0)),
+				"cool": float(b.get("idle_cool", 0.0)),
+				"night": _night,
+				"hop_safe": _idle_hop_safe(b),
+				"perch_id": String(b.get("perch_id", "")),
+				"perch_zone": _bird_perch_zone(b),
+			})
+		return out
+
+	func debug_perch_availability(sim_seconds: float = -1.0, sun_alt: float = 0.0, night: bool = false, sim_rate: float = -1.0) -> Array:
+		var sim: float = sim_seconds if sim_seconds >= 0.0 else _sim_seconds_cur
+		var out: Array = []
+		for p_v in _perches:
+			var p: Dictionary = p_v
+			var ev: Dictionary = _perch_eligible(p, sim, sun_alt, night, true, sim_rate)
+			var used: Array = _perch_used.get(String(p["id"]), [])
+			out.append({
+				"id": String(p["id"]),
+				"kind": String(p["kind"]),
+				"zone": _perch_zone(String(p["kind"])),
+				"eligible": bool(ev["eligible"]),
+				"reason": String(ev["reason"]),
+				"lead_left": float(ev.get("lead_left", -1.0)),
+				"slots": int(p["slots"]),
+				"slots_free": int(p["slots"]) - used.size(),
+			})
+		return out
+
+	func debug_perch_stats() -> Dictionary:
+		var zones: Dictionary = {}
+		var roof := 0
+		var ridge := 0
+		var slots_total := 0
+		for p_v in _perches:
+			var p: Dictionary = p_v
+			var zone: String = _perch_zone(String(p["kind"]))
+			zones[zone] = int(zones.get(zone, 0)) + 1
+			slots_total += int(p["slots"])
+			if zone == "roof":
+				roof += 1
+			if String(p["kind"]) == "ridge":
+				ridge += 1
+		var used_slots := 0
+		for pid in _perch_used.keys():
+			used_slots += (_perch_used[pid] as Array).size()
+		var idle_active := 0
+		var idle_counts: Dictionary = {}
+		var perched := 0
+		for b_v in _birds:
+			var b: Dictionary = b_v
+			if int(b["state"]) == State.PERCH:
+				perched += 1
+			if bool(b.get("idle_active", false)):
+				idle_active += 1
+				var act: String = String(b.get("idle_action", "none"))
+				idle_counts[act] = int(idle_counts.get(act, 0)) + 1
+		return {
+			"perch_count": _perches.size(),
+			"total_slots": slots_total,
+			"used_slots": used_slots,
+			"roof_count": roof,
+			"ridge_count": ridge,
+			"zones": zones,
+			"perched": perched,
+			"idle_active": idle_active,
+			"idle_counts": idle_counts,
+			"chimney_evictions": _chimney_evictions,
+			"cap_fallbacks": _cap_fallbacks,
+			"no_slot_skips": _no_slot_skips,
+			"night": _night,
+			"roost_state": _roost_state,
+			"sim_seconds": _sim_seconds_cur,
+			"sim_rate": _sim_rate_cur,
+			"smoke_hold": _smoke_hold_t,
+			"smoke_hold_count": _smoke_hold_count,
+			"hold_reason": _smoke_hold_reason,
+			"perches": debug_perch_availability(_sim_seconds_cur, _sun_alt_cur, _night),
+		}
+
+	func debug_force_perch(index: int, perch_id: String) -> bool:
+		if index < 0 or index >= _birds.size():
+			return false
+		var p: Dictionary = _find_perch(perch_id)
+		if p.is_empty():
+			return false
+		var used: Array = _perch_used.get(perch_id, [])
+		var slot: int = -1
+		for s in range(int(p["slots"])):
+			if not used.has(s):
+				slot = s
+				break
+		if slot < 0:
+			return false
+		var b: Dictionary = _birds[index]
+		_cancel_idle(b)
+		_release_perch(b)
+		_reserve_slot(perch_id, slot)
+		b["perch_id"] = perch_id
+		b["perch_slot"] = slot
+		var sp: Vector3 = _slot_position(p, slot)
+		b["perch_pos"] = sp
+		b["state"] = State.PERCH
+		b["waiting"] = false
+		b["idle_off"] = Vector3.ZERO
+		var node: Node3D = b["node"]
+		node.position = sp
+		b["prev_pos"] = sp
+		b["teleport"] = true
+		b["fold"] = 1.0
+		b["timer"] = 999.0 if _night else IsleFx.BIRD_TIMER_MIN
+		_apply_perch_pose(b, p)
+		return true
+
+
+
 	func on_boat_shore_pass(trip: int, boat_pos: Vector3, sun_alt: float) -> Dictionary:
 		_ensure_ready()
 		_boat_pass_attempts += 1
@@ -1886,42 +2074,406 @@ class BirdFlock extends Node3D:
 				return p
 		return {}
 
-	func _find_free_slot(from_pos: Vector3) -> Dictionary:
-		var best: Dictionary = {}
-		var best_d := 1.0e30
+
+	# ============================================================
+	# P7-V2：停栖点区域 / 可用性（烟囱禁停） / 随机分散选点
+	# ============================================================
+	func _perch_zone(kind: String) -> String:
+		match kind:
+			"tree_branch", "tree":
+				return "tree"
+			"lighthouse_platform", "lighthouse":
+				return "lighthouse"
+			"dock", "dock_rail", "dock_bollard", "bollard":
+				return "dock"
+			"garden_post", "garden":
+				return "garden"
+			"ridge", "eave", "chimney", "roof":
+				return "roof"
+			"porch_rail", "porch_beam", "porch":
+				return "porch"
+			"lamp", "lamp_post", "street_lamp":
+				return "lamp"
+		return "other"
+
+	func _perch_zone_weight(zone: String) -> float:
+		# 夜里更安静：树冠/屋顶/灯塔权重提高，靠人活动区的门廊/路灯/码头降低。
+		if _night:
+			match zone:
+				"tree":
+					return 1.25
+				"lighthouse":
+					return 1.10
+				"roof":
+					return 1.00
+				"porch":
+					return 0.60
+				"dock":
+					return 0.55
+				"garden":
+					return 0.45
+				"lamp":
+					return 0.40
+			return 0.50
+		match zone:
+			"lighthouse":
+				return 1.05
+			"tree":
+				return 1.00
+			"roof":
+				return 0.95
+			"dock":
+				return 0.90
+			"porch":
+				return 0.80
+			"garden":
+				return 0.65
+			"lamp":
+				return 0.55
+		return 0.50
+
+	func _seconds_to_next_smoke_start(sim_seconds: float) -> float:
+		if sim_seconds < 0.0:
+			return 1.0e30
+		var t: float = fposmod(sim_seconds, IsleFx.SMOKE_DAY_SECONDS)
+		var a0: float = IsleFx.SMOKE_WINDOW_A_START
+		var a1: float = IsleFx.SMOKE_WINDOW_A_END
+		var b0: float = IsleFx.SMOKE_WINDOW_B_START
+		var b1: float = IsleFx.SMOKE_WINDOW_B_END
+		if t < a0:
+			return a0 - t
+		if t < a1:
+			return 0.0
+		if t < b0:
+			return b0 - t
+		if t < b1:
+			return 0.0
+		return IsleFx.SMOKE_DAY_SECONDS - t + a0
+
+	func _smoke_lead_seconds(sim_rate: float = -1.0) -> float:
+		var rate: float = sim_rate if sim_rate > 0.0 else _sim_rate_cur
+		return (IsleFx.BIRD_TRANSITION_MAX + IsleFx.PERCH_SMOKE_LEAD_BUFFER) * maxf(rate, 0.001)
+
+	func _perch_eligible(p: Dictionary, sim_seconds: float, sun_alt: float, night: bool, include_lead: bool = true, sim_rate: float = -1.0) -> Dictionary:
+		var kind: String = String(p.get("kind", ""))
+		if String(p.get("id", "")) == "":
+			return {"eligible": false, "reason": "invalid", "lead_left": -1.0}
+		if kind != "chimney":
+			return {"eligible": true, "reason": "ok", "lead_left": -1.0}
+		if night:
+			return {"eligible": false, "reason": "night", "lead_left": -1.0}
+		if sim_seconds < 0.0:
+			return {"eligible": false, "reason": "time_unknown", "lead_left": -1.0}
+		if IsleFx.is_smoke_window(sim_seconds):
+			return {"eligible": false, "reason": "smoke", "lead_left": 0.0}
+		var d: float = _seconds_to_next_smoke_start(sim_seconds)
+		if include_lead and d <= _smoke_lead_seconds(sim_rate):
+			return {"eligible": false, "reason": "smoke_lead", "lead_left": d}
+		return {"eligible": true, "reason": "ok", "lead_left": d}
+
+	func _perch_eligible_now(p: Dictionary) -> bool:
+		return bool(_perch_eligible(p, _sim_seconds_cur, _sun_alt_cur, _night)["eligible"])
+
+	func _update_clock_cache(delta: float, ctx: Dictionary) -> void:
+		var sim: float = -1.0
+		if ctx.has("sim_seconds"):
+			sim = float(ctx["sim_seconds"])
+		var rate: float = -1.0
+		if ctx.has("sim_rate"):
+			rate = float(ctx["sim_rate"])
+		if rate > 0.0:
+			_sim_rate_cur = clampf(rate, 0.01, 100000.0)
+		elif sim >= 0.0 and _sim_seconds_cur >= 0.0 and delta > 0.0:
+			var d: float = sim - _sim_seconds_cur
+			if d > 0.0:
+				var est: float = d / delta
+				if est >= 0.25 and est <= 4000.0:
+					# 时间跳转/拖拽会给出离谱倍率，只在相对稳定时采纳差分估计。
+					if absf(est - _sim_rate_cur) <= maxf(_sim_rate_cur * 0.75, 1.0):
+						_sim_rate_cur = est
+		if sim >= 0.0:
+			_sim_seconds_prev = _sim_seconds_cur
+			_sim_seconds_cur = sim
+
+	func _bird_perch_zone(b: Dictionary) -> String:
+		var pid: String = String(b.get("perch_id", ""))
+		if pid == "":
+			return ""
+		var p: Dictionary = _find_perch(pid)
+		if p.is_empty():
+			return ""
+		return _perch_zone(String(p.get("kind", "")))
+
+	func _used_zone_counts() -> Dictionary:
+		var out: Dictionary = {}
+		for b_v in _birds:
+			var b: Dictionary = b_v
+			var st: int = int(b["state"])
+			if st != State.PERCH and st != State.LANDING:
+				continue
+			var pid: String = String(b.get("perch_id", ""))
+			if pid == "":
+				continue
+			var p: Dictionary = _find_perch(pid)
+			if p.is_empty():
+				continue
+			var kind: String = String(p.get("kind", ""))
+			var zone: String = _perch_zone(kind)
+			out[zone] = int(out.get(zone, 0)) + 1
+			if kind == "ridge":
+				out["__ridge"] = int(out.get("__ridge", 0)) + 1
+		return out
+
+	func _slot_weight(p: Dictionary, sp: Vector3, from_pos: Vector3, zone_counts: Dictionary) -> float:
+		var zone: String = _perch_zone(String(p.get("kind", "")))
+		var w: float = _perch_zone_weight(zone)
+		var same_zone: int = int(zone_counts.get(zone, 0))
+		if same_zone > 0:
+			w *= pow(IsleFx.PERCH_ZONE_SAME_PENALTY, float(same_zone))
+		var used_same: int = (_perch_used.get(String(p["id"]), []) as Array).size()
+		if used_same > 0:
+			w *= pow(IsleFx.PERCH_ZONE_SAME_PENALTY, float(used_same))
+		var min_d: float = IsleFx.PERCH_MIN_DIST_WEIGHT
+		for b_v in _birds:
+			var b: Dictionary = b_v
+			var st: int = int(b["state"])
+			if st != State.PERCH and st != State.LANDING:
+				continue
+			min_d = minf(min_d, (b["node"] as Node3D).position.distance_to(sp))
+		w *= 0.20 + 0.80 * clampf(min_d / IsleFx.PERCH_MIN_DIST_WEIGHT, 0.0, 1.0)
+		w *= 0.85 + 0.30 * clampf(1.0 - from_pos.distance_to(sp) / 60.0, 0.0, 1.0)
+		return maxf(w, 0.000001)
+
+	func _collect_free_slots(from_pos: Vector3, kind_filter: String, relax_caps: bool) -> Array:
+		var cands: Array = []
+		var zone_counts: Dictionary = _used_zone_counts()
 		for p_v in _perches:
 			var p: Dictionary = p_v
-			var used: Array = _perch_used.get(String(p["id"]), [])
-			var slots: int = int(p["slots"])
-			for s in range(slots):
+			var pid: String = String(p["id"])
+			var kind: String = String(p["kind"])
+			if kind_filter != "" and kind != kind_filter:
+				continue
+			if not _perch_eligible_now(p):
+				continue
+			var zone: String = _perch_zone(kind)
+			if not relax_caps:
+				if zone == "roof" and int(zone_counts.get("roof", 0)) >= IsleFx.PERCH_ROOF_ZONE_MAX:
+					continue
+				if kind == "ridge" and int(zone_counts.get("__ridge", 0)) >= IsleFx.PERCH_RIDGE_ROW_MAX:
+					continue
+			var used: Array = _perch_used.get(pid, [])
+			for s in range(int(p["slots"])):
 				if used.has(s):
 					continue
-				var pos: Vector3 = _slot_position(p, s)
-				var d: float = pos.distance_squared_to(from_pos)
-				if d < best_d:
-					best_d = d
-					best = {"id": p["id"], "slot": s, "pos": pos}
-		return best
+				var sp: Vector3 = _slot_position(p, s)
+				cands.append({"id": pid, "slot": s, "pos": sp, "weight": _slot_weight(p, sp, from_pos, zone_counts), "zone": zone})
+		return cands
+
+	func _find_free_slot(from_pos: Vector3, kind_filter: String = "") -> Dictionary:
+		var cands: Array = _collect_free_slots(from_pos, kind_filter, false)
+		if cands.is_empty():
+			# 兜底：分散硬上限把可用点滤空时放宽上限；烟囱/夜间禁停由可用性判定把守，永不放宽。
+			cands = _collect_free_slots(from_pos, kind_filter, true)
+			if not cands.is_empty():
+				_cap_fallbacks += 1
+		if cands.is_empty():
+			_no_slot_skips += 1
+			return {}
+		var total: float = 0.0
+		for c_v in cands:
+			total += float((c_v as Dictionary)["weight"])
+		var r: float = _perch_rng.randf() * total
+		var acc: float = 0.0
+		var chosen: Dictionary = cands[cands.size() - 1]
+		for c_v in cands:
+			var c: Dictionary = c_v
+			acc += float(c["weight"])
+			if r <= acc:
+				chosen = c
+				break
+		return {"id": chosen["id"], "slot": int(chosen["slot"]), "pos": chosen["pos"]}
+
+	# ---------- P7-V2：停栖待机动作（单一调度器，无每鸟 Timer/Tween） ----------
+	func _init_bird_idle(b: Dictionary) -> void:
+		if b.has("idle_action"):
+			return
+		var node: Node3D = b["node"]
+		b["body"] = node.get_node_or_null("body")
+		b["idle_action"] = "none"
+		b["idle_active"] = false
+		b["idle_t"] = 0.0
+		b["idle_dur"] = 0.0
+		b["idle_env"] = 0.0
+		b["idle_cool"] = 0.25 + _vis_rng.randf() * 1.6
+		b["idle_side"] = 1.0 if _vis_rng.randf() < 0.5 else -1.0
+		b["idle_hop_h"] = IsleFx.BIRD_HOP_HEIGHT
+		b["idle_off"] = Vector3.ZERO
+
+	func _idle_hop_safe(b: Dictionary) -> bool:
+		var p: Dictionary = _find_perch(String(b.get("perch_id", "")))
+		if p.is_empty():
+			return false
+		var n: Vector3 = (p["normal"] as Vector3).normalized()
+		return float(p.get("slope", 0.0)) <= IsleFx.BIRD_HOP_MAX_SLOPE and n.y >= IsleFx.BIRD_HOP_MIN_NORMAL_Y
+
+	func _idle_next_cool() -> float:
+		if _night:
+			return _vis_rng.randf_range(IsleFx.BIRD_IDLE_NIGHT_GAP_MIN, IsleFx.BIRD_IDLE_NIGHT_GAP_MAX)
+		return _vis_rng.randf_range(IsleFx.BIRD_IDLE_GAP_MIN, IsleFx.BIRD_IDLE_GAP_MAX)
+
+	func _cancel_idle(b: Dictionary) -> void:
+		if not b.has("idle_action"):
+			return
+		var was_active: bool = bool(b["idle_active"])
+		b["idle_action"] = "none"
+		b["idle_active"] = false
+		b["idle_t"] = 0.0
+		b["idle_dur"] = 0.0
+		b["idle_env"] = 0.0
+		b["idle_off"] = Vector3.ZERO
+		if was_active:
+			b["idle_cool"] = _idle_next_cool()
+
+	func _finish_idle(b: Dictionary) -> void:
+		b["idle_action"] = "none"
+		b["idle_active"] = false
+		b["idle_t"] = 0.0
+		b["idle_dur"] = 0.0
+		b["idle_env"] = 0.0
+		b["idle_off"] = Vector3.ZERO
+		b["idle_cool"] = _idle_next_cool()
+
+	func _idle_hop_offset(b: Dictionary, p: Dictionary) -> Vector3:
+		if String(b["idle_action"]) != "hop" or not bool(b["idle_active"]):
+			return Vector3.ZERO
+		var q: float = clampf(float(b["idle_t"]) / maxf(float(b["idle_dur"]), 0.0001), 0.0, 1.0)
+		var n: Vector3 = (p["normal"] as Vector3).normalized()
+		return n * (float(b["idle_hop_h"]) * sin(PI * q))
+
+	func _idle_pick_action(b: Dictionary) -> void:
+		var names: Array = []
+		var weights: Array = []
+		if int(_roost_state) == ROOST_ACTIVE:
+			# 黄昏归栖中保持安静：只做无需位移的动作（不破坏停栖槽位/脚点验收）。
+			names = ["look_around", "preen", "rest"]
+			weights = [1.0, 1.2, 1.0]
+		elif _night:
+			names = ["rest", "look_around", "preen"]
+			weights = [8.0, 1.2, 0.8]
+		else:
+			names = ["look_around", "preen", "shake", "adjust_stance"]
+			weights = [3.0, 2.0, 1.2, 1.0]
+			if _idle_hop_safe(b):
+				names.append("hop")
+				weights.append(1.3)
+		var total: float = 0.0
+		for w_v in weights:
+			total += float(w_v)
+		var r: float = _vis_rng.randf() * total
+		var acc: float = 0.0
+		var pick: String = String(names[0])
+		for i in range(names.size()):
+			acc += float(weights[i])
+			if r <= acc:
+				pick = String(names[i])
+				break
+		b["idle_action"] = pick
+		b["idle_active"] = true
+		b["idle_t"] = 0.0
+		b["idle_env"] = 0.0
+		b["idle_side"] = 1.0 if _vis_rng.randf() < 0.5 else -1.0
+		match pick:
+			"hop":
+				b["idle_dur"] = IsleFx.BIRD_HOP_DURATION
+				b["idle_hop_h"] = IsleFx.BIRD_HOP_HEIGHT * _vis_rng.randf_range(0.75, 1.15)
+			"look_around":
+				b["idle_dur"] = _vis_rng.randf_range(1.1, 2.2)
+			"preen":
+				b["idle_dur"] = _vis_rng.randf_range(1.2, 2.4)
+			"shake":
+				b["idle_dur"] = _vis_rng.randf_range(0.45, 0.75)
+			"adjust_stance":
+				b["idle_dur"] = _vis_rng.randf_range(0.8, 1.4)
+			"rest":
+				b["idle_dur"] = _vis_rng.randf_range(2.4, 4.5)
+
+	func _update_idle(delta: float) -> void:
+		var active: int = 0
+		var counts: Dictionary = {}
+		for b_v in _birds:
+			var b: Dictionary = b_v
+			if not b.has("idle_action"):
+				_init_bird_idle(b)
+			if int(b["state"]) != State.PERCH:
+				if bool(b["idle_active"]):
+					_cancel_idle(b)
+				continue
+			var p: Dictionary = _find_perch(String(b.get("perch_id", "")))
+			if p.is_empty():
+				_cancel_idle(b)
+				continue
+			if bool(b["idle_active"]):
+				b["idle_t"] = float(b["idle_t"]) + delta
+				b["idle_off"] = _idle_hop_offset(b, p)
+				var act: String = String(b["idle_action"])
+				active += 1
+				counts[act] = int(counts.get(act, 0)) + 1
+				if float(b["idle_t"]) >= float(b["idle_dur"]):
+					_finish_idle(b)
+					active -= 1
+					counts[act] = maxi(int(counts.get(act, 0)) - 1, 0)
+			else:
+				b["idle_cool"] = float(b["idle_cool"]) - delta
+				if float(b["idle_cool"]) <= 0.0:
+					_idle_pick_action(b)
+					b["idle_off"] = _idle_hop_offset(b, p)
+					active += 1
+					var act2: String = String(b["idle_action"])
+					counts[act2] = int(counts.get(act2, 0)) + 1
+		_idle_active_count = active
+		_idle_counts = counts
+
+	func _snap_perch_foot(b: Dictionary) -> void:
+		b["idle_off"] = Vector3.ZERO
+		var pid: String = String(b.get("perch_id", ""))
+		if pid == "":
+			return
+		var p: Dictionary = _find_perch(pid)
+		if p.is_empty():
+			return
+		(b["node"] as Node3D).position = _slot_position(p, int(b.get("perch_slot", 0)))
+
+	func smoke_hold_remaining() -> float:
+		return _smoke_hold_t
+
+	## P7-V2：烟囱即将冒烟/正在冒烟/夜间时，把停在上面的鸟按正常起飞驱逐；
+	## 若已处于冒烟窗口（时间跳转场景），同帧设置烟雾压制 hold 作为安全回退。
+	func _update_perch_evictions() -> void:
+		for b_v in _birds:
+			var b: Dictionary = b_v
+			if int(b["state"]) != State.PERCH:
+				continue
+			var pid: String = String(b.get("perch_id", ""))
+			if pid == "":
+				continue
+			var p: Dictionary = _find_perch(pid)
+			if p.is_empty() or String(p.get("kind", "")) != "chimney":
+				continue
+			if _perch_eligible_now(p):
+				continue
+			# 时间跳入冒烟窗口而鸟仍占用烟囱：同一帧启动烟雾压制（安全回退；正常提前起飞不会走到这里）。
+			if _sim_seconds_cur >= 0.0 and IsleFx.is_smoke_window(_sim_seconds_cur):
+				if _smoke_hold_t <= 0.0:
+					_smoke_hold_count += 1
+					_smoke_hold_reason = "bird_on_chimney"
+				_smoke_hold_t = maxf(_smoke_hold_t, IsleFx.BIRD_TRANSITION_MAX + 0.6)
+			# 烟囱即将冒烟/正在冒烟/夜间：按正常起飞离开，飞行阶段会重新选有效栖点。
+			_chimney_evictions += 1
+			_begin_takeoff(b)
 
 	func _find_free_slot_kind(from_pos: Vector3, kind: String) -> Dictionary:
-		# 只在指定 kind 的栖枝空位里选（用于初始停栖把少数海鸥安排到屋脊）
-		var best: Dictionary = {}
-		var best_d := 1.0e30
-		for p_v in _perches:
-			var p: Dictionary = p_v
-			if String(p.get("kind", "")) != kind:
-				continue
-			var used: Array = _perch_used.get(String(p["id"]), [])
-			var slots: int = int(p["slots"])
-			for s in range(slots):
-				if used.has(s):
-					continue
-				var pos: Vector3 = _slot_position(p, s)
-				var d: float = pos.distance_squared_to(from_pos)
-				if d < best_d:
-					best_d = d
-					best = {"id": p["id"], "slot": s, "pos": pos}
-		return best
+		# 兼容旧接口（保留给探针/调试）；P7-V2 起所有选点统一走 _find_free_slot 的分散评分。
+		return _find_free_slot(from_pos, kind)
 
 	func _reserve_slot(id: String, slot: int) -> void:
 		if not _perch_used.has(id):
@@ -1933,6 +2485,7 @@ class BirdFlock extends Node3D:
 		arr.append(slot)
 
 	func _release_perch(b: Dictionary) -> void:
+		_cancel_idle(b)
 		var id: String = String(b["perch_id"])
 		if id != "" and _perch_used.has(id):
 			var arr: Array = _perch_used[id]
@@ -1962,6 +2515,7 @@ class BirdFlock extends Node3D:
 		return conflicts
 
 	# ---------------- birds ----------------
+
 	func _ensure_bird_nodes(n: int) -> void:
 		if _birds.size() == n:
 			return
@@ -1973,7 +2527,10 @@ class BirdFlock extends Node3D:
 			node.free()
 		_birds.clear()
 		for i in range(n):
-			_birds.append(_make_bird(i))
+			var b2: Dictionary = _make_bird(i)
+			_init_bird_idle(b2)
+			_birds.append(b2)
+
 
 	func _make_bird(idx: int) -> Dictionary:
 		var node := Node3D.new()
@@ -2099,6 +2656,7 @@ class BirdFlock extends Node3D:
 		return int(b.get("index", 0))
 
 	func _set_fly(b: Dictionary, idx: int) -> void:
+		_cancel_idle(b)
 		var angle: float = _rng.randf_range(0.0, TAU)
 		var node: Node3D = b["node"]
 		b["state"] = State.FLY
@@ -2111,6 +2669,7 @@ class BirdFlock extends Node3D:
 		b["timer"] = _rng.randf_range(1.0, 4.0)
 		b["fly_since"] = _t
 
+
 	func _reseat_all(initial: bool) -> void:
 		_clear_allocations()
 		for b_v in _birds:
@@ -2118,7 +2677,7 @@ class BirdFlock extends Node3D:
 			_release_perch(b)
 			b["waiting"] = false
 			if initial:
-				# 白天场景初始 ≈60% 已在空中，其余先停在栖枝上
+				# 白天场景初始 ≈60% 已在空中；停栖鸟落点由 P7-V2 分散评分随机抽取。
 				if _bird_index(b) < 4:
 					b["state"] = State.PERCH
 				else:
@@ -2133,13 +2692,7 @@ class BirdFlock extends Node3D:
 			var b2: Dictionary = b2_v
 			if int(b2["state"]) != State.PERCH:
 				continue
-			var slot: Dictionary = {}
-			if initial and _bird_index(b2) < 3:
-				# 初始 3 只优先落在屋脊：白天稳态 airborne=BIRD_DAY_TARGET，已停栖的鸟不会主动起飞，
-				# 因此 06_bird_roof 的白天镜头能稳定看到海鸥落在屋脊瓦面上。
-				slot = _find_free_slot_kind((b2["node"] as Node3D).position, "ridge")
-			if slot.is_empty():
-				slot = _find_free_slot((b2["node"] as Node3D).position)
+			var slot: Dictionary = _find_free_slot((b2["node"] as Node3D).position)
 			if slot.is_empty():
 				_set_fly(b2, _bird_index(b2))
 				b2["waiting"] = true
@@ -2157,6 +2710,7 @@ class BirdFlock extends Node3D:
 			if not perch.is_empty():
 				_apply_perch_pose(b2, perch)
 			b2["timer"] = _rng.randf_range(IsleFx.BIRD_TIMER_MIN, IsleFx.BIRD_TIMER_MAX)
+
 
 	# ---------------- motion helpers ----------------
 	func _orbit_point(b: Dictionary, angle: float) -> Vector3:
@@ -2205,6 +2759,8 @@ class BirdFlock extends Node3D:
 		return n
 
 	func _begin_takeoff(b: Dictionary) -> void:
+		_cancel_idle(b)
+		_snap_perch_foot(b)
 		_release_perch(b)
 		var node: Node3D = b["node"]
 		b["state"] = State.TAKEOFF
@@ -2218,6 +2774,7 @@ class BirdFlock extends Node3D:
 			_takeoffs_night += 1
 
 	func _begin_landing(b: Dictionary) -> bool:
+		_cancel_idle(b)
 		var slot: Dictionary = _find_free_slot((b["node"] as Node3D).position)
 		if slot.is_empty():
 			b["waiting"] = true
@@ -2395,14 +2952,7 @@ class BirdFlock extends Node3D:
 		if _roost_state == ROOST_ACTIVE:
 			b["timer"] = _rng.randf_range(IsleFx.BIRD_TIMER_MIN, IsleFx.BIRD_TIMER_MAX)
 			return
-		# 白天停在屋脊上的海鸥做「长时间歇脚」：不主动起飞，其他栖枝仍按原节奏轮换，
-		# 保证空中鸟数/起飞降落动画不变，同时白天屋顶始终有海鸥（验收：实际观察降落屋顶）。
-		var pid := String(b.get("perch_id", ""))
-		if pid != "":
-			var roof_p: Dictionary = _find_perch(pid)
-			if not roof_p.is_empty() and String(roof_p.get("kind", "")) == "ridge":
-				b["timer"] = _rng.randf_range(IsleFx.BIRD_TIMER_MIN, IsleFx.BIRD_TIMER_MAX)
-				return
+		# P7-V2：不再固定屋脊歇脚；屋顶鸟与其它栖枝同样轮换（白天分布由选点分散评分决定）。
 		b["timer"] = float(b["timer"]) - delta
 		if float(b["timer"]) > 0.0:
 			return
@@ -2451,7 +3001,8 @@ class BirdFlock extends Node3D:
 
 	func _update_landing(b: Dictionary, delta: float) -> void:
 		var node: Node3D = b["node"]
-		if _find_perch(String(b["perch_id"])).is_empty():
+		var target_p: Dictionary = _find_perch(String(b["perch_id"]))
+		if target_p.is_empty() or not _perch_eligible_now(target_p):
 			# 目标栖枝失效 → 中止并重新选点/盘旋
 			_release_perch(b)
 			_set_fly(b, _bird_index(b))
@@ -2466,7 +3017,7 @@ class BirdFlock extends Node3D:
 		if k >= 1.0:
 			node.position = to_p
 			var perch: Dictionary = _find_perch(String(b["perch_id"]))
-			if perch.is_empty():
+			if perch.is_empty() or not _perch_eligible_now(perch):
 				_release_perch(b)
 				_set_fly(b, _bird_index(b))
 				b["waiting"] = true
@@ -2477,6 +3028,8 @@ class BirdFlock extends Node3D:
 			b["state"] = State.PERCH
 			b["t"] = 0.0
 			b["timer"] = 999.0 if _night else _rng.randf_range(IsleFx.BIRD_TIMER_MIN, IsleFx.BIRD_TIMER_MAX)
+			# 落地稳定后先短暂停留再做待机动作（不要沿用飞行前的冷却）
+			b["idle_cool"] = _vis_rng.randf_range(0.8, 2.4)
 			if not _night and _roost_state == ROOST_NONE and _airborne_count() < IsleFx.BIRD_DAY_TARGET:
 				_nudge_takeoff()
 
@@ -2556,6 +3109,7 @@ class BirdFlock extends Node3D:
 	const ROLL_MAX: float = 0.55
 
 	# 停栖姿态：收翼贴体、尾巴略翘、偶尔左右张望
+
 	func _pose_perched(b: Dictionary, d: float) -> void:
 		var wl: Node3D = b["wing_l"]
 		var wr: Node3D = b["wing_r"]
@@ -2567,20 +3121,85 @@ class BirdFlock extends Node3D:
 		var fold: float = move_toward(float(b.get("fold", 1.0)), 1.0, d * 3.0)
 		b["fold"] = fold
 		var k: float = 1.0 - exp(-9.0 * d)
+		# P7-V2：停栖待机动作（单一调度器 _update_idle 驱动；结束 env→0 完全归位）
+		var act: String = String(b.get("idle_action", "none"))
+		var is_on: bool = bool(b.get("idle_active", false))
+		var it: float = float(b.get("idle_t", 0.0))
+		var iq: float = clampf(it / maxf(float(b.get("idle_dur", 1.0)), 0.0001), 0.0, 1.0)
+		var env: float = 0.0
+		if is_on:
+			env = smoothstep(0.0, 0.16, iq) * (1.0 - smoothstep(0.80, 1.0, iq))
+		b["idle_env"] = env
+		var side: float = float(b.get("idle_side", 1.0))
+		var look: float = sin(_t * 0.65 + float(b["phase"]) * 2.7) * 0.26
+		var head_y: float = look
+		var head_x: float = 0.0
+		var head_z: float = 0.0
+		var tail_x: float = -0.16
+		var wl_z: float = 0.10
+		var wr_z: float = -0.10
+		var el_y: float = -0.72
+		var er_y: float = 0.72
+		var el_z: float = 0.16
+		var er_z: float = -0.16
+		var legs_x: float = 0.0
+		var body_x: float = 0.0
+		var body_z: float = 0.0
+		match act:
+			"look_around":
+				head_y = look + side * sin(it * 2.1) * 0.55 * env
+				head_x = -0.18 * env
+			"preen":
+				head_x = 0.72 * env
+				head_y = look + side * 0.95 * env
+				if side > 0.0:
+					wl_z = 0.10 + 0.42 * env
+					el_y = -0.72 + 0.25 * env
+				else:
+					wr_z = -0.10 - 0.42 * env
+					er_y = 0.72 - 0.25 * env
+			"shake":
+				var f: float = sin(it * 46.0) * env
+				var f_l: float = sin(it * 46.0 + 2.2) * env
+				var f_r: float = sin(it * 46.0 + 3.9) * env
+				body_z = f * 0.10
+				head_y = look + f * 0.34
+				tail_x = -0.16 + f * 0.10
+				# 抖羽：双翼高频小幅错相位抖动（收拢翼面 +Z 方向），env→0 完全归位
+				wl_z = 0.10 + f_l * 0.075
+				wr_z = -0.10 - f_r * 0.075
+			"hop":
+				legs_x = -0.30 * env
+				body_x = -0.10 * env
+			"adjust_stance":
+				body_z = side * 0.07 * env
+				tail_x = -0.16 + sin(_t * 5.0 + float(b["phase"])) * 0.10 * env
+				head_x = -0.08 * env
+			"rest":
+				head_x = 0.62 * env
+				head_y = look * (1.0 - 0.85 * env)
+				head_z = side * 0.16 * env
+				legs_x = -0.18 * env
+				body_x = 0.06 * env
 		# 翼根沿身体轴向后收，肘部继续向后折，翼面略上抬贴住身体两侧
 		wl.rotation.y = lerpf(wl.rotation.y, lerpf(0.0, -1.42, fold), k)
 		wr.rotation.y = lerpf(wr.rotation.y, lerpf(0.0, 1.42, fold), k)
-		wl.rotation.z = lerpf(wl.rotation.z, lerpf(0.0, 0.10, fold), k)
-		wr.rotation.z = lerpf(wr.rotation.z, lerpf(0.0, -0.10, fold), k)
-		el.rotation.y = lerpf(el.rotation.y, lerpf(0.0, -0.72, fold), k)
-		er.rotation.y = lerpf(er.rotation.y, lerpf(0.0, 0.72, fold), k)
-		el.rotation.z = lerpf(el.rotation.z, lerpf(0.0, 0.16, fold), k)
-		er.rotation.z = lerpf(er.rotation.z, lerpf(0.0, -0.16, fold), k)
-		legs.rotation.x = lerpf(legs.rotation.x, 0.0, k)
-		tail.rotation.x = lerpf(tail.rotation.x, -0.16, k)
-		var look: float = sin(_t * 0.65 + float(b["phase"]) * 2.7) * 0.26
-		head.rotation.y = lerpf(head.rotation.y, look, 1.0 - exp(-3.0 * d))
-		head.rotation.x = lerpf(head.rotation.x, 0.0, k)
+		wl.rotation.z = lerpf(wl.rotation.z, lerpf(0.0, wl_z, fold), k)
+		wr.rotation.z = lerpf(wr.rotation.z, lerpf(0.0, wr_z, fold), k)
+		el.rotation.y = lerpf(el.rotation.y, lerpf(0.0, el_y, fold), k)
+		er.rotation.y = lerpf(er.rotation.y, lerpf(0.0, er_y, fold), k)
+		el.rotation.z = lerpf(el.rotation.z, lerpf(0.0, el_z, fold), k)
+		er.rotation.z = lerpf(er.rotation.z, lerpf(0.0, er_z, fold), k)
+		legs.rotation.x = lerpf(legs.rotation.x, legs_x, k)
+		tail.rotation.x = lerpf(tail.rotation.x, tail_x, k)
+		head.rotation.y = lerpf(head.rotation.y, head_y, 1.0 - exp(-3.0 * d))
+		head.rotation.x = lerpf(head.rotation.x, head_x, 1.0 - exp(-6.0 * d))
+		head.rotation.z = lerpf(head.rotation.z, head_z, 1.0 - exp(-6.0 * d))
+		var body := b.get("body", null) as Node3D
+		if body != null:
+			body.rotation.x = lerpf(body.rotation.x, body_x, k)
+			body.rotation.z = lerpf(body.rotation.z, body_z, k)
+
 
 	# 飞行姿态：滑翔/振翅交替、内外翼相位差、转弯滚转、降落展翼减速
 	func _pose_flying(b: Dictionary, d: float, st: int) -> void:
@@ -2673,6 +3292,9 @@ class BirdFlock extends Node3D:
 					# 原来的 euler x/z→0 会把鸟强行摆成水平，站在斜瓦上就会“脚陷瓦里/悬空”。
 					var want: Basis = _perch_basis(perch)
 					node.basis = node.basis.slerp(want, 1.0 - exp(-11.0 * d))
+
+					node.position = _slot_position(perch, int(b.get("perch_slot", 0))) + (b.get("idle_off", Vector3.ZERO) as Vector3)
+
 				b["prev_vel"] = Vector3.ZERO
 				b["vis_state"] = st
 				b["prev_pos"] = node.position
@@ -2727,14 +3349,19 @@ class BirdFlock extends Node3D:
 	# ---------------- main update ----------------
 	## ctx 可选：{day:int, rising:bool, sim_seconds:float, time_source:String, paused:bool}
 	## 只用于生态事件的触发资格（世界阶段/日期/方向），不建立第二套时间推进。
+
 	func update_birds(delta: float, sun_alt: float, ctx: Dictionary = {}) -> void:
 		_ensure_ready()
 		if _birds.is_empty():
 			return
 		_t += delta
 		_eco_paused = bool(ctx.get("paused", false))
+		_update_clock_cache(delta, ctx)
+		_smoke_hold_t = maxf(0.0, _smoke_hold_t - delta)
+		_sun_alt_cur = sun_alt
 		_update_day_night(delta, sun_alt)
 		_update_eco(delta, sun_alt, ctx)
+		_update_perch_evictions()
 		_check_perch_validity(delta)
 		for b_v in _birds:
 			var b: Dictionary = b_v
@@ -2748,9 +3375,11 @@ class BirdFlock extends Node3D:
 			else:
 				_update_landing(b, delta)
 			b["motion_pos"] = (b["node"] as Node3D).position
+		_update_idle(delta)
 		_separate()
 		_min_air_dist = _compute_min_air_dist()
 		_update_visuals(delta)
+
 
 # 飞鸟共享材质（M.toon_material 自身按参数缓存，这里再缓存一层）
 static func _bird_materials() -> Dictionary:

@@ -9,9 +9,12 @@ extends RefCounted
 ##    内外窗套），阁楼内部有真实地板/斜顶/地毯/书桌+椅/床/衣柜/暖灯，全部经“屋面下皮”公式校核不穿模。
 ## 3) 门廊台阶由 3 级改为 6 级（rise=0.16m / run=0.30m），逐级接到地形，栏杆/扶手/望柱同步。
 ## 4) 山墙博风板外移 0.02m 与屋面板端面错开；檐口封檐板/雨棚封板/烟囱泛水全部沿法线错位。
-## 5) perches 改为 Array[Dictionary]{id,pos,facing,radius,kind,normal,slope}：屋脊 3（脊瓦顶）+ 屋檐 4
-##    （檐口筒瓦顶）+ 烟囱 1（顶石）+ 门廊梁 2 = 10 个真实瓦面/实体表面点，脚部间隙 0.03m；
-##    normal 为世界空间向上单位法线（eave normal.y≈0.827），slope 为坡面倾角（ridge/chimney/porch=0，eave=pitch）。
+## 5) perches 改为 Array[Dictionary]{id,pos,facing,radius,kind,normal,slope,slots?}：屋脊 3（脊瓦顶）+ 屋檐 4
+##    （檐口筒瓦顶）+ 烟囱 1（顶石）+ 门廊梁 2（雨棚横梁顶）+ 门廊扶手 4（P7-V2：侧栏/前栏扶手顶面）
+##    = 14 个真实瓦面/实体表面点，脚部间隙 0.03m；normal 为世界空间向上单位法线（eave normal.y≈0.827），
+##    slope 为坡面倾角（ridge/chimney/porch=0，eave=pitch）。
+##    P7-V2 门廊扶手点 kind="porch_rail"（porch_rail_L/R/FL/FR）：扶手实体宽 0.10m → slots=1（单鸟），
+##    facing 沿扶手方向（侧栏局部 +Z、前栏局部 +X，与任务契约一致）；slots=1 时 fx 不产生槽位偏移。
 ## 6) Phase6/T4：导出灯塔光束遮挡盒 get_beam_occluders()（主体/屋面/烟囱 3 盒，世界 center/half/yaw），
 ##    阁楼改用独立低反射玻璃（opacity .020/.014、reflection_gain .34/.26）并可透视室内；删除窗外 2.10 光晕，
 ##    阁楼室内两盏暖灯走 light_sources；保留全部旧返回键，新增 beam_occluders / attic_glass_mats /
@@ -1364,11 +1367,30 @@ static func _make_perches(root: Node3D, C: Dictionary) -> Array[Dictionary]:
 		out.append(_mk_perch(root, pid2,
 				Vector3(sx * 2.20, deck_top + 3.38 + gap, 6.95),
 				Vector3(0.0, 0.0, 1.0), Vector3(0.0, 1.0, 0.0), 0.0, 0.18, "porch_beam"))
+	# ---- 门廊扶手 4 个（P7-V2：真实扶手实体顶面 + 0.03m 脚部间隙，slots=1）----
+	# _porch：侧栏 M.box(0.10,0.09,2.60) 中心 (±4.12, deck_top+0.895, 5.78) → 顶面 y=deck_top+0.94；
+	# 立柱(0.12 宽)在 z=4.60 / 6.95，顶面自由段 z∈[4.66,6.89]，取中点 z=5.775（距两立柱均 1.115m）。
+	# facing 沿栏杆方向（侧栏局部 +Z、前栏局部 +X），鸟体长轴顺栏杆，站在 0.10m 窄面上不横向悬空。
+	var rail_z: float = 5.775
+	for sx in [-1.0, 1.0]:
+		var pid3: String = "porch_rail_%s" % ("L" if sx < 0.0 else "R")
+		out.append(_mk_perch(root, pid3,
+				Vector3(sx * 4.12, deck_top + 0.94 + gap, rail_z),
+				Vector3(0.0, 0.0, 1.0), Vector3(0.0, 1.0, 0.0), 0.0, 0.18, "porch_rail", 1))
+	# 前栏 M.box(2.24,0.09,0.10) 中心 (±3.00, deck_top+0.90, 6.95) → 顶面 y=deck_top+0.945；
+	# 立柱(0.12 宽)在 x=±1.88 / ±4.12，顶面自由段 x∈[1.94,4.06]，取中点 x=±3.00（距两立柱均 1.06m）。
+	# facing 前栏局部 +X（沿栏杆方向）。
+	for sx in [-1.0, 1.0]:
+		var pid4: String = "porch_rail_F%s" % ("L" if sx < 0.0 else "R")
+		out.append(_mk_perch(root, pid4,
+				Vector3(sx * 3.00, deck_top + 0.945 + gap, 6.95),
+				Vector3(1.0, 0.0, 0.0), Vector3(0.0, 1.0, 0.0), 0.0, 0.18, "porch_rail", 1))
 	return out
 
 # perch 数据契约：id / pos(世界) / facing(世界单位向量) / radius / kind / normal(世界向上单位向量) / slope(弧度)
+# slots > 0 时显式写入槽位数（窄栏/窄面用 slots=1，避免 fx 按 radius 自动展开多槽位）。
 static func _mk_perch(root: Node3D, id: String, local_pos: Vector3, facing_local: Vector3,
-		normal_local: Vector3, slope: float, radius: float, kind: String) -> Dictionary:
+		normal_local: Vector3, slope: float, radius: float, kind: String, slots: int = 0) -> Dictionary:
 	var wp: Vector3 = _world(root, local_pos)
 	var wf: Vector3 = (_world(root, local_pos + facing_local) - wp)
 	if wf.length() > 0.0001:
@@ -1378,5 +1400,8 @@ static func _mk_perch(root: Node3D, id: String, local_pos: Vector3, facing_local
 		wn = wn.normalized()
 	else:
 		wn = Vector3.UP
-	return {"id": id, "pos": wp, "facing": wf, "radius": radius, "kind": kind,
+	var out := {"id": id, "pos": wp, "facing": wf, "radius": radius, "kind": kind,
 		"normal": wn, "slope": slope}
+	if slots > 0:
+		out["slots"] = slots
+	return out

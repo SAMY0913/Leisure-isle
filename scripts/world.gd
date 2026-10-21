@@ -101,7 +101,9 @@ static func build(parent: Node3D) -> Dictionary:
 
     _distant_isles(root)
 
-    var perches: Array[Dictionary] = _build_perches(big, dock_info, lighthouse)
+    # P7-V2: pass the real street lamps so each lantern cap gets a "lamp" roost.
+    # Probe stub calls that use the legacy three-argument form still produce 16 perches.
+    var perches: Array[Dictionary] = _build_perches(big, dock_info, lighthouse, lamps)
 
     return {
         "root": root,
@@ -3191,8 +3193,10 @@ static func _distant_isles(root: Node3D) -> void:
 
 # =============================================================== perches ====
 # Landing spots handed to the bird flock. Every perch is a dictionary:
-# {id: String, pos: Vector3, facing: Vector3, radius: float, kind: String}.
-# Kinds: tree_branch / roof / eave / lighthouse_platform / dock / garden_post.
+# {id: String, pos: Vector3, facing: Vector3, radius: float, kind: String}
+# plus optional normal / slope / slots (P7-V2 lamp caps pass them explicitly).
+# Kinds: tree_branch / roof / eave / lighthouse_platform / dock / garden_post / lamp.
+# The cottage roof + porch perches are owned by scripts/cottage.gd and are appended by main.gd.
 
 static func _perch(perch_id: String, pos: Vector3, facing: Vector3, radius: float, kind: String) -> Dictionary:
     var f := facing
@@ -3201,7 +3205,25 @@ static func _perch(perch_id: String, pos: Vector3, facing: Vector3, radius: floa
         f = Vector3(-1.0, 0.0, 0.0)
     return {"id": perch_id, "pos": pos, "facing": f.normalized(), "radius": radius, "kind": kind}
 
-static func _build_perches(big: Dictionary, dock_info: Dictionary, lighthouse: Dictionary) -> Array[Dictionary]:
+# P7-V2: perch on a real horizontal solid face with an explicit up normal / slope and an
+# explicit slot count (the street-lamp hood caps are ~0.13 m in radius, so one bird only).
+# The legacy 16 perches keep their exact five-key dictionaries; only these new points
+# add the optional normal / slope / slots keys that fx.gd already understands.
+static func _surface_perch(perch_id: String, pos: Vector3, facing: Vector3, radius: float,
+        kind: String, normal: Vector3 = Vector3.UP, slope: float = 0.0,
+        slots: int = 0) -> Dictionary:
+    var out := _perch(perch_id, pos, facing, radius, kind)
+    var n := normal
+    if n.length_squared() < 0.000001:
+        n = Vector3.UP
+    out["normal"] = n.normalized()
+    out["slope"] = slope
+    if slots > 0:
+        out["slots"] = slots
+    return out
+
+static func _build_perches(big: Dictionary, dock_info: Dictionary, lighthouse: Dictionary,
+        lamps: Array = []) -> Array[Dictionary]:
     var perches: Array[Dictionary] = []
 
     # ---- big tree: six roosts along its upper limbs --------------------------
@@ -3239,5 +3261,34 @@ static func _build_perches(big: Dictionary, dock_info: Dictionary, lighthouse: D
         var g: Vector2 = gate_spots[i]
         var gp := Vector3(g.x, _h(g.x, g.y) + 1.50, g.y)
         perches.append(_perch("garden_post_%d" % i, gp, Vector3(-g.x, 0.0, -g.y), 0.30, "garden_post"))
+
+    # ---- P7-V2 street-lamp hood caps: one roost per lamp (lamp_0..lamp_5) -----------
+    # Real geometry from _lamp(): the lantern hood is M.cyl(top_r 0.13, bottom_r 0.17,
+    # h 0.06) centred at local (0.42, 2.15, 0), so its flat top face is the horizontal
+    # plane local y = 2.18 with radius 0.13 -- the only standable surface on the lamp.
+    # The hanger rod (r 0.013, local y 2.08..2.30) runs through the cap centre, so the
+    # foot point is shifted 0.105 m along local +Z (side = (-facing.z, 0, facing.x)):
+    # gull body min clearance to the 0.50x0.07 arm below, and that is 25 mm inside the
+    # 0.13 m cap-top radius.  The lamp node
+    # only has a yaw rotation and its origin sits at (base.x, ground, base.z), so the
+    # cap-top centre in world space is base + facing * 0.42 + UP * 2.18 and the perch
+    # point is 0.03 m above it (same foot gap convention as the roof perches).
+    # Legacy three-argument calls (probe stubs) pass no lamps -> still exactly 16 points.
+    for i in range(lamps.size()):
+        var lamp_entry: Array = lamps[i]
+        if lamp_entry.size() < 4:
+            continue
+        var lamp_info: Dictionary = lamp_entry[3]
+        var lbase: Vector3 = lamp_info["base"]
+        var lface: Vector3 = lamp_info["facing"]
+        lface.y = 0.0
+        if lface.length_squared() < 0.000001:
+            lface = Vector3(1.0, 0.0, 0.0)
+        lface = lface.normalized()
+        var cap_top: Vector3 = lbase + lface * 0.42 + Vector3.UP * 2.18
+        var to_side := Vector3(-lface.z, 0.0, lface.x)
+        var lamp_pos: Vector3 = cap_top + to_side * 0.105 + Vector3.UP * 0.03
+        perches.append(_surface_perch("lamp_%d" % i, lamp_pos, lface, 0.20, "lamp",
+            Vector3.UP, 0.0, 1))
 
     return perches
