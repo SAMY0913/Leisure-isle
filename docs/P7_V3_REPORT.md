@@ -16,6 +16,7 @@
 | 引擎 | Godot v4.7.2.stable.official.ed1daf0bf，Forward Plus |
 | 只读基线 worktree | `D:/休闲小岛幻境/开发产物/p7/baseline_wt` @ `7941816`（P7-V1 基线） |
 | 回滚方式 | `git checkout p7-v2`（回到 5de90a1 的 P7-V2 成果）；或 `git reset --hard 5de90a1` 清空本轮改动；未提交文件另存于 `开发产物/p7v3/` |
+| 本轮验收提交 | `18cb546`（feat(p7v3): 房屋结构重构、生活场景深化与观景交互完善，29 files / +8539 / -268），分支 `p7-v3` |
 
 > 说明：`开发产物/p7v3/baseline_proj` 是 QA 从 `5de90a1` 克隆的干净副本（main.gd 4264 行），本轮曾用它恢复一次 main.gd 编辑事故（见 §13）。
 
@@ -151,6 +152,9 @@
 | 小屋/设置回归 | `probe_cottage6` / `probe_settings6` | pass=31 / 全过 |
 | 代码检查 | `git diff --check`、GDScript 解析（headless 加载无 Parse Error） | 通过 |
 
+> 冻结后仅做过一次 whitespace 清理（`scripts/menu.gd` 新增 20 行行尾空格，`git diff --check` 转通过），不改变语义；清理后复跑 `--selftest` **53/53**、`probe_verify_p7v3` **177/0/3** 确认无回归。
+
+
 ### 12.2 官方窗口入口与专项截图（EXIT=0）
 
 | 入口 | 结果 | 产物 |
@@ -217,4 +221,4 @@
 7. **main.gd 编辑事故（已恢复，须记录）**：本轮曾用「整文件读→改→写」编辑 main.gd，因默认 read 上限 2000 行导致文件被截断为 1196 行；已用 `开发产物/p7v3/baseline_proj`（HEAD 5de90a1 副本 4264 行）从 `_on_settings_changed` 处拼接恢复为 4304 行，并把被覆盖的 3 处改动定点补回（`_unhandled_input` 自由视角分支、`_apply_user_settings` FOV 应用、cam-dev 自查发现的 `_reset_camera` 硬编码 FOV → 读设置），main.gd 现 4342 行、无重复函数、headless 解析 exit 0。教训：大文件禁止整读整写，只用 edit 定点替换。
 8. **未验证/未做的系统**：真人与鼠标/键盘全链路手感、>6 s soak/内存泄漏、楼梯实际碰撞通行（本轮无玩家角色）、开门运动间隙逐帧数值（仅视觉）、音频主观听感、超宽屏/4K/其他分辨率、74 张官方图未 100% 文字级逐张核对、猫咪分钟级随机行为观察；玩家角色、登船/物理乘船、上下楼行走、碰撞体、任务/存档系统均按任务要求未实现。
 9. **外部资料不可达**：gov.scot（HTTP 202 反爬）、itch.io（fetch failed）、YouTube（本机非公网 IP）三处无法获取正文，设计依据为通用比例与常识（见 §2）。
-10. **产物与提交**：QA 回归报告 `开发产物/p7v3/REGRESSION_P7V3.md`、基线 `BASELINE_P7V3.md`、工具用法 `docs/P7_V3_QA_NOTES.md`、原始日志 `开发产物/p7v3/logs/`；临时探针已清理（`tools/probe_porch_lamp.gd` 等），本轮正式探针保留在 `tools/probe_*_p7v3.gd`。提交状态：分支 `p7-v3`，本轮全部改动以一次提交落地（提交 sha 见文末补记）。
+10. **产物与提交**：QA 回归报告 `开发产物/p7v3/REGRESSION_P7V3.md`、基线 `BASELINE_P7V3.md`、工具用法 `docs/P7_V3_QA_NOTES.md`、原始日志 `开发产物/p7v3/logs/`；临时探针已清理（`tools/probe_porch_lamp.gd` 等），本轮正式探针保留在 `tools/probe_*_p7v3.gd`。提交状态：分支 `p7-v3`，本轮全部改动以 `18cb546` 一次提交落地（29 files / +8539 / -268；本报告为同批提交内容）。
