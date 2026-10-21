@@ -2115,9 +2115,11 @@ static func _lighthouse(root: Node3D) -> Dictionary:
     var iron := Color("3f433e")
     var band_col := Color("a9604a")
 
-    # plinth
-    M.cyl(node, 1.98, 2.32, 1.05, Vector3(0, 0.525, 0), stone_d, 0.0, o)
-    M.cyl(node, 2.00, 2.00, 0.14, Vector3(0, 1.05, 0), stone, 0.0, o)
+    # plinth (cap top = local y 1.12, the doorway rests on it)
+    var plinth := M.cyl(node, 1.98, 2.32, 1.05, Vector3(0, 0.525, 0), stone_d, 0.0, o)
+    plinth.name = "PlinthBase"
+    var plinth_cap := M.cyl(node, 2.00, 2.00, 0.14, Vector3(0, 1.05, 0), stone, 0.0, o)
+    plinth_cap.name = "PlinthCap"
 
     # tower shaft: 6 tapered sections, cream stone with two terracotta bands
     var shaft_y0 := 1.05
@@ -2149,16 +2151,45 @@ static func _lighthouse(root: Node3D) -> Dictionary:
         var win := M.box_rot(node, Vector3(0.34, 0.66, 0.12), wpos, stone_d, Vector3(0.0, -wa + PI * 0.5, 0.0), o)
         win.material_override = M.glass_material(0.35)
 
-    # door facing the island centre
+    # door facing the island centre; the doorway now rests on the plinth cap (top 1.12)
+    # so a 1.50 m visitor does not have to step down into the stone base any more.
     var door_dir := Vector3(-LIGHTHOUSE_X, 0.0, -LIGHTHOUSE_Z).normalized()
     var door_rot := atan2(door_dir.x, door_dir.z)
     var door_base := Vector3(door_dir.x * 1.66, 0.0, door_dir.z * 1.66)
-    M.box_rot(node, Vector3(1.34, 2.42, 0.22), door_base + Vector3(0.0, 2.10, 0.0), stone_d, Vector3(0.0, door_rot, 0.0), o)
-    M.box_rot(node, Vector3(0.94, 1.86, 0.16), door_base + Vector3(0.0, 1.90, 0.0) + door_dir * 0.10, M.C_WOOD_DARK, Vector3(0.0, door_rot, 0.0), o)
-    M.box_rot(node, Vector3(0.42, 1.62, 0.10), door_base + Vector3(0.0, 1.86, 0.0) + door_dir * 0.19, M.C_WOOD, Vector3(0.0, door_rot, 0.0), o)
-    M.box_rot(node, Vector3(1.52, 0.24, 0.40), door_base + Vector3(0.0, 3.20, 0.0) + door_dir * 0.04, stone, Vector3(0.0, door_rot, 0.0), o)
-    for st_i in range(2):
-        M.box_rot(node, Vector3(1.70, 0.16, 0.90 - 0.28 * float(st_i)), door_base + door_dir * (0.42 + 0.30 * float(st_i)) + Vector3(0.0, 0.08 + 0.16 * float(st_i), 0.0), stone, Vector3(0.0, door_rot, 0.0), o)
+    var door_lift := 0.23
+    var door_frame := M.box_rot(node, Vector3(1.34, 2.42, 0.22), door_base + Vector3(0.0, 2.10 + door_lift, 0.0), stone_d, Vector3(0.0, door_rot, 0.0), o)
+    door_frame.name = "DoorFrame"
+    var door_leaf := M.box_rot(node, Vector3(0.94, 1.86, 0.16), door_base + Vector3(0.0, 1.90 + door_lift, 0.0) + door_dir * 0.10, M.C_WOOD_DARK, Vector3(0.0, door_rot, 0.0), o)
+    door_leaf.name = "DoorLeaf"
+    var door_inner := M.box_rot(node, Vector3(0.42, 1.62, 0.10), door_base + Vector3(0.0, 1.86 + door_lift, 0.0) + door_dir * 0.19, M.C_WOOD, Vector3(0.0, door_rot, 0.0), o)
+    door_inner.name = "DoorInner"
+    var door_lintel := M.box_rot(node, Vector3(1.52, 0.24, 0.40), door_base + Vector3(0.0, 3.20 + door_lift, 0.0) + door_dir * 0.04, stone, Vector3(0.0, door_rot, 0.0), o)
+    door_lintel.name = "DoorLintel"
+    var door_threshold := M.box_rot(node, Vector3(1.50, 0.08, 0.40), door_base + door_dir * 0.18 + Vector3(0.0, 1.16, 0.0), stone, Vector3(0.0, door_rot, 0.0), o)
+    door_threshold.name = "DoorThreshold"
+    # Seven external wrapping stone steps (rise 0.16 m each) around the tapered
+    # plinth, from the threshold (top 1.20) down to the terrace top (0.16).
+    # Each tread is an external ring segment: its inner radius is derived from the
+    # plinth radius at that tread's own height, so the tread always protrudes at
+    # least 0.02 m past the cone there (radial depth 0.38, outer radius <= 2.85).
+    var stair_rise := 0.16
+    var stair_step := 0.15
+    var stair_depth := 0.38
+    var stair_gap := 0.02
+    var door_ang := atan2(door_dir.x, door_dir.z)
+    for i in range(7):
+        var top_y := stair_rise * float(7 - i)
+        # plinth profile: cone r = 2.32 - (0.34/1.05)*y up to y 0.98, cap r = 2.00
+        var r_plinth := 2.00 if top_y > 0.98 else 2.32 - (0.34 / 1.05) * top_y
+        var r_in := r_plinth + stair_gap
+        var r_mid := r_in + stair_depth * 0.5
+        var ang := door_ang - (float(i) + 0.5) * stair_step
+        # tangential width derived from the sector arc, plus 6 mm so neighbouring
+        # treads interlock instead of leaving a visible gap or coplanar z-fighting.
+        var tang := 2.0 * r_mid * tan(stair_step * 0.5) + 0.006
+        var c := Vector3(sin(ang) * r_mid, 0.0, cos(ang) * r_mid)
+        var step := M.box_rot(node, Vector3(tang, top_y, stair_depth), c + Vector3(0.0, top_y * 0.5, 0.0), stone if i % 2 == 0 else stone_d, Vector3(0.0, ang, 0.0), o)
+        step.name = "DoorStep%d" % i
 
     # ---- gallery deck (inside) + railing (outside) ----------------------------
     var gallery_y := shaft_y1
@@ -2275,7 +2306,8 @@ static func _swing(root: Node3D, big: Dictionary) -> Node3D:
     var base: Vector3 = big["pos"]
     var pivot := Vector3(base.x + 3.0, base.y + SWING_LIMB_Y, base.z)
     var ground := _h(pivot.x, pivot.z)
-    var rope_len := maxf(2.6, pivot.y - (ground + 0.82))
+    # seat top 0.585 m above ground: right for a 1.50 m islander to sit with feet down
+    var rope_len := maxf(2.6, pivot.y - (ground + 0.55))
     var node := Node3D.new()
     node.name = "Swing"
     node.position = pivot
@@ -2296,8 +2328,9 @@ static func _swing(root: Node3D, big: Dictionary) -> Node3D:
         M.sphere(node, 0.054, Vector3(x, -rope_len + 0.07, 0.0), M.C_STONE_DARK, Vector3(1.0, 1.2, 1.0), o)
         M.box(node, Vector3(0.05, 0.12, 0.12), Vector3(x, -rope_len - 0.03, 0.0),
             Color("5c5b57"), 0.0, o)
-    M.box(node, Vector3(1.12, 0.07, 0.46), Vector3(0.0, -rope_len, 0.0),
+    var seat := M.box(node, Vector3(1.12, 0.07, 0.46), Vector3(0.0, -rope_len, 0.0),
         M.C_WOOD_LIGHT, 0.0, {"outline": 0.02})
+    seat.name = "SwingSeat"
     M.box(node, Vector3(1.14, 0.025, 0.05), Vector3(0.0, -rope_len - 0.047, 0.0), M.C_WOOD, 0.0, {})
     return node
 
@@ -2916,13 +2949,14 @@ static func _boat_deck_mesh(samples: Array, deck_y: float, thickness: float) -> 
     return st.commit()
 
 ## Inner bilge floor: the bottom of the hull lofted just inside the liner,
-## lifted 0.12 and given a 0.05 board thickness with a closed outer rim.
+## lifted 0.08 and given a 0.05 board thickness with a closed outer rim. It now
+## sits below the P7-V3.2 cockpit sole (top 0.20) so the bilge never pokes through.
 static func _boat_floor_mesh(stations: Array) -> ArrayMesh:
     var st := SurfaceTool.new()
     st.begin(Mesh.PRIMITIVE_TRIANGLES)
     var ts: Array = [0.0, 0.14, 0.30, 0.46]
     var shrink := 0.84
-    var low := 0.12
+    var low := 0.08
     var thick := 0.05
     for sign_i in [-1.0, 1.0]:
         var sign := float(sign_i)
@@ -2949,51 +2983,91 @@ static func _boat_floor_mesh(stations: Array) -> ArrayMesh:
             _add_quad2(st, p0, p1, q1, q0, Vector3(sign, 0.0, 0.0))
     return st.commit()
 
-## Planked deck: seven athwartships boards, each tapered to the local hull width
-## so the deck follows the sheer; 2 cm seams, 4 mm seam stagger, alternating
-## C_WOOD_LIGHT / C_WOOD with a +-0.05 tint. The outboard ends land on an inwale
-## strip (舷缘内衬) so the deck never floats free of the hull.
+## Planked deck, P7-V3.2 cockpit layout: the middle of the hull is open so a
+## 1.50 m islander can stand or row inside it. The stern locker deck keeps two
+## boards (z -2.24..-0.72) and the bow deck one board (z 1.44..2.08); each is
+## tapered to the local hull width so the deck follows the sheer, with 2 cm
+## seams and a +-0.05 tint. The outboard ends land on an inwale strip (舷缘内衬)
+## that only runs under the decked ends, and a low coaming closes the cockpit
+## rim. Interior furniture (sole / frames / thwarts) is _boat_interior's job.
 static func _boat_deck(parent: Node3D, stations: Array, deck_y: float, o: Dictionary) -> void:
-    var z_start := -2.24
-    var z_end := 2.08
-    var plank_count := 7
     var seam := 0.02
-    var seg := (z_end - z_start) / float(plank_count)
-    for i in plank_count:
-        var za: float = z_start + seg * float(i) + seam * 0.5
-        var zb: float = z_start + seg * float(i + 1) - seam * 0.5
-        var top: float = deck_y + (0.004 if i % 2 == 1 else -0.004)
-        # sample the hull wall along the board: the deck keeps following the
-        # rising sheer up to the bow/stern instead of ending at a fixed inset
-        var samples: Array = []
-        for k in 4:
-            var sz: float = lerpf(za, zb, float(k) / 3.0)
-            var hw := _boat_deck_half(stations, sz, top, 0.06)
-            samples.append(Vector3(sz, hw.x, hw.y))
-        var base: Color = M.C_WOOD_LIGHT if i % 2 == 0 else M.C_WOOD
-        var tint := 0.05 if i % 4 < 2 else -0.05
-        var col: Color = base.lightened(tint) if tint > 0.0 else base.darkened(-tint)
-        var mi := MeshInstance3D.new()
-        mi.name = "DeckPlank%02d" % i
-        mi.mesh = _boat_deck_mesh(samples, top, 0.06)
-        mi.material_override = M.toon_material(col,
-            {"bands": 3.5, "soft": 0.5, "rim": 0.08, "outline": 0.02})
-        mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-        parent.add_child(mi)
-    # inwale: short timber strips inside the gunwale, sampled along the sheer
-    var inwale_samples := 6
+    # (z0, z1, board count) for the decked ends; the gap between is the cockpit
+    var deck_spans: Array = [[-2.24, -0.72, 2], [1.44, 2.08, 1]]
+    var plank_i := 0
+    for span in deck_spans:
+        var z0: float = span[0]
+        var z1: float = span[1]
+        var count: int = span[2]
+        var seg := (z1 - z0) / float(count)
+        for k in range(count):
+            var za: float = z0 + seg * float(k) + seam * 0.5
+            var zb: float = z0 + seg * float(k + 1) - seam * 0.5
+            var top: float = deck_y + (0.004 if plank_i % 2 == 1 else -0.004)
+            # sample the hull wall along the board: the deck keeps following the
+            # rising sheer up to the bow/stern instead of ending at a fixed inset
+            var samples: Array = []
+            for k2 in 4:
+                var sz: float = lerpf(za, zb, float(k2) / 3.0)
+                var hw := _boat_deck_half(stations, sz, top, 0.06)
+                samples.append(Vector3(sz, hw.x, hw.y))
+            var base: Color = M.C_WOOD_LIGHT if plank_i % 2 == 0 else M.C_WOOD
+            var tint := 0.05 if plank_i % 4 < 2 else -0.05
+            var col: Color = base.lightened(tint) if tint > 0.0 else base.darkened(-tint)
+            var mi := MeshInstance3D.new()
+            mi.name = "DeckPlank%02d" % plank_i
+            mi.mesh = _boat_deck_mesh(samples, top, 0.06)
+            mi.material_override = M.toon_material(col,
+                {"bands": 3.5, "soft": 0.5, "rim": 0.08, "outline": 0.02})
+            mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+            parent.add_child(mi)
+            plank_i += 1
+    # inwale: short timber strips inside the gunwale, only under the decked ends
+    var inwale_spans: Array = [[-2.24, -0.72, 2], [1.44, 2.08, 1]]
     for sign_i in [-1.0, 1.0]:
         var sign := float(sign_i)
         var tag := "P" if sign < 0.0 else "S"
-        for i in inwale_samples:
-            var ia := lerpf(z_start - 0.02, z_end + 0.02, float(i) / float(inwale_samples))
-            var ib := lerpf(z_start - 0.02, z_end + 0.02, float(i + 1) / float(inwale_samples))
-            var ha: float = maxf(_boat_deck_half(stations, ia, deck_y, 0.06).x - 0.02, 0.06)
-            var hb: float = maxf(_boat_deck_half(stations, ib, deck_y, 0.06).x - 0.02, 0.06)
-            var iw := _bar(parent, Vector3(sign * ha, deck_y - 0.005, ia),
-                Vector3(sign * hb, deck_y - 0.005, ib), 0.08, 0.08, M.C_WOOD_DARK,
-                {"outline": 0.014})
-            iw.name = "Inwale%s%02d" % [tag, i]
+        var iw_i := 0
+        for span in inwale_spans:
+            var z0: float = span[0]
+            var z1: float = span[1]
+            var count: int = span[2]
+            for i in range(count):
+                var ia: float = lerpf(z0 - 0.02, z1 + 0.02, float(i) / float(count))
+                var ib: float = lerpf(z0 - 0.02, z1 + 0.02, float(i + 1) / float(count))
+                var ha: float = maxf(_boat_deck_half(stations, ia, deck_y, 0.06).x - 0.02, 0.06)
+                var hb: float = maxf(_boat_deck_half(stations, ib, deck_y, 0.06).x - 0.02, 0.06)
+                var iw := _bar(parent, Vector3(sign * ha, deck_y - 0.005, ia),
+                    Vector3(sign * hb, deck_y - 0.005, ib), 0.08, 0.08, M.C_WOOD_DARK,
+                    {"outline": 0.014})
+                iw.name = "Inwale%s%02d" % [tag, iw_i]
+                iw_i += 1
+    # coaming: low timber rim around the open cockpit (z -0.70..1.42)
+    var cockpit_z0 := -0.70
+    var cockpit_z1 := 1.42
+    var coam_y := deck_y + 0.045
+    for sign_i in [-1.0, 1.0]:
+        var sign := float(sign_i)
+        var tag := "P" if sign < 0.0 else "S"
+        var h0: float = maxf(_boat_deck_half(stations, cockpit_z0, coam_y, 0.08).x - 0.05, 0.10)
+        var h1: float = maxf(_boat_deck_half(stations, cockpit_z1, coam_y, 0.08).x - 0.05, 0.10)
+        var cb := _bar(parent, Vector3(sign * h0, coam_y, cockpit_z0),
+            Vector3(sign * h1, coam_y, cockpit_z1), 0.06, 0.08, M.C_WOOD_DARK,
+            {"outline": 0.012})
+        cb.name = "Coaming%s" % tag
+    var fh: float = maxf(_boat_deck_half(stations, cockpit_z1, coam_y, 0.08).x - 0.05, 0.10)
+    var fore := _bar(parent, Vector3(-fh, coam_y, cockpit_z1), Vector3(fh, coam_y, cockpit_z1),
+        0.06, 0.08, M.C_WOOD_DARK, {"outline": 0.012})
+    fore.name = "CoamingFore"
+    # the aft rim is split: the cuddy door (centre z = -0.713) opens from the cockpit
+    var ah: float = maxf(_boat_deck_half(stations, cockpit_z0, coam_y, 0.08).x - 0.05, 0.10)
+    for sign_i in [-1.0, 1.0]:
+        var sign := float(sign_i)
+        var tag := "P" if sign < 0.0 else "S"
+        var aft := _bar(parent, Vector3(sign * ah, coam_y, cockpit_z0),
+            Vector3(sign * 0.47, coam_y, cockpit_z0), 0.06, 0.08, M.C_WOOD_DARK,
+            {"outline": 0.012})
+        aft.name = "CoamingAft%s" % tag
 
 ## Bilge floor, four frames, two rowing thwarts with knees, and the solid
 ## bow/stern fill blocks that close the un-decked triangular ends.
@@ -3005,6 +3079,20 @@ static func _boat_interior(parent: Node3D, stations: Array, deck_y: float, o: Di
         {"bands": 3.0, "soft": 0.5, "rim": 0.05, "outline": 0.012})
     floor_mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
     parent.add_child(floor_mi)
+    # P7-V3.2 cockpit sole: flat boards at 0.20 m spanning the open cockpit,
+    # so a 1.50 m crew stands 0.40 m below the 0.60 m thwart seats.
+    var sole_samples: Array = []
+    for k in 5:
+        var sz: float = lerpf(-0.70, 1.42, float(k) / 4.0)
+        var hw := _boat_deck_half(stations, sz, 0.20, 0.05)
+        sole_samples.append(Vector3(sz, hw.x, hw.y))
+    var sole := MeshInstance3D.new()
+    sole.name = "Sole"
+    sole.mesh = _boat_deck_mesh(sole_samples, 0.20, 0.05)
+    sole.material_override = M.toon_material(M.C_WOOD.lightened(0.04),
+        {"bands": 3.0, "soft": 0.5, "rim": 0.05, "outline": 0.012})
+    sole.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+    parent.add_child(sole)
     # four frames following the liner, 0.8 m apart
     for ri in 4:
         var rz := -1.20 + 0.80 * float(ri)
@@ -3046,7 +3134,8 @@ static func _boat_interior(parent: Node3D, stations: Array, deck_y: float, o: Di
     stern.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
     parent.add_child(stern)
     # two rowing thwarts: seat top at deck_y + 0.08 (=0.60), board 6 cm thick,
-    # width exactly the local boat width minus 6 cm
+    # width exactly the local boat width minus 6 cm. With the open cockpit they
+    # stand on two legs (sole top 0.20 -> seat underside 0.54) instead of knees.
     var thwart_z: Array = [-0.30, 1.20]
     for si in 2:
         var tz: float = thwart_z[si]
@@ -3057,10 +3146,10 @@ static func _boat_interior(parent: Node3D, stations: Array, deck_y: float, o: Di
         for sign_i in [-1.0, 1.0]:
             var sign := float(sign_i)
             var tag := "P" if sign < 0.0 else "S"
-            var knee := M.box(parent, Vector3(0.08, 0.05, 0.20),
-                Vector3(sign * (half_w - 0.10), deck_y + 0.025, tz),
+            var leg := M.box(parent, Vector3(0.08, 0.34, 0.10),
+                Vector3(sign * (half_w - 0.10), 0.37, tz),
                 M.C_WOOD_DARK, 0.0, {"outline": 0.01})
-            knee.name = "ThwartKnee%02d%s" % [si, tag]
+            leg.name = "ThwartLeg%02d%s" % [si, tag]
 
 ## Two stowed oars lying on the thwarts, two rowlocks on the gunwale and the
 ## bow / stern mooring cleats.
@@ -3211,8 +3300,8 @@ static func _sailboat(root: Node3D, routes: Array) -> Dictionary:
             var gw := _bar(g_hull, a + Vector3(0.0, 0.02, 0.0), b + Vector3(0.0, 0.02, 0.0),
                 0.10, 0.09, M.C_WOOD_LIGHT, {"outline": 0.014})
             gw.name = "Gunwale%s%02d" % ["P" if sign < 0.0 else "S", i]
-    # deck (7 hull-hugging planks), interior (floor / frames / thwarts / fill
-    # blocks) and the detailed square cabin
+    # deck (2 stern + 1 bow hull-hugging planks with an open cockpit between),
+    # interior (bilge floor / frames / thwarts / fill blocks) and the cuddy cabin
     var deck_y := 0.52
     var win_mat := M.glass_material(0.06)
     _boat_deck(g_deck, stations, deck_y, o)
@@ -3225,8 +3314,13 @@ static func _sailboat(root: Node3D, routes: Array) -> Dictionary:
     var mast_top := Vector3(0.0, deck_y + 4.25, mast_z)
     _seg(g_rig, mast_base, mast_top, 0.085, 0.045, M.C_WOOD, {"outline": 0.016}, 8)
     M.cyl(g_rig, 0.20, 0.24, 0.10, Vector3(0.0, deck_y + 0.05, mast_z), M.C_WOOD_DARK, 0.0, o)
-    _bar(g_rig, Vector3(0.0, deck_y + 0.62, mast_z), Vector3(0.0, deck_y + 0.62, -1.35),
+    # Lead P7-V3.2: boom centre 1.90 m above waterline (deck 0.52 + 1.38) so the
+    # 0.075 m spar underside gives a 1.66 m sole-to-boom clearance for a 1.50 m
+    # islander. Sail foot follows; head stays on the 4.35 m gaff height.
+    var boom := _bar(g_rig, Vector3(0.0, deck_y + 1.38, mast_z),
+        Vector3(0.0, deck_y + 1.38, -1.35),
         0.075, 0.075, M.C_WOOD_DARK, {"outline": 0.014})
+    boom.name = "Boom"
     _bar(g_rig, Vector3(0.0, deck_y + 3.90, mast_z), Vector3(0.0, deck_y + 3.55, -1.30),
         0.055, 0.055, M.C_WOOD, {"outline": 0.012})
     _seg(g_rig, mast_top, Vector3(0.0, 0.80, 2.45), 0.014, 0.012, Color("4a4a46"), {"outline": 0.0}, 4)
@@ -3238,25 +3332,31 @@ static func _sailboat(root: Node3D, routes: Array) -> Dictionary:
     var sail_mat := M.toon_material(M.C_SAIL, {"bands": 4.0, "rim": 0.10, "outline": 0.0})
     var main_basis := Basis(Vector3(0.0, 0.0, 1.0), Vector3.UP, Vector3(-1.0, 0.0, 0.0))
     var main_sail := MeshInstance3D.new()
+    main_sail.name = "MainSail"
     main_sail.mesh = sail_mesh
     main_sail.material_override = sail_mat
-    main_sail.transform = Transform3D(main_basis.scaled(Vector3(1.62, 1.55, 1.0)),
-        Vector3(0.0, deck_y + 2.28, -0.42))
+    # foot on the raised 1.90 m boom, head at 4.35 m: height 2.45, centre 3.125
+    main_sail.transform = Transform3D(main_basis.scaled(Vector3(1.62, 1.225, 1.0)),
+        Vector3(0.0, deck_y + 2.605, -0.42))
     main_sail.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
     g_rig.add_child(main_sail)
     var jib_basis := Basis(Vector3(0.0, 0.0, 1.0), Vector3.UP, Vector3(-1.0, 0.0, 0.0))
     jib_basis = Basis(Vector3.UP, 0.22) * jib_basis
     var jib := MeshInstance3D.new()
+    jib.name = "Jib"
     jib.mesh = sail_mesh
     jib.material_override = M.toon_material(M.C_SAIL.darkened(0.06), {"bands": 4.0, "rim": 0.08})
     jib.transform = Transform3D(jib_basis.scaled(Vector3(1.30, 1.28, 0.8)),
         Vector3(0.0, deck_y + 2.35, 1.52))
     jib.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
     g_rig.add_child(jib)
-    # sail battens
+    # sail battens: evenly spaced between the 1.90 m boom and the 4.35 m head,
+    # running from the luff (z 0.39) to the leech (z -1.23)
     for by in [-1.0, 0.0, 1.0]:
-        _bar(g_rig, Vector3(0.0, deck_y + 2.28 + float(by) * 0.9, 0.55),
-            Vector3(0.0, deck_y + 2.28 + float(by) * 0.9, -1.30),
+        var byf := (float(by) + 1.5) / 3.0
+        var batten_y := deck_y + 1.38 + byf * 2.45
+        _bar(g_rig, Vector3(0.0, batten_y, 0.39),
+            Vector3(0.0, batten_y, -1.23),
             0.035, 0.035, M.C_WOOD, {"outline": 0.01})
     # pennant, tiller and P5 running lights
     var pennant := MeshInstance3D.new()
@@ -3383,15 +3483,18 @@ static func _lamp(root: Node3D, pos: Vector3, lamp_name: String, facing: Vector3
     root.add_child(node)
     var o := {"outline": 0.02}
     M.box(node, Vector3(0.44, 0.14, 0.44), Vector3(0.0, 0.07, 0.0), M.C_STONE_DARK, 0.0, o)
-    M.cyl(node, 0.075, 0.110, 2.30, Vector3(0.0, 1.20, 0.0), M.C_WOOD_DARK, 0.0, o)
-    M.box(node, Vector3(0.50, 0.07, 0.07), Vector3(0.21, 2.31, 0.0), M.C_WOOD_DARK, 0.0, o)
-    M.cyl(node, 0.013, 0.013, 0.22, Vector3(0.42, 2.19, 0.0), Color("4a4a46"), 0.0, {})
+    # Lead P7-V3.2 lamp spec: light centre at 2.55 m (2.45-2.65), hood/cap top at
+    # 2.75 m (2.75-2.85), so the lantern reads above a 1.50 m islander's shoulder
+    # without towering over the 3.18 m cottage walls.
+    M.cyl(node, 0.075, 0.110, 2.82, Vector3(0.0, 1.445, 0.0), M.C_WOOD_DARK, 0.0, o)
+    M.box(node, Vector3(0.50, 0.07, 0.07), Vector3(0.21, 2.85, 0.0), M.C_WOOD_DARK, 0.0, o)
+    M.cyl(node, 0.013, 0.013, 0.20, Vector3(0.42, 2.765, 0.0), Color("4a4a46"), 0.0, {})
     var lantern_mat: ShaderMaterial = M.toon_material(Color("ffd7a0"), {"self_lit": true, "glow": 1.0})
-    var lamp := M.box(node, Vector3(0.23, 0.27, 0.23), Vector3(0.42, 1.98, 0.0), Color.WHITE, 0.0, o)
+    var lamp := M.box(node, Vector3(0.23, 0.27, 0.23), Vector3(0.42, 2.55, 0.0), Color.WHITE, 0.0, o)
     lamp.material_override = lantern_mat
-    M.cyl(node, 0.13, 0.17, 0.06, Vector3(0.42, 2.15, 0.0), M.C_WOOD_DARK, 0.0, o)
-    M.cyl(node, 0.10, 0.14, 0.06, Vector3(0.42, 1.83, 0.0), M.C_WOOD_DARK, 0.0, o)
-    var lantern_world: Vector3 = node.transform * Vector3(0.42, 1.98, 0.0)
+    M.cyl(node, 0.13, 0.17, 0.06, Vector3(0.42, 2.72, 0.0), M.C_WOOD_DARK, 0.0, o)
+    M.cyl(node, 0.10, 0.14, 0.06, Vector3(0.42, 2.40, 0.0), M.C_WOOD_DARK, 0.0, o)
+    var lantern_world: Vector3 = node.transform * Vector3(0.42, 2.55, 0.0)
     var halo := M.halo(root, lantern_world, 1.18, Color(1.58, 1.08, 0.55, 1.0))
     var facing_dir := Vector3(1.0, 0.0, 0.0)
     if facing.length_squared() > 0.000001:
@@ -3617,15 +3720,16 @@ static func _build_perches(big: Dictionary, dock_info: Dictionary, lighthouse: D
         perches.append(_perch("garden_post_%d" % i, gp, Vector3(-g.x, 0.0, -g.y), 0.30, "garden_post"))
 
     # ---- P7-V2 street-lamp hood caps: one roost per lamp (lamp_0..lamp_5) -----------
-    # Real geometry from _lamp(): the lantern hood is M.cyl(top_r 0.13, bottom_r 0.17,
-    # h 0.06) centred at local (0.42, 2.15, 0), so its flat top face is the horizontal
-    # plane local y = 2.18 with radius 0.13 -- the only standable surface on the lamp.
-    # The hanger rod (r 0.013, local y 2.08..2.30) runs through the cap centre, so the
+    # Real geometry from _lamp() (P7-V3.2: light centre 2.55 m per Lead spec): the
+    # lantern hood is M.cyl(top_r 0.13, bottom_r 0.17, h 0.06) centred at local
+    # (0.42, 2.72, 0), so its flat top face is the horizontal plane local y = 2.75
+    # with radius 0.13 -- the only standable surface on the lamp.
+    # The hanger rod (r 0.013, local y 2.665..2.865) runs through the cap centre, so the
     # foot point is shifted 0.105 m along local +Z (side = (-facing.z, 0, facing.x)):
     # gull body min clearance to the 0.50x0.07 arm below, and that is 25 mm inside the
     # 0.13 m cap-top radius.  The lamp node
     # only has a yaw rotation and its origin sits at (base.x, ground, base.z), so the
-    # cap-top centre in world space is base + facing * 0.42 + UP * 2.18 and the perch
+    # cap-top centre in world space is base + facing * 0.42 + UP * 2.75 and the perch
     # point is 0.03 m above it (same foot gap convention as the roof perches).
     # Legacy three-argument calls (probe stubs) pass no lamps -> still exactly 16 points.
     for i in range(lamps.size()):
@@ -3639,7 +3743,7 @@ static func _build_perches(big: Dictionary, dock_info: Dictionary, lighthouse: D
         if lface.length_squared() < 0.000001:
             lface = Vector3(1.0, 0.0, 0.0)
         lface = lface.normalized()
-        var cap_top: Vector3 = lbase + lface * 0.42 + Vector3.UP * 2.18
+        var cap_top: Vector3 = lbase + lface * 0.42 + Vector3.UP * 2.75
         var to_side := Vector3(-lface.z, 0.0, lface.x)
         var lamp_pos: Vector3 = cap_top + to_side * 0.105 + Vector3.UP * 0.03
         perches.append(_surface_perch("lamp_%d" % i, lamp_pos, lface, 0.20, "lamp",

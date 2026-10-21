@@ -9,7 +9,7 @@ extends SceneTree
 ##             facing 沿扶手方向（侧栏局部 +Z、前栏局部 +X）、normal=UP、slope=0、slots=1，
 ##             脚点/鸟体/腿趾采样不落入任何 cottage 实体 AABB
 ##   [LAMP]    world 6 个 lamp：找到真实灯帽 CylinderMesh（top_r 0.13 / bottom_r 0.17 / h 0.06），
-##             pos 距真实灯帽顶面 0.03，局部坐标 = (0.42, 2.21, 0.105)，水平落在灯帽顶面 r=0.13 内，
+##             pos 距真实灯帽顶面 0.03，局部坐标 = (0.42, 2.78, 0.105)（P7-V3.2：光心 2.55 / 帽顶 2.75），水平落在灯帽顶面 r=0.13 内，
 ##             最近下方实体表面就是灯帽顶面，facing = 横臂朝路方向、normal=UP、slope=0、slots=1，
 ##             脚点/鸟体包围采样不穿模（脚点与吊杆水平净空 >= 0.05）
 ##   [FX]      fx.gd 归一化接受全部 36 个栖点（新 kind 不被丢弃）、slots=1 保持；
@@ -472,7 +472,7 @@ func _lamp_parts(node: Node3D) -> Dictionary:
 		if mi.mesh is CylinderMesh:
 			var cm: CylinderMesh = mi.mesh
 			if (absf(cm.top_radius - 0.13) < EPS and absf(cm.bottom_radius - 0.17) < EPS
-					and absf(cm.height - 0.06) < EPS and absf(mi.position.y - 2.15) < EPS):
+					and absf(cm.height - 0.06) < EPS and absf(mi.position.y - 2.72) < EPS):
 				out["cap"] = mi
 			elif absf(cm.top_radius - 0.013) < EPS and absf(cm.height - 0.22) < EPS:
 				out["rod"] = mi
@@ -514,7 +514,7 @@ func _probe_lamps(wp: Array) -> void:
 			continue
 		var parts: Dictionary = _lamp_parts(node)
 		var cap: MeshInstance3D = parts["cap"]
-		_check(cap != null, "%s 找到真实灯帽 CylinderMesh(top 0.13/bottom 0.17/h 0.06, y 2.15)" % lname)
+		_check(cap != null, "%s 找到真实灯帽 CylinderMesh(top 0.13/bottom 0.17/h 0.06, y 2.72)" % lname)
 		_check(parts["arm"] != null and parts["rod"] != null and parts["pole"] != null and parts["base"] != null,
 			"%s 横臂/吊杆/灯柱/底座网格齐全（%d 个网格）" % [lname, (parts["meshes"] as Array).size()])
 		_check(absf(node.rotation.x) < 1e-5 and absf(node.rotation.z) < 1e-5,
@@ -523,9 +523,9 @@ func _probe_lamps(wp: Array) -> void:
 			continue
 		var cm: CylinderMesh = cap.mesh
 		var cap_top: Vector3 = cap.global_transform * Vector3(0.0, cm.height * 0.5, 0.0)
-		var node_cap_top: Vector3 = node.to_global(Vector3(0.42, 2.18, 0.0))
+		var node_cap_top: Vector3 = node.to_global(Vector3(0.42, 2.75, 0.0))
 		_check(cap_top.distance_to(node_cap_top) <= 0.002,
-			"%s 真实灯帽顶面中心 = 灯节点局部 (0.42,2.18,0)（误差 %.4f m）" % [lname, cap_top.distance_to(node_cap_top)])
+			"%s 真实灯帽顶面中心 = 灯节点局部 (0.42,2.75,0)（误差 %.4f m）" % [lname, cap_top.distance_to(node_cap_top)])
 		var info_base: Vector3 = info["base"]
 		var info_face: Vector3 = info["facing"]
 		_check(node.position.distance_to(info_base) <= EPS, "%s info.base == 灯节点世界位置" % lname)
@@ -533,9 +533,9 @@ func _probe_lamps(wp: Array) -> void:
 		if face_h.length_squared() < 0.000001:
 			face_h = Vector3(1.0, 0.0, 0.0)
 		face_h = face_h.normalized()
-		var expect_cap_top: Vector3 = info_base + face_h * 0.42 + Vector3.UP * 2.18
+		var expect_cap_top: Vector3 = info_base + face_h * 0.42 + Vector3.UP * 2.75
 		_check(expect_cap_top.distance_to(cap_top) <= 0.002,
-			"%s 灯帽顶面 == base + facing*0.42 + UP*2.18（误差 %.4f m）" % [lname, expect_cap_top.distance_to(cap_top)])
+			"%s 灯帽顶面 == base + facing*0.42 + UP*2.75（误差 %.4f m）" % [lname, expect_cap_top.distance_to(cap_top)])
 		var pos: Vector3 = p["pos"]
 		var facing: Vector3 = p["facing"]
 		var n: Vector3 = (p["normal"] as Vector3).normalized()
@@ -543,10 +543,10 @@ func _probe_lamps(wp: Array) -> void:
 		_check(absf(gap - GAP) <= EPS and gap >= 0.02 and gap <= 0.04,
 			pid + " pos 距真实灯帽顶面垂直间隙 = %.4f m（要求 0.03±0.001）" % gap)
 		var lpos: Vector3 = node.to_local(pos)
-		var expect_lpos := Vector3(0.42, 2.21, 0.105)
+		var expect_lpos := Vector3(0.42, 2.78, 0.105)
 		var lpos_err: Vector3 = lpos - expect_lpos
 		_check(absf(lpos_err.x) <= 0.002 and absf(lpos_err.y) <= 0.002 and absf(lpos_err.z) <= 0.002,
-			pid + " 灯节点局部坐标 = (0.42,2.21,0.105)（实际 %s）" % _fmtv(lpos))
+			pid + " 灯节点局部坐标 = (0.42,2.78,0.105)（实际 %s）" % _fmtv(lpos))
 		var hoff: float = Vector2(pos.x - cap_top.x, pos.z - cap_top.z).length()
 		_check(absf(hoff - 0.105) <= 0.002, pid + " 水平偏离灯帽中心 0.105 m（实际 %.4f）" % hoff)
 		_check(hoff + 0.02 <= 0.13, pid + " 落脚点留出 0.02 m 边缘余量后仍在灯帽顶面 r=0.13 内（实际 %.4f）" % hoff)

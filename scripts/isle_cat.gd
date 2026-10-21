@@ -36,6 +36,11 @@ const BODY_CENTER := Vector3(0.0, 0.25, -0.045)   # 坐姿躯干中心（前高�
 const BODY_TILT := -0.20                          # 躯干绕 X 倾斜（前胸抬高）
 const HEAD_PIVOT := Vector3(0.0, 0.40, 0.13)      # 颈枢轴（头的 yaw/pitch 绕此旋转）
 const HEAD_CORE_OFFSET := Vector3(0.0, 0.075, 0.065)  # 头球中心相对颈枢轴
+# P7-V3.2 全岛度量衡校准：旧猫按 1.50 m 人物比例过大（坐姿耳尖 0.742 m、鼻尖到尾根 0.732 m）。
+# 不改根节点 scale（会污染后续动画/交互坐标与探针契约），而是把全部构造字面量统一乘比例。
+# 目标：坐姿耳尖 ≈0.445 m（0.40–0.50）、鼻尖到尾根 ≈0.44 m（≤0.55）、体宽 ≈0.276 m（0.24–0.28）、
+#      站立肩高 ≈0.256 m（0.25–0.30）。尾巴/呼吸/行走动画只动 rotation 与相对量，保持不变。
+const CAT_MODEL_SCALE := 0.60
 
 const C_FUR := Color("4a4e57")        # 身体深蓝灰（沿用旧猫配色）
 const C_FUR_HEAD := Color("555a64")   # 头/耳/爪稍亮
@@ -98,7 +103,7 @@ class CatIdle extends RefCounted:
 	const LOOK_NEXT_MAX := 20.0
 	# 舔爪：随机 20~35s 一次，头低 0.35 rad + 前爪抬起 0.12
 	const LICK_PITCH := 0.35
-	const LICK_RAISE := 0.12
+	const LICK_RAISE := 0.072    # 0.12 × CAT_MODEL_SCALE(0.60)：抬爪距离随模型比例缩小
 	const LICK_SIDE_YAW := 0.14
 	const LICK_LEG_TILT := -0.30
 	const LICK_UP := 0.60
@@ -469,19 +474,19 @@ static func build(parent: Node3D, pos: Vector3, yaw: float = -0.6, opts: Diction
 	# ---------------- 头（颈枢轴：yaw/pitch 动画都绕此） ----------------
 	var head := Node3D.new()
 	head.name = "Head"
-	head.position = HEAD_PIVOT
+	head.position = HEAD_PIVOT * CAT_MODEL_SCALE
 	head.rotation.x = -0.04
 	root.add_child(head)
 	var head_core := Node3D.new()
 	head_core.name = "HeadCore"
-	head_core.position = HEAD_CORE_OFFSET
+	head_core.position = HEAD_CORE_OFFSET * CAT_MODEL_SCALE
 	head.add_child(head_core)
 	var head_parts := _build_head(head_core)
 
 	# ---------------- 尾巴（3 节链，根连身体后侧） ----------------
 	var tail := Node3D.new()
 	tail.name = "Tail"
-	tail.position = Vector3(0.02, 0.17, -0.33)
+	tail.position = Vector3(0.02, 0.17, -0.33) * CAT_MODEL_SCALE
 	root.add_child(tail)
 	var tail_joints := _build_tail(tail)
 
@@ -494,7 +499,7 @@ static func build(parent: Node3D, pos: Vector3, yaw: float = -0.6, opts: Diction
 	# ---------------- 脚下软阴影（吸附地面，避免悬空感） ----------------
 	var shadow: MeshInstance3D = null
 	if bool(opts.get("shadow", true)):
-		shadow = M.shadow_blob(root, Vector3(0.0, 0.0, 0.02), 0.42, 0.30)
+		shadow = M.shadow_blob(root, Vector3(0.0, 0.0, 0.02) * CAT_MODEL_SCALE, 0.42 * CAT_MODEL_SCALE, 0.30 * CAT_MODEL_SCALE)
 
 	# ---------------- 待机驱动 ----------------
 	var idle = null
@@ -537,29 +542,31 @@ static func build(parent: Node3D, pos: Vector3, yaw: float = -0.6, opts: Diction
 # 身体：坐姿前高后低的倾斜椭球 + 后臀 + 奶油胸脯
 # ---------------------------------------------------------------------------
 static func _build_body(body: Node3D) -> void:
-	var torso := M.sphere(body, BODY_R, BODY_CENTER, C_FUR, Vector3(1.0, 0.80, 1.45), {"outline": 0.02, "rim": 0.10, "bands": 4.0})
+	var s := CAT_MODEL_SCALE
+	var torso := M.sphere(body, BODY_R * s, BODY_CENTER * s, C_FUR, Vector3(1.0, 0.80, 1.45), {"outline": 0.02, "rim": 0.10, "bands": 4.0})
 	torso.rotation.x = BODY_TILT
 	# 后臀补形（坐姿重心，底部与躯干后缘共同贴地）
-	M.sphere(body, 0.155, Vector3(0.0, 0.185, -0.295), C_FUR, Vector3(1.18, 0.82, 1.02), {"outline": 0.02, "rim": 0.10})
+	M.sphere(body, 0.155 * s, Vector3(0.0, 0.185, -0.295) * s, C_FUR, Vector3(1.18, 0.82, 1.02), {"outline": 0.02, "rim": 0.10})
 	# 奶油色胸脯/围兜（头下方）
-	M.sphere(body, 0.105, Vector3(0.0, 0.305, 0.160), C_CREAM, Vector3(1.02, 1.05, 0.72), {"outline": 0.0, "rim": 0.05})
-	M.sphere(body, 0.075, Vector3(0.0, 0.160, 0.175), C_CREAM, Vector3(0.92, 0.85, 0.55), {"outline": 0.0, "rim": 0.04})
+	M.sphere(body, 0.105 * s, Vector3(0.0, 0.305, 0.160) * s, C_CREAM, Vector3(1.02, 1.05, 0.72), {"outline": 0.0, "rim": 0.05})
+	M.sphere(body, 0.075 * s, Vector3(0.0, 0.160, 0.175) * s, C_CREAM, Vector3(0.92, 0.85, 0.55), {"outline": 0.0, "rim": 0.04})
 
 # ---------------------------------------------------------------------------
 # 头：头球 + 口鼻/鼻/嘴/颊/须 + 眼（扁球+竖瞳+高光）+ 眼睑 + 三角耳
 # ---------------------------------------------------------------------------
 static func _build_head(core: Node3D) -> Dictionary:
-	M.sphere(core, HEAD_R, Vector3.ZERO, C_FUR_HEAD, Vector3(1.03, 0.97, 1.0), {"outline": 0.02, "rim": 0.10, "bands": 4.0})
+	var s := CAT_MODEL_SCALE
+	M.sphere(core, HEAD_R * s, Vector3.ZERO, C_FUR_HEAD, Vector3(1.03, 0.97, 1.0), {"outline": 0.02, "rim": 0.10, "bands": 4.0})
 	# 口鼻（奶油色宽吻）+ 两侧颊
-	M.sphere(core, 0.062, Vector3(0.0, -0.055, 0.128), C_CREAM, Vector3(1.35, 0.80, 0.95), {"outline": 0.0, "rim": 0.05})
+	M.sphere(core, 0.062 * s, Vector3(0.0, -0.055, 0.128) * s, C_CREAM, Vector3(1.35, 0.80, 0.95), {"outline": 0.0, "rim": 0.05})
 	for sx in [-1.0, 1.0]:
-		M.sphere(core, 0.045, Vector3(sx * 0.055, -0.050, 0.128), C_CREAM, Vector3(1.0, 0.88, 0.85), {"outline": 0.0, "rim": 0.04})
+		M.sphere(core, 0.045 * s, Vector3(sx * 0.055, -0.050, 0.128) * s, C_CREAM, Vector3(1.0, 0.88, 0.85), {"outline": 0.0, "rim": 0.04})
 	# 鼻 + 嘴（两条短线组成 V 形）
-	M.sphere(core, 0.018, Vector3(0.0, -0.026, 0.196), C_NOSE, Vector3(1.25, 0.85, 0.72), {"outline": 0.0, "rim": 0.0})
+	M.sphere(core, 0.018 * s, Vector3(0.0, -0.026, 0.196) * s, C_NOSE, Vector3(1.25, 0.85, 0.72), {"outline": 0.0, "rim": 0.0})
 	for sx in [-1.0, 1.0]:
-		M.box_rot(core, Vector3(0.030, 0.007, 0.007), Vector3(sx * 0.016, -0.063, 0.192), Color("3a3330"), Vector3(0.0, 0.0, sx * 0.42), {"outline": 0.0, "rim": 0.0})
+		M.box_rot(core, Vector3(0.030, 0.007, 0.007) * s, Vector3(sx * 0.016, -0.063, 0.192) * s, Color("3a3330"), Vector3(0.0, 0.0, sx * 0.42), {"outline": 0.0, "rim": 0.0})
 	# 下巴
-	M.sphere(core, 0.030, Vector3(0.0, -0.092, 0.145), C_CREAM, Vector3(1.10, 0.70, 0.80), {"outline": 0.0, "rim": 0.02})
+	M.sphere(core, 0.030 * s, Vector3(0.0, -0.092, 0.145) * s, C_CREAM, Vector3(1.10, 0.70, 0.80), {"outline": 0.0, "rim": 0.02})
 
 	# ---- 眼睛（扁球 + 竖瞳 + 高光点），眼睑枢轴在眼睛上方 ----
 	# 注：toon.gdshader 中 self_lit=1 时 col = base * glow，glow 缺省 0 → 纯黑，
@@ -572,19 +579,19 @@ static func _build_head(core: Node3D) -> Dictionary:
 	for sx in [-1.0, 1.0]:
 		var eye := Node3D.new()
 		eye.name = "EyeL" if sx < 0.0 else "EyeR"
-		eye.position = Vector3(sx * 0.060, 0.045, 0.120)
+		eye.position = Vector3(sx * 0.060, 0.045, 0.120) * s
 		eyes.add_child(eye)
-		M.sphere(eye, 0.048, Vector3.ZERO, C_EYE, Vector3(0.82, 1.12, 0.50), {"outline": 0.0, "rim": 0.18, "glow": 1.05, "self_lit": true})
-		M.sphere(eye, 0.023, Vector3(0.0, 0.002, 0.028), C_PUPIL, Vector3(0.58, 1.15, 0.34), {"outline": 0.0, "rim": 0.0, "self_lit": true})
-		M.sphere(eye, 0.010, Vector3(-0.014, 0.021, 0.041), C_HILITE, Vector3(1.0, 1.0, 0.60), {"outline": 0.0, "rim": 0.0, "self_lit": true, "glow": 2.2})
+		M.sphere(eye, 0.048 * s, Vector3.ZERO, C_EYE, Vector3(0.82, 1.12, 0.50), {"outline": 0.0, "rim": 0.18, "glow": 1.05, "self_lit": true})
+		M.sphere(eye, 0.023 * s, Vector3(0.0, 0.002, 0.028) * s, C_PUPIL, Vector3(0.58, 1.15, 0.34), {"outline": 0.0, "rim": 0.0, "self_lit": true})
+		M.sphere(eye, 0.010 * s, Vector3(-0.014, 0.021, 0.041) * s, C_HILITE, Vector3(1.0, 1.0, 0.60), {"outline": 0.0, "rim": 0.0, "self_lit": true, "glow": 2.2})
 		eye_nodes.append(eye)
 		# 眼睑：毛色扁球，枢轴在眼睛上缘；张开时收进头内（rotation.x≈1.38），闭合时盖住眼睛
 		var lid := Node3D.new()
 		lid.name = "EyeLidL" if sx < 0.0 else "EyeLidR"
-		lid.position = Vector3(sx * 0.060, 0.090, 0.110)
+		lid.position = Vector3(sx * 0.060, 0.090, 0.110) * s
 		lid.rotation.x = 1.38
 		eyes.add_child(lid)
-		M.sphere(lid, 0.054, Vector3(0.0, -0.048, 0.030), C_FUR_HEAD, Vector3(0.92, 1.06, 0.72), {"outline": 0.010, "rim": 0.08})
+		M.sphere(lid, 0.054 * s, Vector3(0.0, -0.048, 0.030) * s, C_FUR_HEAD, Vector3(0.92, 1.06, 0.72), {"outline": 0.010, "rim": 0.08})
 		lid_nodes.append(lid)
 
 	# ---- 耳朵：3 棱锥（三角锥）外耳 + 浅色内耳 ----
@@ -594,12 +601,12 @@ static func _build_head(core: Node3D) -> Dictionary:
 	for sx in [-1.0, 1.0]:
 		var ear := Node3D.new()
 		ear.name = "EarL" if sx < 0.0 else "EarR"
-		ear.position = Vector3(sx * 0.082, 0.104, 0.006)
+		ear.position = Vector3(sx * 0.082, 0.104, 0.006) * s
 		ear.rotation = Vector3(-0.10, sx * 0.16, -sx * 0.30)
 		core.add_child(ear)
-		_ear_mesh(ear, 0.085, 0.140, C_FUR_HEAD, {"outline": 0.015, "rim": 0.10})
-		var inner := _ear_mesh(ear, 0.060, 0.110, C_EAR_IN, {"outline": 0.0, "rim": 0.02, "self_lit": true, "glow": 0.85})
-		inner.position = Vector3(0.0, 0.028, 0.014)
+		_ear_mesh(ear, 0.085 * s, 0.140 * s, C_FUR_HEAD, {"outline": 0.015, "rim": 0.10})
+		var inner := _ear_mesh(ear, 0.060 * s, 0.110 * s, C_EAR_IN, {"outline": 0.0, "rim": 0.02, "self_lit": true, "glow": 0.85})
+		inner.position = Vector3(0.0, 0.028, 0.014) * s
 		inner.scale = Vector3(0.95, 0.95, 0.70)
 		ears.append(ear)
 
@@ -607,10 +614,10 @@ static func _build_head(core: Node3D) -> Dictionary:
 	var whiskers: Array = []
 	for sx in [-1.0, 1.0]:
 		for i in range(3):
-			var origin := Vector3(sx * 0.070, -0.048 + float(i) * 0.014, 0.145)
+			var origin := Vector3(sx * 0.070, -0.048 + float(i) * 0.014, 0.145) * s
 			var dir := Vector3(sx * 1.0, 0.28 - float(i) * 0.30, 0.35).normalized()
-			var w := M.cyl(core, 0.0015, 0.0022, 0.115, origin + dir * 0.058, C_WHISKER, 0.0, {"outline": 0.0, "rim": 0.0})
-			w.transform = Transform3D(_basis_y_to(dir), origin + dir * 0.058)
+			var w := M.cyl(core, 0.0015 * s, 0.0022 * s, 0.115 * s, origin + dir * 0.058 * s, C_WHISKER, 0.0, {"outline": 0.0, "rim": 0.0})
+			w.transform = Transform3D(_basis_y_to(dir), origin + dir * 0.058 * s)
 			whiskers.append(w)
 
 	return {"ears": ears, "eyes": eye_nodes, "eyelids": lid_nodes, "whiskers": whiskers}
@@ -627,49 +634,51 @@ static func _build_head(core: Node3D) -> Dictionary:
 #   投影后 dy=-0.077 NDC（低于头顶 7.7% 半屏），整周期 36/36 帧不再越界。
 #   **j2 的前卷姿态与全部动画幅度一律不变**（猫咪尾巴仍然向前卷、仍在摆动）。
 static func _build_tail(tail: Node3D) -> Array:
+	var s := CAT_MODEL_SCALE
 	var j0 := Node3D.new()
 	j0.name = "TailJ0"
 	j0.rotation = Vector3(-0.74, 0.12, 0.05)
 	tail.add_child(j0)
-	M.cyl(j0, 0.040, 0.047, 0.16, Vector3(0.0, 0.080, 0.0), C_FUR, 0.0, {"outline": 0.02, "rim": 0.10})
-	M.sphere(j0, 0.043, Vector3(0.0, 0.160, 0.0), C_FUR, Vector3.ONE, {"outline": 0.015, "rim": 0.10})
+	M.cyl(j0, 0.040 * s, 0.047 * s, 0.16 * s, Vector3(0.0, 0.080, 0.0) * s, C_FUR, 0.0, {"outline": 0.02, "rim": 0.10})
+	M.sphere(j0, 0.043 * s, Vector3(0.0, 0.160, 0.0) * s, C_FUR, Vector3.ONE, {"outline": 0.015, "rim": 0.10})
 	var j1 := Node3D.new()
 	j1.name = "TailJ1"
-	j1.position = Vector3(0.0, 0.160, 0.0)
+	j1.position = Vector3(0.0, 0.160, 0.0) * s
 	j1.rotation = Vector3(-0.44, -0.16, -0.05)
 	j0.add_child(j1)
-	M.cyl(j1, 0.034, 0.040, 0.15, Vector3(0.0, 0.075, 0.0), C_FUR, 0.0, {"outline": 0.02, "rim": 0.10})
-	M.sphere(j1, 0.036, Vector3(0.0, 0.150, 0.0), C_FUR, Vector3.ONE, {"outline": 0.015, "rim": 0.10})
+	M.cyl(j1, 0.034 * s, 0.040 * s, 0.15 * s, Vector3(0.0, 0.075, 0.0) * s, C_FUR, 0.0, {"outline": 0.02, "rim": 0.10})
+	M.sphere(j1, 0.036 * s, Vector3(0.0, 0.150, 0.0) * s, C_FUR, Vector3.ONE, {"outline": 0.015, "rim": 0.10})
 	var j2 := Node3D.new()
 	j2.name = "TailJ2"
-	j2.position = Vector3(0.0, 0.150, 0.0)
+	j2.position = Vector3(0.0, 0.150, 0.0) * s
 	j2.rotation = Vector3(0.55, -0.18, 0.10)
 	j1.add_child(j2)
-	M.cyl(j2, 0.024, 0.033, 0.13, Vector3(0.0, 0.065, 0.0), C_FUR_HEAD, 0.0, {"outline": 0.015, "rim": 0.10})
-	M.sphere(j2, 0.030, Vector3(0.0, 0.132, 0.0), C_FUR_HEAD, Vector3.ONE, {"outline": 0.015, "rim": 0.10})
+	M.cyl(j2, 0.024 * s, 0.033 * s, 0.13 * s, Vector3(0.0, 0.065, 0.0) * s, C_FUR_HEAD, 0.0, {"outline": 0.015, "rim": 0.10})
+	M.sphere(j2, 0.030 * s, Vector3(0.0, 0.132, 0.0) * s, C_FUR_HEAD, Vector3.ONE, {"outline": 0.015, "rim": 0.10})
 	return [j0, j1, j2]
 
 # ---------------------------------------------------------------------------
 # 腿：前腿直立（0.07 半径柱 + 压扁爪），后腿收拢（大腿球 + 折叠膝 + 后爪）
 # ---------------------------------------------------------------------------
 static func _build_legs(legs: Node3D) -> Dictionary:
+	var s := CAT_MODEL_SCALE
 	var front_legs: Array = []
 	var paws: Array = []
 	for sx in [-1.0, 1.0]:
 		# 前腿枢轴在肩部，舔爪时整条腿抬起
 		var fl := Node3D.new()
 		fl.name = "FrontLegL" if sx < 0.0 else "FrontLegR"
-		fl.position = Vector3(sx * 0.105, 0.345, 0.205)
+		fl.position = Vector3(sx * 0.105, 0.345, 0.205) * s
 		legs.add_child(fl)
-		M.sphere(fl, 0.082, Vector3(0.0, -0.010, 0.0), C_FUR, Vector3.ONE, {"outline": 0.02, "rim": 0.10})
-		M.cyl(fl, 0.070, 0.058, 0.31, Vector3(0.0, -0.155, 0.012), C_FUR, 0.0, {"outline": 0.02, "rim": 0.10})
-		var paw := M.sphere(fl, 0.060, Vector3(0.0, -0.312, 0.055), C_FUR_HEAD, Vector3(1.05, 0.55, 1.35), {"outline": 0.015, "rim": 0.10})
+		M.sphere(fl, 0.082 * s, Vector3(0.0, -0.010, 0.0) * s, C_FUR, Vector3.ONE, {"outline": 0.02, "rim": 0.10})
+		M.cyl(fl, 0.070 * s, 0.058 * s, 0.31 * s, Vector3(0.0, -0.155, 0.012) * s, C_FUR, 0.0, {"outline": 0.02, "rim": 0.10})
+		var paw := M.sphere(fl, 0.060 * s, Vector3(0.0, -0.312, 0.055) * s, C_FUR_HEAD, Vector3(1.05, 0.55, 1.35), {"outline": 0.015, "rim": 0.10})
 		front_legs.append(fl)
 		paws.append(paw)
 		# 后腿收拢（贴在身体后侧，爪尖朝前）
-		M.sphere(legs, 0.140, Vector3(sx * 0.118, 0.160, -0.200), C_FUR, Vector3(0.95, 0.95, 1.15), {"outline": 0.02, "rim": 0.10})
-		M.sphere(legs, 0.078, Vector3(sx * 0.138, 0.100, -0.020), C_FUR, Vector3(0.95, 0.90, 1.0), {"outline": 0.02, "rim": 0.10})
-		var hp := M.sphere(legs, 0.055, Vector3(sx * 0.112, 0.028, 0.060), C_FUR_HEAD, Vector3(1.0, 0.50, 1.45), {"outline": 0.015, "rim": 0.10})
+		M.sphere(legs, 0.140 * s, Vector3(sx * 0.118, 0.160, -0.200) * s, C_FUR, Vector3(0.95, 0.95, 1.15), {"outline": 0.02, "rim": 0.10})
+		M.sphere(legs, 0.078 * s, Vector3(sx * 0.138, 0.100, -0.020) * s, C_FUR, Vector3(0.95, 0.90, 1.0), {"outline": 0.02, "rim": 0.10})
+		var hp := M.sphere(legs, 0.055 * s, Vector3(sx * 0.112, 0.028, 0.060) * s, C_FUR_HEAD, Vector3(1.0, 0.50, 1.45), {"outline": 0.015, "rim": 0.10})
 		paws.append(hp)
 	return {"front_legs": front_legs, "paws": paws}
 

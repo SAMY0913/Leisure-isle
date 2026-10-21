@@ -1,346 +1,671 @@
 extends SceneTree
-## P7-V3 家具库 headless 自检（task-4 / G 阶段）
-## 覆盖：25 类家具 build 契约、footprint/height 声明一致性、几何非方块堆（部件数/尺寸/包围盒）、
-##       NaN/节点命名冲突/材质共享（不泄漏）、描边覆盖、无 Light3D、重复 build 与释放回收。
+## P7-V3.2 T3 家具比例审计探针（headless）
+##
+## 目标：用真实构建出来的网格 AABB（不是读 DIMS 表）逐件复核 isle_house_props.gd 的 25 类家具，
+## 并检查人体工学关键子高度与家具之间的配合约束，最后打印可被日志抓取的 RESULT 行。
+##
+## 判定来源：scripts/isle_scale_spec.gd 的 _REGISTRY（PASS 阈值=该件 tol，默认 5%）；
+## 各件 AABB 尺寸语义：Vector3(x=宽, y=高, z=深)；DIMS 存的是 Vector3(宽, 深, 高)。
+##
+## 保留的旧契约断言：返回键、节点命名/原点/朝向、footprint/height 与 DIMS 一致、部件/网格数、
+## 材质全部为 toon ShaderMaterial 且带 0.02 描边、无 Light3D、重复 build 材质不新增、
+## NaN/Inf 检查、释放归零、未知 kind 返回空、width/depth/height 覆盖、color/cushion/rot 覆盖。
+##
 ## 运行：
-##   "D:/休闲小岛幻境/引擎/Godot_v4.7.2-stable_win64_console.exe" --headless ##     --path "D:/休闲小岛幻境/游戏工程" --script res://tools/probe_props_p7v3.gd
+##   & <GODOT> --headless --path <proj> --script res://tools/probe_props_p7v3.gd
+## 输出以 "[PROPS] RESULT ..." 结尾；fail==0 时 exit 0。
 
 const PROPS := preload("res://scripts/isle_house_props.gd")
+const SPEC := preload("res://scripts/isle_scale_spec.gd")
+const BATCH := preload("res://scripts/isle_batch.gd")
 
-# 任务要求的 24 类（floor_lamp 为本库额外补充，服务 lead 的落地灯机位）
-const REQUIRED := [
-	"doormat", "coat_rack", "shoe_bench", "dining_table", "chair", "sofa", "armchair",
-	"coffee_table", "rug", "bookshelf", "sideboard", "tall_cupboard", "bed", "nightstand",
-	"wardrobe", "desk", "reading_chair", "side_table", "wall_clock", "picture_frame",
-	"table_lamp", "curtain", "firewood_basket", "plant_pot",
+const ALL_KINDS := [
+	"armchair", "bed", "bookshelf", "chair", "coat_rack", "coffee_table", "curtain",
+	"desk", "dining_table", "doormat", "firewood_basket", "floor_lamp", "nightstand",
+	"picture_frame", "plant_pot", "reading_chair", "rug", "shoe_bench", "side_table",
+	"sideboard", "sofa", "table_lamp", "tall_cupboard", "wall_clock", "wardrobe",
 ]
-const WALL_KINDS := ["coat_rack", "wall_clock", "picture_frame", "curtain"]
+const WALL_KINDS := ["coat_rack", "curtain", "picture_frame", "wall_clock"]
 
 var checks := 0
-var fails := 0
+var pass_n := 0
+var warn_n := 0
+var fail_n := 0
+
 var stage: Node3D = null
-var round1: Dictionary = {}     # kind -> {node, footprint, height, parts, meshes}
-var round1_mats: Dictionary = {} # instance_id -> true
+var round1: Dictionary = {}
+var spec_results: Array = []
+var mats_before: Dictionary = {}
 var round1_mesh_count := 0
+# 成本统计（P7-V3.2 家具重建前后对比用）
+var cost_parts := 0
+var cost_surfaces := 0
+var cost_verts := 0
+var cost_tris := 0
+var cost_glow := 0
+var cost_mats := 0
+var cost_merged_inst := 0
+var cost_merged_surf := 0
+var cost_merged_tris := 0
 
 func _initialize() -> void:
-	print("=== probe_props_p7v3: 家具库契约/几何/材质 headless 自检 ===")
-	await process_frame
-	_check_kind_registry()
+	print("[PROPS] ===== P7-V3.2 T3 家具比例审计（1 世界单位 = 1 m；AABB 实测） =====")
+	stage = Node3D.new()
+	stage.name = "PropsStage"
+	root.add_child(stage)
+	_check_registry()
+	_print_dims_table()
 	_build_round1()
+	_check_roles()
+	_check_relations()
+	_cost_probe()
 	await _second_round()
 	await _free_round()
-	_extra_contract_checks()
-	_report()
+	await _extra_contract_checks()
+	_print_summary()
+	quit(0 if fail_n == 0 else 1)
 
-# ------------------------------------------------------------
-func _check(cond: bool, msg: String) -> void:
-	checks += 1
-	if cond:
-		print("  [PASS] ", msg)
-	else:
-		fails += 1
-		print("  [FAIL] ", msg)
+# ============================================================
+# 注册表 / DIMS 自洽
+# ============================================================
+func _check_registry() -> void:
+	print("[PROPS] ---- 注册表 / DIMS / spec 自洽 ----")
+	var kinds: Array = PROPS.kinds()
+	_check(kinds.size() == ALL_KINDS.size(), "家具类别数 %d == %d" % [kinds.size(), ALL_KINDS.size()])
+	for kind in ALL_KINDS:
+		_check(PROPS.has_kind(kind), "kind 已注册：%s" % kind)
+	var d: Vector3 = PROPS.dims("bed")
+	_check(is_finite(d.x) and is_finite(d.y) and is_finite(d.z), "DIMS 数值有限：bed %s" % str(d))
+	var bad := 0
+	for kind in ALL_KINDS:
+		var dd: Vector3 = PROPS.dims(kind)
+		if not (is_finite(dd.x) and is_finite(dd.y) and is_finite(dd.z)) or dd.x <= 0.02 or dd.y <= 0.02 or dd.z <= 0.0:
+			bad += 1
+			print("    [WARN] DIMS 异常：%s %s" % [kind, str(dd)])
+	_check(bad == 0, "25 类 DIMS 全部有限且为正（异常 %d）" % bad)
+	# DIMS ↔ spec 对齐：DIMS=(w,d,h)，spec=(w,h,d)
+	var mismatch := 0
+	for kind in ALL_KINDS:
+		var dim: Dictionary = SPEC.dimension(kind)
+		if dim.is_empty():
+			mismatch += 1
+			continue
+		var t: Vector3 = dim["size"]
+		var dd: Vector3 = PROPS.dims(kind)
+		if absf(dd.x - t.x) > 0.001 or absf(dd.y - t.z) > 0.001 or absf(dd.z - t.y) > 0.001:
+			mismatch += 1
+			print("    [WARN] DIMS/spec 不对齐：%s DIMS%s spec(宽%.2f 高%.2f 深%.2f)" % [kind, str(dd), t.x, t.y, t.z])
+	_check(mismatch == 0, "DIMS 与 isle_scale_spec 目标表逐项对齐（不对齐 %d）" % mismatch)
+	# 墙挂标记
+	var wm_bad := 0
+	for kind in ALL_KINDS:
+		if PROPS.is_wall_mounted(kind) != WALL_KINDS.has(kind):
+			wm_bad += 1
+	_check(wm_bad == 0, "墙挂 kind 标记与约定一致（%s）" % str(WALL_KINDS))
 
-func _report() -> void:
-	print("[PROPS] RESULT fail=%d checks=%d round1_meshes=%d materials=%d" % [fails, checks, round1_mesh_count, round1_mats.size()])
-	quit(0 if fails == 0 else 1)
+func _print_dims_table() -> void:
+	print("[PROPS] ---- DIMS（声明：宽, 深, 高）与 spec 目标（宽, 高, 深） ----")
+	for kind in ALL_KINDS:
+		var d: Vector3 = PROPS.dims(kind)
+		var t: Vector3 = SPEC.size_of(kind)
+		var wall := "WALL" if PROPS.is_wall_mounted(kind) else "floor"
+		print("  DIMS %-16s %-5s 宽 %.3f 深 %.3f 高 %.3f | spec 宽 %.3f 高 %.3f 深 %.3f" % [
+			String(kind), wall, d.x, d.y, d.z, t.x, t.y, t.z])
 
-func _check_kind_registry() -> void:
-	print("--- 1) kind 清单与尺寸契约 ---")
-	var ks: Array = PROPS.kinds()
-	_check(ks.size() >= 18, "kind 数量 >= 18（实际 %d）" % ks.size())
-	var missing: Array = []
-	for k in REQUIRED:
-		if not PROPS.has_kind(k):
-			missing.append(k)
-	_check(missing.is_empty(), "任务要求 24 类全部实现（缺：%s）" % str(missing))
-	_check(PROPS.has_kind("floor_lamp"), "额外提供 floor_lamp（落地灯）")
-	var wall_ok := true
-	for k in ks:
-		var w: bool = PROPS.is_wall_mounted(k)
-		if w != WALL_KINDS.has(String(k)):
-			wall_ok = false
-	_check(wall_ok, "墙挂 kind 标记正确（%s）" % str(WALL_KINDS))
-	var dim_ok := true
-	var dim_msg := ""
-	for k in ks:
-		var d: Vector3 = PROPS.dims(k)
-		if not (d.x > 0.0 and d.y > 0.0 and d.z > 0.0) or not d.is_finite():
-			dim_ok = false
-			dim_msg += "%s=%s; " % [k, str(d)]
-	_check(dim_ok, "每个 kind 的 DIMS 均为有限正值（%s）" % dim_msg)
-	# 与计划 §12 尺寸表对照（允许 ±0.02）
-	var plan := {
-		"dining_table": Vector2(1.60, 0.95), "chair": Vector2(0.46, 0.46),
-		"sofa": Vector2(1.80, 0.85), "coffee_table": Vector2(1.10, 0.55),
-		"rug": Vector2(2.60, 1.90), "bookshelf": Vector2(0.95, 0.32),
-		"sideboard": Vector2(1.20, 0.42), "tall_cupboard": Vector2(0.90, 0.44),
-		"bed": Vector2(1.40, 2.05), "nightstand": Vector2(0.45, 0.40),
-		"wardrobe": Vector2(1.25, 0.60), "desk": Vector2(1.70, 0.90),
-		"side_table": Vector2(0.45, 0.45),
-	}
-	var plan_msg := ""
-	for k in plan.keys():
-		var fp: Vector2 = PROPS.footprint_of(k)
-		var want: Vector2 = plan[k]
-		if absf(fp.x - want.x) > 0.02 or absf(fp.y - want.y) > 0.02:
-			plan_msg += "%s=%s(want %s); " % [k, str(fp), str(want)]
-	_check(plan_msg.is_empty(), "计划 §12 关键占地尺寸一致（%s）" % plan_msg)
-	print("  kinds=%s" % str(ks))
-
-func _make_stage() -> void:
-	var root3d := Node3D.new()
-	root3d.name = "PropsStage"
-	get_root().add_child(root3d)
-	stage = Node3D.new()
-	stage.name = "Stage"
-	root3d.add_child(stage)
-
+# ============================================================
+# 第一轮：逐件构建 + 真实 AABB / 契约 / 描边 / 自发光
+# ============================================================
 func _build_round1() -> void:
-	print("--- 2) 首轮 build：返回契约 / 部件数 / 包围盒 / 描边 / 灯 ---")
-	_make_stage()
-	var ks: Array = PROPS.kinds()
-	for k in ks:
-		var kind := String(k)
-		var base: Vector3 = PROPS.dims(kind)
-		var pos := Vector3(1.0, 0.55, -2.0)
-		var yaw := 0.37
-		var res: Dictionary = PROPS.build(stage, kind, pos, yaw)
-		var ok := res.has("node") and res.has("footprint") and res.has("height") and res.has("kind")
-		var node: Node3D = res.get("node", null)
-		if not ok or node == null:
-			_check(false, "%s: 返回字典含 node/footprint/height/kind" % kind)
+	print("[PROPS] ---- 第一轮构建 + 真实 AABB vs spec ----")
+	var pos := Vector3(1.0, 0.55, -2.0)
+	var yaw := 0.37
+	for kind in ALL_KINDS:
+		var r: Dictionary = PROPS.build(stage, kind, pos, yaw)
+		if not _check(not r.is_empty(), "[%s] build 返回非空" % kind):
 			continue
-		var fp: Vector2 = res["footprint"]
-		var h: float = float(res["height"])
-		var parts := node.get_child_count()
-		var meshes := _count_meshes(node)
-		var aabb := _aabb_of(node)
-		var mats: Dictionary = {}
-		var outline_bad: Array = []
-		var glow_count := 0
-		var lit_count := 0
-		for c in node.get_children():
-			if not (c is MeshInstance3D):
-				continue
+		var n: Node3D = r.get("node")
+		if not _check(n is Node3D and n.get_parent() == stage, "[%s] node 已挂到 stage" % kind):
+			continue
+		var fp: Vector2 = r.get("footprint", Vector2.ZERO)
+		var ht: float = float(r.get("height", 0.0))
+		var d: Vector3 = PROPS.dims(kind)
+		# --- 返回契约 ---
+		var contract_ok := r.has("node") and r.has("footprint") and r.has("height") and r.has("kind") and r.has("lights")
+		_check(contract_ok, "[%s] 返回契约含 node/footprint/height/kind/lights" % kind)
+		_check(String(r.get("kind", "")) == kind, "[%s] 返回 kind 一致" % kind)
+		var lights: Variant = r.get("lights", null)
+		_check(lights is Array and (lights as Array).is_empty(), "[%s] lights 为空数组（不建 Light3D）" % kind)
+		# --- 节点身份 ---
+		var ident_ok: bool = n.name.begins_with("Prop_%s_" % kind) \
+			and n.position.is_equal_approx(pos) \
+			and absf(n.rotation.y - yaw) < 0.001 \
+			and String(n.get_meta("prop_kind", "")) == kind \
+			and bool(n.get_meta("prop_wall_mounted", false)) == PROPS.is_wall_mounted(kind)
+		_check(ident_ok, "[%s] 命名/原点/yaw/prop_kind/prop_wall_mounted 正确" % kind)
+		_check(fp.is_equal_approx(Vector2(d.x, d.y)) and absf(ht - d.z) < 0.001,
+			"[%s] footprint=(%.2f,%.2f)/height=%.2f 与 DIMS 一致" % [kind, fp.x, fp.y, ht])
+		# --- 部件 / 网格 ---
+		var parts: int = n.get_child_count()
+		var meshes: int = _count_meshes(n)
+		_check(parts >= 3 and meshes >= 4, "[%s] 部件 %d / 网格 %d（>=3 / >=4）" % [kind, parts, meshes])
+		# --- 材质：toon + 描边 + self_lit ---
+		var bad_mat := 0
+		var lit := 0
+		var glow_parts := 0
+		for c in n.get_children():
 			var mi := c as MeshInstance3D
+			if mi == null or mi.mesh == null:
+				continue
 			if String(mi.name).begins_with("Glow"):
-				glow_count += 1
+				glow_parts += 1
 				continue
-			if mi.mesh == null:
-				outline_bad.append("nullmesh")
-			var mat: Material = mi.material_override
-			if mat == null:
-				outline_bad.append(String(mi.name) + ":nomat")
+			var sm := mi.material_override as ShaderMaterial
+			if sm == null:
+				bad_mat += 1
 				continue
-			mats[mat.get_instance_id()] = true
-			if mat is ShaderMaterial:
-				if (mat as ShaderMaterial).next_pass == null:
-					outline_bad.append(String(mi.name) + ":no_outline")
-				var self_lit: Variant = (mat as ShaderMaterial).get_shader_parameter("self_lit")
-				if self_lit is float and float(self_lit) > 0.5:
-					lit_count += 1
-			round1_mats[mat.get_instance_id()] = true
-		round1_mesh_count += meshes
-
-		var msg := "%s: parts=%d meshes=%d fp=(%.2f,%.2f) h=%.3f" % [kind, parts, meshes, fp.x, fp.y, h]
-		var cond_ret: bool = res["kind"] == kind and fp.is_finite() and h > 0.0 and h < 3.0
-		_check(cond_ret, msg + " 返回数值有效")
-		_check(parts >= 3, "%s: 部件数 >= 3（实际 %d，不是单一方块）" % [kind, parts])
-		_check(meshes >= 4, "%s: 网格数 >= 4（实际 %d）" % [kind, meshes])
-		_check((node.position - pos).length() < 1e-5, "%s: 原点=pos" % kind)
-		_check(absf(node.rotation.y - yaw) < 1e-5, "%s: 朝向 yaw=%.3f" % [kind, yaw])
-		_check(String(node.name).begins_with("Prop_%s_" % kind), "%s: 节点命名 Prop_<kind>_<seq>（%s）" % [kind, node.name])
-		_check(node.get_meta("prop_kind", "") == kind, "%s: 元数据 prop_kind 正确" % kind)
-		_check(fp.is_equal_approx(Vector2(base.x, base.y)), "%s: footprint 与 DIMS 一致" % kind)
-		_check(absf(h - base.z) < 1e-4, "%s: height 与 DIMS 一致（%.3f vs %.3f）" % [kind, h, base.z])
-		_check(outline_bad.is_empty(), "%s: 所有实体部件带 0.02 描边（异常：%s）" % [kind, str(outline_bad.slice(0, 4))])
-		_check(_has_light3d(node) == false, "%s: 不含 Light3D（光源由 main.gd 注册）" % kind)
-		var wall := PROPS.is_wall_mounted(kind)
-		var ab_chk := _check_aabb(kind, wall, fp, h, aabb)
-		_check(ab_chk["ok"], "%s: 包围盒不超声明占地/高度（%s）" % [kind, ab_chk["msg"]])
+			if sm.next_pass == null:
+				bad_mat += 1
+			if float(sm.get_shader_parameter("self_lit")) > 0.5:
+				lit += 1
+		_check(bad_mat == 0, "[%s] 非 Glow 部件全部 toon ShaderMaterial + 0.02 描边（异常 %d）" % [kind, bad_mat])
+		_check(not _has_light3d(n), "[%s] 无 Light3D" % kind)
 		if kind == "table_lamp" or kind == "floor_lamp":
-			_check(lit_count >= 1, "%s: 含自发光灯罩（self_lit 部件 %d）" % [kind, lit_count])
-		round1[kind] = {"node": node, "footprint": fp, "height": h, "parts": parts, "meshes": meshes, "mats": mats, "glow": glow_count}
-	print("  首轮完成：kinds=%d meshes=%d materials=%d" % [round1.size(), round1_mesh_count, round1_mats.size()])
+			_check(lit >= 1 and glow_parts >= 1, "[%s] 自发光部件 %d / 光晕 %d" % [kind, lit, glow_parts])
+		# --- 真实 AABB ---
+		var ab: AABB = _aabb_of(n)
+		_check(ab.size.x > 0.0 and ab.size.y > 0.0 and ab.size.z > 0.0, "[%s] AABB 非零" % kind)
+		_check(_aabb_finite(ab), "[%s] AABB 数值有限" % kind)
+		_check(_aabb_placement_ok(kind, ab, d),
+			"[%s] AABB 落位 floor/wall 约定（min %s max %s）" % [kind,
+				"(%.3f,%.3f,%.3f)" % [ab.position.x, ab.position.y, ab.position.z],
+				"(%.3f,%.3f,%.3f)" % [ab.end.x, ab.end.y, ab.end.z]])
+		# 声明尺寸 vs 实测（应该自洽；与 spec 的对照交给 SPEC.check）
+		var tol_x := maxf(0.012, d.x * 0.02)
+		var tol_z := maxf(0.012, d.y * 0.02)
+		var tol_y := maxf(0.012, d.z * 0.02)
+		_check(absf(ab.size.x - d.x) <= tol_x and absf(ab.size.z - d.y) <= tol_z and absf(ab.size.y - d.z) <= tol_y,
+			"[%s] 实测 AABB %.3f×%.3f×%.3f ≈ DIMS 宽%.3f 深%.3f 高%.3f" % [
+				kind, ab.size.x, ab.size.y, ab.size.z, d.x, d.y, d.z])
+		print("[PROPS] MEASURE %-16s size=(%.3f, %.3f, %.3f) min=(%.3f, %.3f, %.3f)" % [
+			kind, ab.size.x, ab.size.y, ab.size.z, ab.position.x, ab.position.y, ab.position.z])
+		_spec_check(kind, ab.size)
+		round1[kind] = {"node": n, "aabb": ab, "parts": parts, "meshes": meshes}
+	# 首轮材质快照 / 网格总数
+	round1_mesh_count = _count_meshes(stage)
+	_collect_material_ids(stage, mats_before)
+	_check(round1_mesh_count > 0 and mats_before.size() > 0,
+		"首轮构建完成：props %d / meshes %d / 材质实例 %d" % [round1.size(), round1_mesh_count, mats_before.size()])
 
-func _check_aabb(kind: String, wall: bool, fp: Vector2, h: float, aabb: AABB) -> Dictionary:
-	if aabb.size == Vector3.ZERO:
-		return {"ok": false, "msg": "空包围盒"}
-	var tol := 0.03
-	var parts: Array = []
-	var ok := true
-	var hw := fp.x * 0.5
-	var hd := fp.y * 0.5
-	if absf(aabb.position.x) > hw + tol or absf(aabb.end.x) > hw + tol:
-		ok = false
-		parts.append("x[%.3f,%.3f] 超 ±%.3f" % [aabb.position.x, aabb.end.x, hw])
-	if wall:
-		if aabb.position.z < -tol or aabb.end.z > fp.y + tol:
-			ok = false
-			parts.append("z[%.3f,%.3f] 超 [0,%.3f]" % [aabb.position.z, aabb.end.z, fp.y])
+## 落位约束：落地件贴地且 AABB 在声明占地内；墙挂件从 z=0 向 +Z 展开、垂直以原点为中心（curtain 向下）。
+func _aabb_placement_ok(kind: String, ab: AABB, d: Vector3) -> bool:
+	if PROPS.is_wall_mounted(kind):
+		if ab.position.z < -0.02 or ab.position.z > 0.001:
+			return false
+		if ab.end.z > d.y + 0.012:
+			return false
+		if absf(ab.get_center().x) > d.x * 0.5 + 0.012:
+			return false
 		if kind == "curtain":
-			if aabb.position.y < -h - tol or aabb.end.y > 0.06:
-				ok = false
-				parts.append("y[%.3f,%.3f] 超 [-%.3f,0.06]" % [aabb.position.y, aabb.end.y, h])
-		else:
-			if aabb.position.y < -h * 0.5 - tol or aabb.end.y > h * 0.5 + tol:
-				ok = false
-				parts.append("y[%.3f,%.3f] 超 ±%.3f" % [aabb.position.y, aabb.end.y, h * 0.5])
+			return ab.position.y >= -d.z - 0.012 and ab.end.y <= 0.06
+		return ab.position.y >= -d.z * 0.5 - 0.012 and ab.end.y <= d.z * 0.5 + 0.012
+	if ab.position.y < -0.006 or ab.position.y > 0.03:
+		return false
+	if ab.end.y > d.z + 0.012:
+		return false
+	if absf(ab.get_center().x) > 0.02 or absf(ab.get_center().z) > 0.02:
+		return false
+	return true
+
+func _spec_check(kind: String, actual: Vector3) -> void:
+	var st: Dictionary = SPEC.check(kind, actual)
+	spec_results.append(st)
+	checks += 1
+	var status := String(st.get("status", "FAIL"))
+	if status == "PASS":
+		pass_n += 1
+		print("  [PASS] SPEC %s" % String(st.get("detail", kind)))
+	elif status == "WARN":
+		warn_n += 1
+		print("  [WARN] SPEC %s" % String(st.get("detail", kind)))
 	else:
-		if aabb.position.y < -tol:
-			ok = false
-			parts.append("min_y=%.3f < 0" % aabb.position.y)
-		if aabb.end.y > h + tol:
-			ok = false
-			parts.append("max_y=%.3f > %.3f" % [aabb.end.y, h])
-	if absf(aabb.position.z) > hd + tol or absf(aabb.end.z) > hd + tol:
-		if not wall:
-			ok = false
-			parts.append("z[%.3f,%.3f] 超 ±%.3f" % [aabb.position.z, aabb.end.z, hd])
-	if ok:
-		return {"ok": true, "msg": "ok"}
-	var jmsg := ""
-	for p in parts:
-		if jmsg != "":
-			jmsg += "；"
-		jmsg += String(p)
-	return {"ok": false, "msg": jmsg}
+		fail_n += 1
+		print("  [FAIL] SPEC %s" % String(st.get("detail", kind)))
 
+# ============================================================
+# 关键子高度（按 prop_role 实测真实子件 AABB）
+# ============================================================
+func _check_roles() -> void:
+	print("[PROPS] ---- 人体工学关键子高度（按 prop_role 实测） ----")
+	# 桌面 / 台面顶：餐桌 0.65、书桌 0.65、茶几 0.38、矮柜 0.80、床头柜 0.50、边桌 0.50
+	var tabletops := {
+		"dining_table": 0.65, "desk": 0.65, "coffee_table": 0.38,
+		"sideboard": 0.80, "nightstand": 0.50, "side_table": 0.50,
+	}
+	for kind in tabletops:
+		var ab: AABB = _role_aabb(_node(kind), "tabletop")
+		if _check(_record_has_role(_node(kind), "tabletop"), "[%s] 有 prop_role=tabletop 子件" % kind):
+			_scalar("%s.tabletop_top" % kind, ab.end.y, float(tabletops[kind]), 0.05)
+	# 座面：椅/沙发/扶手椅/阅读椅 0.40，换鞋凳 0.42
+	var seats := {"chair": 0.40, "sofa": 0.40, "armchair": 0.40, "reading_chair": 0.40, "shoe_bench": 0.42}
+	for kind in seats:
+		var ab: AABB = _role_aabb(_node(kind), "seat")
+		if _check(_record_has_role(_node(kind), "seat"), "[%s] 有 prop_role=seat 子件" % kind):
+			_scalar("%s.seat_top" % kind, ab.end.y, float(seats[kind]), 0.05)
+	# 床垫顶 0.45 / 枕头顶 0.52–0.66
+	var bed_node := _node("bed")
+	var mat_ab: AABB = _role_aabb(bed_node, "mattress")
+	if _check(_record_has_role(bed_node, "mattress"), "[bed] 有 prop_role=mattress 子件"):
+		_scalar("bed.mattress_top", mat_ab.end.y, 0.45, 0.05)
+		var pil_ab: AABB = _role_aabb(bed_node, "pillow")
+		if _check(_record_has_role(bed_node, "pillow"), "[bed] 有 prop_role=pillow 子件"):
+			_range("bed.pillow_top", pil_ab.end.y, 0.52, 0.66)
+			_range("bed.pillow_vs_mattress", pil_ab.end.y - mat_ab.end.y, 0.06, 0.20)
+	# 书架：5 层板，层距 0.28–0.34
+	var shelf_abs: Array = _role_aabbs(_node("bookshelf"), "shelf")
+	_check(shelf_abs.size() == 5, "[bookshelf] 层板数 5（实测 %d）" % shelf_abs.size())
+	if shelf_abs.size() >= 2:
+		var tops: Array = []
+		for s in shelf_abs:
+			var a: AABB = s
+			tops.append(a.end.y)
+		tops.sort()
+		for i in range(1, tops.size()):
+			var pitch: float = float(tops[i]) - float(tops[i - 1])
+			_check(pitch >= 0.28 - 0.001 and pitch <= 0.34 + 0.001,
+				"[bookshelf] 层距 %.3f ∈ [0.28, 0.34]" % pitch)
+	# 柜类操作高度：衣柜 / 高柜把手 0.40–1.60
+	for kind in ["wardrobe", "tall_cupboard"]:
+		var hs: Array = _role_aabbs(_node(kind), "door_handle") + _role_aabbs(_node(kind), "drawer_handle")
+		if _check(hs.size() >= 2, "[%s] 把手子件 ≥2（实测 %d）" % [kind, hs.size()]):
+			var lo := INF
+			var hi := -INF
+			for h in hs:
+				var a: AABB = h
+				lo = minf(lo, a.get_center().y)
+				hi = maxf(hi, a.get_center().y)
+			_check(lo >= 0.40 - 0.001 and hi <= 1.60 + 0.001,
+				"[%s] 门/抽屉把手操作高度 %.3f–%.3f ∈ [0.40, 1.60]" % [kind, lo, hi])
+	# 灯具灯罩位置/高度随新尺寸
+	var t_sh: AABB = _role_aabb(_node("table_lamp"), "light_shade")
+	if _check(_record_has_role(_node("table_lamp"), "light_shade"), "[table_lamp] 有 prop_role=light_shade 子件"):
+		_range("table_lamp.shade_center_y", t_sh.get_center().y, 0.30, 0.45)
+		_range("table_lamp.shade_h", t_sh.size.y, 0.18, 0.22)
+	var f_sh: AABB = _role_aabb(_node("floor_lamp"), "light_shade")
+	if _check(_record_has_role(_node("floor_lamp"), "light_shade"), "[floor_lamp] 有 prop_role=light_shade 子件"):
+		_range("floor_lamp.shade_center_y", f_sh.get_center().y, 1.20, 1.36)
+		_range("floor_lamp.shade_h", f_sh.size.y, 0.24, 0.30)
+
+# ============================================================
+# 家具之间的配合约束
+# ============================================================
+func _check_relations() -> void:
+	print("[PROPS] ---- 家具间人体工学配合 ----")
+	var chair_seat: float = _role_aabb(_node("chair"), "seat").end.y
+	var table_top: float = _role_aabb(_node("dining_table"), "tabletop").end.y
+	var apron_bottom: float = _role_aabb(_node("dining_table"), "apron").position.y
+	# 桌面 0.65 - 椅面 0.40 = 0.25（±0.03 → 相对 12%）
+	_scalar("relation.dining_table_minus_chair_seat", table_top - chair_seat, 0.25, 0.12)
+	_check(apron_bottom > chair_seat + 0.05,
+		"relation.餐桌望板下沿 %.3f > 椅面 %.3f + 0.05（腿部空间）" % [apron_bottom, chair_seat])
+	_check(chair_seat + 0.02 < apron_bottom,
+		"relation.椅面 %.3f + 0.02 < 望板下沿 %.3f（椅可推入桌下不穿望板）" % [chair_seat, apron_bottom])
+	var clearance: float = _inner_clearance(_node("dining_table"), "leg")
+	var chair_w: float = PROPS.dims("chair").x
+	_check(clearance > chair_w + 0.10,
+		"relation.餐桌腿内侧净宽 %.3f > 椅宽 %.3f + 0.10（推入不穿桌腿）" % [clearance, chair_w])
+	# 床头柜面比床垫顶高 0.03–0.10
+	var ns_top: float = _role_aabb(_node("nightstand"), "tabletop").end.y
+	var mat_top: float = _role_aabb(_node("bed"), "mattress").end.y
+	_range("relation.nightstand_minus_mattress", ns_top - mat_top, 0.03, 0.10)
+	# 书桌膝空间 ≥ 0.40（左右 pedestal 内侧净距）
+	var knee: float = _inner_clearance(_node("desk"), "pedestal")
+	_check(knee >= 0.40, "relation.书桌膝空间 %.3f >= 0.40" % knee)
+	# 茶几低于沙发坐面且不高于 0.40（取放合理）
+	var sofa_seat: float = _role_aabb(_node("sofa"), "seat").end.y
+	var coffee_top: float = _role_aabb(_node("coffee_table"), "tabletop").end.y
+	_check(coffee_top < sofa_seat and coffee_top >= 0.25,
+		"relation.茶几台面 %.3f < 沙发坐面 %.3f 且 >= 0.25" % [coffee_top, sofa_seat])
+	# 边桌 + 台灯 = 阅读灯高 0.90–1.10
+	var side_top: float = _role_aabb(_node("side_table"), "tabletop").end.y
+	var lamp_h: float = float(round1["table_lamp"]["aabb"].size.y)
+	_range("relation.side_table_plus_table_lamp", side_top + lamp_h, 0.90, 1.10)
+	# 书架最高层在抬手可达内；床长容纳 1.50 m 人体
+	_check(PROPS.height_of("bookshelf") <= SPEC.HUMAN_REACH_UP_H + 0.001,
+		"relation.书架高 %.2f <= 抬手可达 %.2f" % [PROPS.height_of("bookshelf"), SPEC.HUMAN_REACH_UP_H])
+	_check(PROPS.dims("bed").y >= SPEC.HUMAN_HEIGHT + 0.30,
+		"relation.床长 %.2f >= 人体 %.2f + 0.30" % [PROPS.dims("bed").y, SPEC.HUMAN_HEIGHT])
+	# 门垫可入门洞
+	_check(PROPS.dims("doormat").x <= SPEC.DOOR_CLEAR_W,
+		"relation.门垫宽 %.2f <= 门洞净宽 %.2f" % [PROPS.dims("doormat").x, SPEC.DOOR_CLEAR_W])
+
+# ============================================================
+# 第二轮：重复构建 / 材质复用 / 数值稳定
+# ============================================================
 func _second_round() -> void:
-	print("--- 3) 重复 build：命名不冲突 / 材质不泄漏 / 网格数线性 ---")
-	var before_nodes := stage.get_child_count()
-	var before_meshes := _count_meshes(stage)
-	var before_mats: Dictionary = {}
-	for id in round1_mats.keys():
-		before_mats[id] = true
-	var ks: Array = PROPS.kinds()
-	for k in ks:
-		PROPS.build(stage, String(k), Vector3(2.0, 0.55, -3.0), -0.21)
-	await process_frame
-	var after_nodes := stage.get_child_count()
-	var after_meshes := _count_meshes(stage)
-	_check(after_nodes == before_nodes * 2, "第二次 build 后节点数翻倍（%d -> %d）" % [before_nodes, after_nodes])
-	_check(after_meshes == before_meshes * 2, "第二次 build 后网格数翻倍（%d -> %d）" % [before_meshes, after_meshes])
-	# 名字唯一
-	var names: Dictionary = {}
-	var dup: Array = []
-	for c in stage.get_children():
-		var nm := String(c.name)
-		if names.has(nm):
-			dup.append(nm)
-		names[nm] = true
-	_check(dup.is_empty(), "所有家具节点名唯一（重复：%s）" % str(dup))
-	# 材质集合不新增（共享 isle_math 材质缓存）
-	var after_mats: Dictionary = {}
-	for c in stage.get_children():
-		if not (c is Node3D):
+	print("[PROPS] ---- 第二轮构建：命名唯一 / 材质复用 / 无 NaN ----")
+	var pos := Vector3(2.0, 0.55, -3.0)
+	var yaw := -0.21
+	for kind in ALL_KINDS:
+		var r: Dictionary = PROPS.build(stage, kind, pos, yaw)
+		if not _check(not r.is_empty(), "[%s] 第二轮 build 成功" % kind):
 			continue
-		for g in (c as Node3D).get_children():
-			if not (g is MeshInstance3D):
-				continue
-			var gm := g as MeshInstance3D
-			if String(gm.name).begins_with("Glow") or gm.material_override == null:
-				continue
-			after_mats[gm.material_override.get_instance_id()] = true
-	var new_mats: Array = []
-	for id in after_mats.keys():
-		if not before_mats.has(id):
-			new_mats.append(id)
-	_check(new_mats.is_empty(), "重复 build 未新增材质实例（新增 %d）" % new_mats.size())
-	# NaN 检查（第二次全量遍历）
-	var nan_bad: Array = []
+	await process_frame
+	var node_total: int = stage.get_child_count()
+	_check(node_total == ALL_KINDS.size() * 2, "第二轮后节点数 %d == %d" % [node_total, ALL_KINDS.size() * 2])
+	var names: Dictionary = {}
 	for c in stage.get_children():
-		_collect_nan(c, nan_bad)
-	_check(nan_bad.is_empty(), "全舞台无 NaN/Inf 变换（异常 %d 个）" % nan_bad.size())
-	if not nan_bad.is_empty():
-		print("    NaN 节点：", str(nan_bad.slice(0, 8)))
+		names[String(c.name)] = true
+	_check(names.size() == node_total, "节点名唯一（%d / %d）" % [names.size(), node_total])
+	var meshes2: int = _count_meshes(stage)
+	_check(meshes2 == round1_mesh_count * 2, "网格数翻倍 %d == %d × 2" % [meshes2, round1_mesh_count])
+	var mats2: Dictionary = {}
+	_collect_material_ids(stage, mats2)
+	var new_mats := 0
+	for k in mats2:
+		if not mats_before.has(k):
+			new_mats += 1
+	_check(mats2.size() == mats_before.size() and new_mats == 0,
+		"重复构建未新增材质实例（%d → %d，新 %d）" % [mats_before.size(), mats2.size(), new_mats])
+	var nan_nodes: Array = []
+	_collect_nan(stage, nan_nodes)
+	_check(nan_nodes.is_empty(), "全舞台无 NaN/Inf 变换（异常 %d）" % nan_nodes.size())
+	if not nan_nodes.is_empty():
+		print("    首个异常节点：%s" % String(nan_nodes[0]))
 
+# ============================================================
+# 释放
+# ============================================================
 func _free_round() -> void:
-	print("--- 4) 释放回收 ---")
 	for c in stage.get_children():
 		c.queue_free()
 	await process_frame
 	await process_frame
-	_check(stage.get_child_count() == 0, "释放后舞台子节点归零（%d）" % stage.get_child_count())
+	_check(stage.get_child_count() == 0, "释放后 stage 子节点归零（%d）" % stage.get_child_count())
+	round1.clear()
+	mats_before.clear()
 
+# ============================================================
+# 对外契约 / 覆盖参数
+# ============================================================
 func _extra_contract_checks() -> void:
-	print("--- 5) 入参与可选覆盖 ---")
-	# 未知 kind 返回空字典
-	var bad: Dictionary = PROPS.build(stage, "no_such_kind", Vector3.ZERO)
-	_check(bad.is_empty(), "未知 kind 返回空字典且不崩")
-	# width/depth/height 覆盖
-	var base: Vector3 = PROPS.dims("dining_table")
-	var r: Dictionary = PROPS.build(stage, "dining_table", Vector3(3.0, 0.55, 3.0), 0.0, {"width": 2.0, "depth": 1.1, "height": 0.8})
-	var n: Node3D = r.get("node", null)
-	var fp_ov: Vector2 = r.get("footprint", Vector2.ZERO)
-	_check(n != null and fp_ov.is_equal_approx(Vector2(2.0, 1.1)) and absf(float(r["height"]) - 0.8) < 1e-4, "width/depth/height 覆盖生效（fp=%s h=%.2f）" % [str(fp_ov), float(r.get("height", 0.0))])
-	if n != null:
-		_check(n.scale.is_equal_approx(Vector3(2.0 / base.x, 0.8 / base.z, 1.1 / base.y)), "覆盖通过节点缩放实现（scale=%s）" % str(n.scale))
-	# color / cushion 覆盖
-	var r2: Dictionary = PROPS.build(stage, "sofa", Vector3(-3.0, 0.55, 3.0), 0.0, {"color": Color("331100"), "cushion": Color("336699")})
-	_check(r2.get("node", null) != null, "color/cushion 覆盖不报错")
-	# rot 覆盖
-	var r3: Dictionary = PROPS.build(stage, "picture_frame", Vector3(0.0, 2.0, 0.0), 0.0, {"rot": Vector3(0.0, PI * 0.5, 0.0)})
-	var n3: Node3D = r3.get("node", null)
-	_check(n3 != null and absf((n3 as Node3D).rotation.y - PI * 0.5) < 1e-4, "rot 覆盖整体欧拉角")
+	print("[PROPS] ---- 对外契约 / 覆盖参数 ----")
+	var empty_ret: Dictionary = PROPS.build(stage, "no_such_kind", Vector3.ZERO, 0.0)
+	_check(empty_ret.is_empty() and stage.get_child_count() == 0, "未知 kind 返回空字典且不建节点")
+	var d: Vector3 = PROPS.dims("dining_table")
+	var r: Dictionary = PROPS.build(stage, "dining_table", Vector3.ZERO, 0.0, {"width": 2.0, "depth": 1.1, "height": 0.8})
+	var n: Node3D = r.get("node")
+	if _check(n is Node3D, "width/depth/height 覆盖可构建"):
+		var want := Vector3(2.0 / d.x, 0.8 / d.z, 1.1 / d.y)
+		_check((n.scale - want).length() < 0.0001,
+			"覆盖缩放 node.scale=(%.4f,%.4f,%.4f) 期望 (%.4f,%.4f,%.4f)" % [
+				n.scale.x, n.scale.y, n.scale.z, want.x, want.y, want.z])
+		_check((r.get("footprint", Vector2.ZERO) as Vector2).is_equal_approx(Vector2(2.0, 1.1)),
+			"覆盖后 footprint=(2.00,1.10)")
+		_check(absf(float(r.get("height", 0.0)) - 0.8) < 0.001, "覆盖后 height=0.80")
+	var r2: Dictionary = PROPS.build(stage, "sofa", Vector3(1, 0, 0), 0.2,
+		{"color": Color(0.8, 0.2, 0.2), "cushion": Color(0.2, 0.3, 0.8)})
+	_check(not r2.is_empty(), "color/cushion 覆盖可构建")
+	var r3: Dictionary = PROPS.build(stage, "picture_frame", Vector3(0, 0, 0), 0.0, {"rot": Vector3(0.1, 0.2, 0.3)})
+	var n3: Node3D = r3.get("node")
+	if _check(n3 is Node3D, "rot 覆盖可构建"):
+		_check(n3.rotation.is_equal_approx(Vector3(0.1, 0.2, 0.3)),
+			"rot 覆盖生效 %s" % str(n3.rotation))
+	await process_frame
 	for c in stage.get_children():
 		c.queue_free()
 	await process_frame
+	_check(stage.get_child_count() == 0, "契约检查后清理归零（%d）" % stage.get_child_count())
 
-# ------------------------------------------------------------
+# ============================================================
+# 测量辅助
+# ============================================================
+func _node(kind: String) -> Node3D:
+	if not round1.has(kind):
+		return null
+	return round1[kind]["node"]
+
+func _record_has_role(prop: Node3D, role: String) -> bool:
+	return prop != null and not _role_aabbs(prop, role).is_empty()
+
+func _role_aabbs(prop: Node3D, role: String) -> Array:
+	var out: Array = []
+	if prop == null:
+		return out
+	for c in prop.get_children():
+		var mi := c as MeshInstance3D
+		if mi == null or mi.mesh == null:
+			continue
+		if String(mi.get_meta("prop_role", "")) != role:
+			continue
+		out.append(_mesh_aabb_local(mi))
+	return out
+
+func _role_aabb(prop: Node3D, role: String) -> AABB:
+	var list: Array = _role_aabbs(prop, role)
+	if list.is_empty():
+		return AABB()
+	var out: AABB = list[0]
+	for i in range(1, list.size()):
+		out = out.merge(list[i])
+	return out
+
+## 左右同名 role 子件之间的内侧净距（例：桌腿、书桌 pedestal）。
+func _inner_clearance(prop: Node3D, role: String) -> float:
+	var neg := -INF
+	var pos := INF
+	for a in _role_aabbs(prop, role):
+		var ab: AABB = a
+		var cx := ab.get_center().x
+		if cx < -0.0001:
+			neg = maxf(neg, ab.end.x)
+		elif cx > 0.0001:
+			pos = minf(pos, ab.position.x)
+	if not is_finite(neg) or not is_finite(pos):
+		return -1.0
+	return pos - neg
+
+## 单件家具真实 AABB（局部坐标）：遍历全部 MeshInstance3D，排除 Glow 光晕与空网格。
+func _aabb_of(prop: Node3D) -> AABB:
+	var out := AABB()
+	var first := true
+	for c in prop.get_children():
+		var mi := c as MeshInstance3D
+		if mi == null or mi.mesh == null:
+			continue
+		if String(mi.name).begins_with("Glow"):
+			continue
+		var ab: AABB = _mesh_aabb_local(mi)
+		if first:
+			out = ab
+			first = false
+		else:
+			out = out.merge(ab)
+	return out
+
+## 单个 MeshInstance3D 在其父节点坐标系的 AABB（mesh AABB 8 角点经节点变换）。
+func _mesh_aabb_local(mi: MeshInstance3D) -> AABB:
+	var ab: AABB = mi.mesh.get_aabb()
+	var out := AABB()
+	var first := true
+	for i in range(8):
+		var corner: Vector3 = ab.position + Vector3(
+			ab.size.x * float(i & 1),
+			ab.size.y * float((i >> 1) & 1),
+			ab.size.z * float((i >> 2) & 1))
+		var w: Vector3 = mi.transform * corner
+		if first:
+			out = AABB(w, Vector3.ZERO)
+			first = false
+		else:
+			out = out.expand(w)
+	return out
+
+func _aabb_finite(ab: AABB) -> bool:
+	return is_finite(ab.position.x) and is_finite(ab.position.y) and is_finite(ab.position.z) \
+		and is_finite(ab.end.x) and is_finite(ab.end.y) and is_finite(ab.end.z)
+
 func _count_meshes(n: Node) -> int:
-	var cnt := 0
-	for c in n.get_children():
-		if c is MeshInstance3D:
-			cnt += 1
-		cnt += _count_meshes(c)
-	return cnt
+	var c := 0
+	if n is MeshInstance3D:
+		c += 1
+	for ch in n.get_children():
+		c += _count_meshes(ch)
+	return c
 
 func _has_light3d(n: Node) -> bool:
-	for c in n.get_children():
-		if c is Light3D:
-			return true
-		if _has_light3d(c):
+	if n is Light3D:
+		return true
+	for ch in n.get_children():
+		if _has_light3d(ch):
 			return true
 	return false
 
+func _collect_material_ids(n: Node, out: Dictionary) -> void:
+	for ch in n.get_children():
+		var mi := ch as MeshInstance3D
+		if mi != null and mi.material_override != null:
+			out[mi.material_override.get_instance_id()] = true
+		_collect_material_ids(ch, out)
+
 func _collect_nan(n: Node, out: Array) -> void:
 	if n is Node3D:
-		var n3 := n as Node3D
-		var bad := false
-		for v in [n3.position, n3.rotation, n3.scale]:
-			var vv: Vector3 = v
-			if not (is_finite(vv.x) and is_finite(vv.y) and is_finite(vv.z)):
-				bad = true
+		var t: Transform3D = (n as Node3D).transform
+		var bad := not (is_finite(t.origin.x) and is_finite(t.origin.y) and is_finite(t.origin.z) \
+			and is_finite(t.basis.x.x) and is_finite(t.basis.x.y) and is_finite(t.basis.x.z) \
+			and is_finite(t.basis.y.x) and is_finite(t.basis.y.y) and is_finite(t.basis.y.z) \
+			and is_finite(t.basis.z.x) and is_finite(t.basis.z.y) and is_finite(t.basis.z.z))
 		if bad:
-			out.append(String(n.name))
-	for c in n.get_children():
-		_collect_nan(c, out)
+			out.append(n)
+	for ch in n.get_children():
+		_collect_nan(ch, out)
 
-## 把 prop 节点下所有实体网格（排除 Glow 光晕）的局部包围盒合并到 prop 局部坐标。
-func _aabb_of(prop: Node3D) -> AABB:
-	var mn := Vector3(INF, INF, INF)
-	var mx := Vector3(-INF, -INF, -INF)
-	var found := false
-	for c in prop.get_children():
-		if not (c is MeshInstance3D):
-			continue
-		var mi := c as MeshInstance3D
-		if String(mi.name).begins_with("Glow") or mi.mesh == null:
-			continue
-		var bb: AABB = mi.get_aabb()
-		var xf: Transform3D = mi.transform
-		for i in range(8):
-			var corner := bb.position + Vector3(
-				bb.size.x * (1.0 if (i & 1) != 0 else 0.0),
-				bb.size.y * (1.0 if (i & 2) != 0 else 0.0),
-				bb.size.z * (1.0 if (i & 4) != 0 else 0.0))
-			var p := xf * corner
-			mn = mn.min(p)
-			mx = mx.max(p)
-			found = true
-	if not found:
-		return AABB()
-	return AABB(mn, mx - mn)
+# ============================================================
+# 成本统计（P7-V3.2：重建前后 mesh/surface/vertex/triangle 对比）
+# ============================================================
+func _cost_probe() -> void:
+	print("[PROPS] ---- 成本统计（25 类各 1 件；未合批 → 单件合批后） ----")
+	var st2 := Node3D.new()
+	st2.name = "CostStage"
+	root.add_child(st2)
+	var acc := {"parts": 0, "surfaces": 0, "verts": 0, "tris": 0, "glow": 0, "mats": {}}
+	for kind in ALL_KINDS:
+		var r: Dictionary = PROPS.build(st2, kind, Vector3.ZERO, 0.0)
+		var n: Node3D = r.get("node")
+		var one := {"parts": 0, "surfaces": 0, "verts": 0, "tris": 0, "glow": 0, "mats": {}}
+		_cost_of(n, one)
+		for key in ["parts", "surfaces", "verts", "tris", "glow"]:
+			acc[key] = int(acc[key]) + int(one[key])
+		for mid in (one["mats"] as Dictionary).keys():
+			(acc["mats"] as Dictionary)[mid] = true
+		var mer: Dictionary = BATCH.merge_static(n)
+		var after := {"parts": 0, "surfaces": 0, "verts": 0, "tris": 0, "glow": 0, "mats": {}}
+		_cost_of(n, after)
+		cost_merged_inst += int(after["parts"])
+		cost_merged_surf += int(after["surfaces"])
+		cost_merged_tris += int(after["tris"])
+		print("[COST] %-14s pre parts=%3d surf=%3d verts=%5d tris=%5d glow=%2d mats=%2d | post inst=%2d surf=%2d tris=%5d merged=%s" % [
+			kind, int(one["parts"]), int(one["surfaces"]), int(one["verts"]), int(one["tris"]),
+			int(one["glow"]), (one["mats"] as Dictionary).size(),
+			int(after["parts"]), int(after["surfaces"]), int(after["tris"]),
+			str(bool(mer.get("merged", false)))])
+	cost_parts = int(acc["parts"])
+	cost_surfaces = int(acc["surfaces"])
+	cost_verts = int(acc["verts"])
+	cost_tris = int(acc["tris"])
+	cost_glow = int(acc["glow"])
+	cost_mats = (acc["mats"] as Dictionary).size()
+	print("[PROPS] COST total pre_batch parts=%d surfaces=%d verts=%d tris=%d glow=%d mats=%d" % [
+		cost_parts, cost_surfaces, cost_verts, cost_tris, cost_glow, cost_mats])
+	print("[PROPS] COST total post_batch inst=%d surfaces=%d tris=%d（三角形守恒=%s）" % [
+		cost_merged_inst, cost_merged_surf, cost_merged_tris,
+		str(cost_merged_tris == cost_tris)])
+	st2.queue_free()
+
+func _cost_of(n: Node, acc: Dictionary) -> void:
+	var mi := n as MeshInstance3D
+	if mi != null and mi.mesh != null:
+		acc["parts"] = int(acc["parts"]) + 1
+		var nm := String(mi.name)
+		if nm.begins_with("Glow") or nm.begins_with("Halo") or nm.begins_with("Blob"):
+			acc["glow"] = int(acc["glow"]) + 1
+		var mesh: Mesh = mi.mesh
+		var sc := mesh.get_surface_count()
+		acc["surfaces"] = int(acc["surfaces"]) + sc
+		for s in range(sc):
+			var arr: Array = mesh.surface_get_arrays(s)
+			if arr.is_empty():
+				continue
+			var vcount := (arr[Mesh.ARRAY_VERTEX] as PackedVector3Array).size()
+			acc["verts"] = int(acc["verts"]) + vcount
+			var tcount := vcount / 3
+			var idx_v: Variant = arr[Mesh.ARRAY_INDEX]
+			if idx_v is PackedInt32Array:
+				tcount = (idx_v as PackedInt32Array).size() / 3
+			acc["tris"] = int(acc["tris"]) + tcount
+			var mat: Material = null
+			if mi.material_override != null:
+				mat = mi.material_override
+			else:
+				mat = mesh.surface_get_material(s)
+			if mat != null:
+				(acc["mats"] as Dictionary)[mat.get_instance_id()] = true
+	for ch in n.get_children():
+		_cost_of(ch, acc)
+
+# ============================================================
+# 计数 / 打印
+# ============================================================
+func _check(ok: bool, msg: String) -> bool:
+	checks += 1
+	if ok:
+		pass_n += 1
+		print("  [PASS] " + msg)
+	else:
+		fail_n += 1
+		print("  [FAIL] " + msg)
+	return ok
+
+func _scalar(label: String, actual: float, target: float, tol: float) -> void:
+	var st: Dictionary = SPEC.check_scalar(label, actual, target, tol)
+	checks += 1
+	var status := String(st.get("status", "FAIL"))
+	if status == "PASS":
+		pass_n += 1
+		print("  [PASS] " + String(st.get("detail", label)))
+	elif status == "WARN":
+		warn_n += 1
+		print("  [WARN] " + String(st.get("detail", label)))
+	else:
+		fail_n += 1
+		print("  [FAIL] " + String(st.get("detail", label)))
+
+func _range(label: String, value: float, lo: float, hi: float) -> void:
+	_check(value >= lo - 0.001 and value <= hi + 0.001,
+		"%s 实测 %.3f ∈ [%.3f, %.3f]" % [label, value, lo, hi])
+
+func _print_summary() -> void:
+	print("")
+	print("[PROPS] ===== 规格对照汇总（isle_scale_spec.gd，PASS=该件 tol 内） =====")
+	var sp := 0
+	var sw := 0
+	var sf := 0
+	var worst := ""
+	var worst_err := 0.0
+	for st in spec_results:
+		var status := String(st.get("status", "FAIL"))
+		match status:
+			"PASS":
+				sp += 1
+			"WARN":
+				sw += 1
+			_:
+				sf += 1
+		var err := float(st.get("max_rel_err", 0.0))
+		if err > worst_err:
+			worst_err = err
+			worst = String(st.get("key", ""))
+	print("[PROPS] spec 25 类：PASS %d / WARN %d / FAIL %d；最大相对误差 %.2f%%（%s）" % [
+		sp, sw, sf, worst_err * 100.0, worst])
+	print("[PROPS] RESULT fail=%d warn=%d pass=%d checks=%d specs_pass=%d specs_warn=%d specs_fail=%d round1_meshes=%d cost_parts=%d cost_tris=%d merged_inst=%d" % [
+		fail_n, warn_n, pass_n, checks, sp, sw, sf, round1_mesh_count,
+		cost_parts, cost_tris, cost_merged_inst])

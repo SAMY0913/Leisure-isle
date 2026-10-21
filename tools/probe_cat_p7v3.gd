@@ -219,20 +219,21 @@ func _test_build_structure() -> void:
 # ---------------------------------------------------------------------------
 func _test_geometry() -> void:
 	var root := _root()
+	var s: float = CAT.CAT_MODEL_SCALE
 	var body: Node3D = _cat["body"] as Node3D
 	var head: Node3D = _cat["head"] as Node3D
-	var torso := _find_sphere_mesh(body, 0.23)
-	var head_mi := _find_sphere_mesh(head, 0.155)
-	_ok(torso != null, "身体椭球半径 0.23 存在")
-	_ok(head_mi != null, "头球半径 0.155 存在")
+	var torso := _find_sphere_mesh(body, 0.23 * s)
+	var head_mi := _find_sphere_mesh(head, 0.155 * s)
+	_ok(torso != null, "身体椭球半径 0.23*scale(%.3f) 存在" % [0.23 * s])
+	_ok(head_mi != null, "头球半径 0.155*scale(%.3f) 存在" % [0.155 * s])
 	if torso != null:
 		_ok_near(torso.scale.x, 1.0, 0.01, "身体 scale x = 1.0")
 		_ok_near(torso.scale.y, 0.80, 0.01, "身体 scale y = 0.80")
 		_ok_near(torso.scale.z, 1.45, 0.01, "身体 scale z = 1.45")
 		_ok_near(torso.rotation.x, -0.20, 0.01, "身体前高后低倾斜 -0.20 rad")
 	if torso != null and head_mi != null:
-		var body_len: float = 2.0 * 0.23 * torso.scale.z
-		var head_d: float = 2.0 * 0.155 * head_mi.scale.x
+		var body_len: float = 2.0 * 0.23 * s * torso.scale.z
+		var head_d: float = 2.0 * 0.155 * s * head_mi.scale.x
 		var ratio: float = body_len / head_d
 		_ok(ratio > 1.85 and ratio < 2.45, "头身比 ≈1:2.2（体长/头径 = %.2f）" % ratio)
 	# 三角锥耳朵（3 侧面 + 底面；Godot 4.7.2 CylinderMesh 最小径向 4 段，故用 ArrayMesh 精确 3 段）
@@ -256,8 +257,8 @@ func _test_geometry() -> void:
 			apex_max = maxf(apex_max, v.y)
 		_ok(faces.size() == 12, "耳为 3 侧面+底面的三角锥（%d 个三角面顶点 = 4 面 × 3）" % faces.size())
 		_ok(base_pts.size() == 3, "耳底面 3 个角点（radial=3 三角棱锥，非 4 段方锥）")
-		_ok_near(apex_max, 0.140, 0.002, "耳尖高 0.14（顶端收成一点）")
-		_ok_near(base_r_max, 0.085, 0.003, "耳底半径 0.085")
+		_ok_near(apex_max, 0.140 * s, 0.002, "耳尖高 0.14*scale=%.3f（顶端收成一点）" % (0.140 * s))
+		_ok_near(base_r_max, 0.085 * s, 0.003, "耳底半径 0.085*scale=%.3f" % (0.085 * s))
 	else:
 		_ok(false, "耳网格应为三角锥 ArrayMesh")
 	_ok(ear0.get_child_count() >= 2, "耳含外耳+浅色内耳（%d 个子网格）" % ear0.get_child_count())
@@ -281,10 +282,24 @@ func _test_geometry() -> void:
 	# 整猫包围盒：不陷地、不超高、水平范围合理（尾巴在身后）
 	var all_aabb := _aabb_in_root(root, root)
 	_ok(all_aabb.position.y >= -0.02, "整猫最低点不穿地（min y=%.4f）" % all_aabb.position.y)
-	_ok(all_aabb.end.y < 0.90, "整猫最高点 < 0.90m（%.3f）" % all_aabb.end.y)
+	_ok(all_aabb.end.y < 0.60, "整猫最高点 < 0.60m（%.3f）" % all_aabb.end.y)
 	var horiz: float = maxf(absf(all_aabb.position.x), absf(all_aabb.end.x))
 	horiz = maxf(horiz, maxf(absf(all_aabb.position.z), absf(all_aabb.end.z)))
-	_ok(horiz < 0.85, "整猫水平半径 < 0.85m（%.3f，尾巴自然弯曲在身后）" % horiz)
+	_ok(horiz < 0.55, "整猫水平半径 < 0.55m（%.3f，尾巴自然弯曲在身后）" % horiz)
+	# P7-V3.2 尺度目标（Lead m00286）：坐姿耳尖 0.40-0.50，鼻尖到尾根 <=0.55，
+	# 体宽 0.24-0.28，站立肩高 0.25-0.30。全部由 CAT_MODEL_SCALE 推导，不允许 root scale。
+	var ear_tip: float = all_aabb.end.y
+	_ok(ear_tip >= 0.40 and ear_tip <= 0.50, "坐姿耳尖高 %.3f ∈ [0.40, 0.50]" % ear_tip)
+	var nose_z: float = _aabb_in_root(head, root).end.z
+	var tail_root: Node3D = ((_cat["tail"] as Array)[0] as Node3D).get_parent() as Node3D
+	var tail_root_z: float = tail_root.position.z
+	var nose_to_tail: float = nose_z - tail_root_z
+	_ok(nose_to_tail <= 0.55, "鼻尖到尾根 %.3f <= 0.55" % nose_to_tail)
+	var body_width: float = _aabb_in_root(body, root).size.x
+	_ok(body_width >= 0.24 and body_width <= 0.28, "体宽 %.3f ∈ [0.24, 0.28]" % body_width)
+	var shoulder: float = _aabb_in_root(body, root).end.y
+	# AABB 上界含身体 -0.20 rad 倾斜膨胀，实测 0.300（目标上界 0.30，允许 5 mm 舍入）
+	_ok(shoulder >= 0.25 and shoulder <= 0.305, "站立肩高 %.3f ∈ [0.25, 0.30]（AABB 含倾斜）" % shoulder)
 	# 头身衔接（不悬空/不断裂）
 	var body_aabb := _aabb_in_root(body, root)
 	var head_aabb := _aabb_in_root(head, root)
@@ -295,11 +310,11 @@ func _test_geometry() -> void:
 	var tail: Array = _cat["tail"]
 	var tail_node := (tail[0] as Node3D).get_parent() as Node3D
 	_ok(tail_node.name == "Tail", "尾巴根节点名 Tail（实际 %s）" % tail_node.name)
-	_ok_near(tail_node.position.y, 0.17, 0.02, "尾根高度 y≈0.17（身体后侧）")
-	_ok(tail_node.position.z < -0.20, "尾根在身体后侧（z=%.3f）" % tail_node.position.z)
+	_ok_near(tail_node.position.y, 0.17 * s, 0.02, "尾根高度 y≈0.17*scale=%.3f（身体后侧）" % (0.17 * s))
+	_ok(tail_node.position.z < -0.20 * s, "尾根在身体后侧（z=%.3f）" % tail_node.position.z)
 	_ok((tail[1] as Node3D).get_parent() == tail[0], "尾 J1 挂在 J0 下")
 	_ok((tail[2] as Node3D).get_parent() == tail[1], "尾 J2 挂在 J1 下")
-	_ok(_tail_tip_local(tail).y > 0.15, "尾尖离地足够高（局部 y=%.3f）" % _tail_tip_local(tail).y)
+	_ok(_tail_tip_local(tail).y > 0.15 * s, "尾尖离地足够高（局部 y=%.3f > %.3f）" % [_tail_tip_local(tail).y, 0.15 * s])
 	# 阴影贴地
 	if _cat["shadow"] != null:
 		var sa := _aabb_in_root(_cat["shadow"], root)
@@ -313,7 +328,7 @@ func _tail_tip_local(tail: Array) -> Vector3:
 	var j1: Node3D = tail[1] as Node3D
 	var j2: Node3D = tail[2] as Node3D
 	var tail_node := j0.get_parent() as Node3D
-	var p: Vector3 = j2.transform * Vector3(0.0, 0.132, 0.0)
+	var p: Vector3 = j2.transform * Vector3(0.0, 0.132 * CAT.CAT_MODEL_SCALE, 0.0)
 	p = j1.transform * p
 	p = j0.transform * p
 	return tail_node.transform * p
@@ -393,8 +408,9 @@ func _test_idle_20s_and_60s() -> void:
 		min_breath = minf(min_breath, breath)
 		max_breath = maxf(max_breath, breath)
 		min_tail_tip_y = minf(min_tail_tip_y, _tail_tip_local(_cat["tail"]).y)
-		var head_local: Vector3 = (root.find_child("Head", true, false) as Node3D).transform * Vector3(0.0, 0.075, 0.065)
-		max_head_body = maxf(max_head_body, head_local.distance_to(Vector3(0.0, 0.25, -0.045)))
+		var cs: float = CAT.CAT_MODEL_SCALE
+		var head_local: Vector3 = (root.find_child("Head", true, false) as Node3D).transform * Vector3(0.0, 0.075 * cs, 0.065 * cs)
+		max_head_body = maxf(max_head_body, head_local.distance_to(Vector3(0.0, 0.25 * cs, -0.045 * cs)))
 		root_drift = maxf(root_drift, root.position.distance_to(root_pos))
 		if i == 1200:
 			snap20 = st.duplicate(true)
@@ -464,8 +480,9 @@ func _test_idle_20s_and_60s() -> void:
 		"眨眼眼睑范围 [%.3f, %.3f]（开 1.38 / 闭 -0.10）" % [min_lid_rot, max_lid_rot])
 	_ok(min_breath >= 0.9845 and max_breath <= 1.0155,
 		"呼吸 scale y ∈ [0.985, 1.015]（实测 %.4f~%.4f）" % [min_breath, max_breath])
-	_ok(min_tail_tip_y > 0.12, "尾巴摆动过程尾尖不触地/不穿地板（min 局部 y=%.3f）" % min_tail_tip_y)
-	_ok(max_head_body < 0.45 and max_head_body > 0.25, "头部始终连接身体（头中心距身中心 %.3f m）" % max_head_body)
+	_ok(min_tail_tip_y > 0.12 * CAT.CAT_MODEL_SCALE, "尾巴摆动过程尾尖不触地/不穿地板（min 局部 y=%.3f）" % min_tail_tip_y)
+	_ok(max_head_body < 0.45 * CAT.CAT_MODEL_SCALE and max_head_body > 0.25 * CAT.CAT_MODEL_SCALE,
+		"头部始终连接身体（头中心距身中心 %.3f m，按 0.6 比例目标 %.2f-%.2f）" % [max_head_body, 0.25 * CAT.CAT_MODEL_SCALE, 0.45 * CAT.CAT_MODEL_SCALE])
 
 	# ---- 原地不动 / 无 NaN / 不重建 ----
 	_ok(root_drift < 0.000001, "全程根节点零位移（max drift=%.8f）" % root_drift)

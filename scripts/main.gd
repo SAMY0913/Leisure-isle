@@ -10,6 +10,8 @@ const VIGNETTE_SHADER := "res://shaders/vignette.gdshader"
 const SKY_SHADER := "res://shaders/sky.gdshader"
 const SEA_SHADER := "res://shaders/sea.gdshader"
 const BEAM_SHADER := "res://shaders/beam.gdshader"
+# P7-V3.2 T1 开发模式尺度标尺：默认不创建，--scale-debug 时才实例化一次。
+const ScaleOverlay := preload("res://tools/scale_debug_overlay.gd")
 
 # ---- 灯塔旋转 / 光束参数（真实旋转透镜参考：Kīlauea Point 约 20 秒一圈，用作基础周期配置项） ----
 const LIGHTHOUSE_ROTATION_PERIOD := 20.0   # 秒/圈（1× 时间流速下的基础周期）
@@ -279,6 +281,12 @@ func _ready() -> void:
 	_setup_audio()
 	_apply_user_settings(false)
 	_update_lighting()
+	# P7-V3.2 开发测量模式：--scale-debug 时挂 T1 ScaleDebugOverlay（1 m 立方 / 1.50 m 人形 /
+	# 标尺 / 房屋层高标注），只建一次；默认无参数完全不创建，零常驻开销。
+	if ScaleOverlay.enabled() and get_node_or_null("ScaleDebugOverlay") == null:
+		var scale_overlay: Node3D = ScaleOverlay.new()
+		scale_overlay.name = "ScaleDebugOverlay"
+		add_child(scale_overlay)
 	if _selftest:
 		_run_selftest()
 	elif _perf:
@@ -1539,12 +1547,17 @@ func _run_shots() -> void:
 		await _save_shot(String(h[0]))
 	# ---- 第三阶段细节验收镜头 ----
 	# 屋顶 / 山墙 / 檐口近景
-	var house_gy: float = IsleMath.house_ground_y()
+	# 新屋尺寸（isle_math.gd）：门前地面 door_world().y = 地坪(fy 0.55)，其上是墙 3.18 + 屋顶 2.47，
+	# 故屋脊 = door_world().y + HOUSE_WALL_H + HOUSE_ROOF_H（= 地面 +6.20），不再硬编码 6.2。
+	var house_door := IsleMath.door_world()
+	var house_eave_y: float = house_door.y + IsleMath.HOUSE_WALL_H
+	var house_ridge_y: float = house_eave_y + IsleMath.HOUSE_ROOF_H
+	var house_door_top_y: float = house_door.y + 1.94  # 门洞高 1.94（新门高）
 	_set_time_of_day(12.0 * 60.0 + 20.0)
 	_theta = 0.62
 	_elev = 0.46
 	_radius = 26.0
-	_cam_target = Vector3(IsleMath.HOUSE_X, house_gy + 6.2, IsleMath.HOUSE_Z)
+	_cam_target = Vector3(IsleMath.HOUSE_X, house_ridge_y, IsleMath.HOUSE_Z)
 	_fov = 42.0
 	await get_tree().create_timer(0.5).timeout
 	await _save_shot("03_roof_close")
@@ -1552,7 +1565,8 @@ func _run_shots() -> void:
 	_theta = IsleMath.HOUSE_YAW
 	_elev = 0.30
 	_radius = 20.0
-	_cam_target = Vector3(IsleMath.HOUSE_X, house_gy + 2.9, IsleMath.HOUSE_Z)
+	# 正立面取景对准门洞顶（≈ 地面 +2.49），取代旧的 ground+2.9
+	_cam_target = Vector3(IsleMath.HOUSE_X, house_door_top_y, IsleMath.HOUSE_Z)
 	_fov = 48.0
 	await get_tree().create_timer(0.5).timeout
 	await _save_shot("03_house_front")
@@ -1747,7 +1761,7 @@ func _run_shots() -> void:
 	_theta = IsleMath.HOUSE_YAW
 	_elev = 0.05
 	_radius = 9.5
-	_cam_target = IsleMath.door_world() + Vector3(0, 1.7, 0)
+	_cam_target = house_door + Vector3(0.0, 1.38, 0.0)  # 1.38 m = 1.50 m 岛民眼高
 	_fov = 54.0
 	if not _door_open:
 		_toggle_door()
@@ -1758,7 +1772,8 @@ func _run_shots() -> void:
 	_theta = 0.74
 	_elev = 0.20
 	_radius = 34.0
-	_cam_target = Vector3(IsleMath.HOUSE_X, 4.0, IsleMath.HOUSE_Z)
+	# 立面视觉中心 ≈ 门洞顶（门顶世界高 = house_door_top_y ≈ 地面 +2.49），取代旧硬编码 4.0
+	_cam_target = Vector3(IsleMath.HOUSE_X, house_door_top_y, IsleMath.HOUSE_Z)
 	_fov = 42.0
 	await get_tree().create_timer(0.6).timeout
 	await _save_shot("04_night_lights")
@@ -1776,7 +1791,8 @@ func _run_shots() -> void:
 	_theta = IsleMath.HOUSE_YAW + 0.45
 	_elev = 0.22
 	_radius = 17.0
-	_cam_target = Vector3(IsleMath.HOUSE_X, 7.6, IsleMath.HOUSE_Z)
+	# 鸟群/栖枝取景对准新屋脊（旧硬编码 7.6 高于屋脊）
+	_cam_target = Vector3(IsleMath.HOUSE_X, house_ridge_y, IsleMath.HOUSE_Z)
 	_fov = 54.0
 	await get_tree().create_timer(3.0).timeout
 	await _save_shot("04_birds")
@@ -1975,6 +1991,11 @@ func _run_shots() -> void:
 	await get_tree().create_timer(0.8).timeout
 	await _save_shot("06_attic_window_night")
 	# ---- P6 专项：灯塔光束扫过房屋两侧对比（同一机位/同一光束，只改光束角） ----
+	# 新屋尺度（isle_math）：地坪 door_world().y + 墙 3.18 = 檐口，+ 屋顶 2.47 = 屋脊；
+	# 取景目标取檐口—屋脊之间，取代旧的地面+4.4/4.0 硬编码。
+	var beam_house_door := IsleMath.door_world()
+	var beam_eave_y: float = beam_house_door.y + IsleMath.HOUSE_WALL_H
+	var beam_ridge_y: float = beam_eave_y + IsleMath.HOUSE_ROOF_H
 	_shot_beam_lock = true
 	var lamp_o: Vector3 = _lighthouse_lamp.global_position if _lighthouse_lamp != null else Vector3(0.0, 22.0, 0.0)
 	var beam_h := Vector3(IsleMath.HOUSE_X - lamp_o.x, 0.0, IsleMath.HOUSE_Z - lamp_o.z).normalized()
@@ -1982,7 +2003,7 @@ func _run_shots() -> void:
 	_theta = atan2(beam_h.x, beam_h.z)
 	_elev = 0.12
 	_radius = 26.0
-	_cam_target = Vector3(IsleMath.HOUSE_X, IsleMath.house_ground_y() + 4.4, IsleMath.HOUSE_Z)
+	_cam_target = Vector3(IsleMath.HOUSE_X, beam_eave_y + (beam_ridge_y - beam_eave_y) * 0.30, IsleMath.HOUSE_Z)
 	_fov = 46.0
 	await get_tree().create_timer(0.8).timeout
 	await _save_shot("06_beam_house_a")
@@ -1994,7 +2015,7 @@ func _run_shots() -> void:
 	_theta = atan2(beam_h.x, beam_h.z) + PI * 0.5
 	_elev = 0.08
 	_radius = 30.0
-	_cam_target = Vector3(IsleMath.HOUSE_X, IsleMath.house_ground_y() + 4.0, IsleMath.HOUSE_Z)
+	_cam_target = Vector3(IsleMath.HOUSE_X, beam_eave_y + (beam_ridge_y - beam_eave_y) * 0.20, IsleMath.HOUSE_Z)
 	_fov = 58.0
 	await get_tree().create_timer(0.8).timeout
 	await _save_shot("06_beam_house_side")

@@ -170,15 +170,14 @@ func _check_standalone() -> void:
 		_ok(gw_aabb.size.y > 0.07 and gw_aabb.size.y < 0.11,
 			"standalone: gunwale timber height %.3f ~ 0.09" % gw_aabb.size.y)
 	var inwales := _descendants_mesh(boat, "Inwale")
-	_ok(inwales.size() == 12, "standalone: 12 inwale strips (got %d)" % inwales.size())
+	_ok(inwales.size() == 6, "standalone: 6 inwale strips, decked ends only (got %d)" % inwales.size())
 	if inwales.size() > 0:
 		var iw := inwales[0] as MeshInstance3D
 		_ok(absf(iw.position.y - 0.51) < 0.01, "standalone: inwale top flush under deck (y=%.3f)" % iw.position.y)
 
-	# ---- deck: 6+ hull-hugging planks, one standable face at y=0.52
+	# ---- deck: 2 stern boards + 1 bow board around the open cockpit, face y=0.52
 	var planks := _descendants_mesh(boat, "DeckPlank")
-	_ok(planks.size() >= 6, "deck: plank count %d >= 6" % planks.size())
-	_ok(planks.size() == 7, "deck: plank count %d == 7 (P7-V3 spec)" % planks.size())
+	_ok(planks.size() == 3, "deck: plank count %d == 3 (P7-V3.2 cockpit spec: 2 stern + 1 bow)" % planks.size())
 	var tops: Array = []
 	var halfs: Array = []
 	var z_lo: Array = []
@@ -208,13 +207,16 @@ func _check_standalone() -> void:
 	for i in planks.size():
 		idx.append(i)
 	idx.sort_custom(func(a, b): return float(z_lo[a]) < float(z_lo[b]))
-	var seam_ok := true
-	for i in range(idx.size() - 1):
-		var gap: float = float(z_lo[idx[i + 1]]) - float(z_hi[idx[i]])
-		if absf(gap - 0.02) > 0.006:
-			seam_ok = false
-			print("[detail] deck seam ", i, " gap=", gap)
-	_ok(seam_ok, "deck: plank seams ~0.02 m, staggered")
+	if idx.size() == 3:
+		var gap_aft: float = float(z_lo[idx[1]]) - float(z_hi[idx[0]])
+		_ok(absf(gap_aft - 0.02) <= 0.006, "deck: stern board seam 0.02 (gap %.3f)" % gap_aft)
+		_ok(absf(float(z_hi[idx[1]]) + 0.72) < 0.02,
+			"deck: stern deck ends at z=-0.72 (got %.3f)" % float(z_hi[idx[1]]))
+		_ok(absf(float(z_lo[idx[2]]) - 1.44) < 0.02,
+			"deck: bow deck starts at z=1.44 (got %.3f)" % float(z_lo[idx[2]]))
+		var cockpit_len: float = float(z_lo[idx[2]]) - float(z_hi[idx[1]])
+		_ok(cockpit_len > 2.0 and cockpit_len < 2.3,
+			"deck: open cockpit %.2f m between the decked ends" % cockpit_len)
 	# every board edge must land on the hull skin at deck height (not on a fixed
 	# inset): that is what keeps the planked deck sealed against the rising bow
 	# sheer instead of leaving a dark slit you can see from above
@@ -286,7 +288,7 @@ func _check_standalone() -> void:
 	if thwart_widths.size() == 2:
 		_ok(absf(float(thwart_widths[0]) - float(thwart_widths[1])) > 0.1,
 			"interior: thwarts follow the local width (%.3f vs %.3f)" % [thwart_widths[0], thwart_widths[1]])
-	_ok(_descendants_mesh(boat, "ThwartKnee").size() == 4, "interior: 4 thwart knees")
+	_ok(_descendants_mesh(boat, "ThwartLeg").size() == 4, "interior: 4 thwart legs standing on the sole")
 	var tw0 := _find_mesh(boat, "Thwart00")
 	var tw1 := _find_mesh(boat, "Thwart01")
 	_ok(tw0 != null and absf(tw0.position.z + 0.30) < 0.001, "interior: thwart00 at z=-0.30")
@@ -294,6 +296,31 @@ func _check_standalone() -> void:
 	_ok(thwart_tops.size() > 0 and float(thwart_tops[0]) > 0.52,
 		"interior: thwarts sit above the deck (seat top 0.60)")
 
+	# ---- P7-V3.2 cockpit: sole at 0.20, coaming rim, boom headroom
+	var sole := _find_mesh(boat, "Sole")
+	_ok(sole != null, "interior: cockpit Sole present")
+	if sole != null:
+		var sa: AABB = sole.mesh.get_aabb()
+		_ok(absf(sa.end.y - 0.20) < 0.008,
+			"interior: sole top %.3f == 0.20 m (stand/row height for a 1.50 m crew)" % sa.end.y)
+		_ok(sa.position.z > -0.76 and sa.end.z < 1.48, "interior: sole spans the open cockpit")
+	var coamings := _descendants_mesh(boat, "Coaming")
+	_ok(coamings.size() == 5,
+		"interior: coaming rim 5 pieces (2 sides + fore + split aft, got %d)" % coamings.size())
+	var boom_mi := _find_mesh(boat, "Boom")
+	_ok(boom_mi != null, "rig: Boom named for probes")
+	if boom_mi != null:
+		var ba: AABB = boom_mi.mesh.get_aabb()
+		_ok(absf(boom_mi.position.y - 1.90) < 0.01,
+			"rig: boom centre %.3f == 1.90 m above waterline (1.66 m sole headroom)" % boom_mi.position.y)
+	var main_sail := _find_mesh(boat, "MainSail")
+	_ok(main_sail != null, "rig: MainSail present")
+	if main_sail != null:
+		var sail_h: float = main_sail.transform.basis.y.length() * 2.0
+		var sail_foot: float = main_sail.position.y - sail_h * 0.5
+		_ok(absf(sail_foot - 1.90) < 0.02,
+			"rig: main sail foot %.3f sits on the 1.90 m boom" % sail_foot)
+		_ok(absf(sail_h - 2.45) < 0.02, "rig: main sail height %.2f == 2.45 m" % sail_h)
 	# ---- fittings: 2 oars, 2 rowlocks, 2 mooring cleats
 	_ok(_descendants_mesh(boat, "OarShaft").size() == 2, "fittings: 2 oar shafts")
 	_ok(_descendants_mesh(boat, "OarBlade").size() == 2, "fittings: 2 oar blades")
@@ -438,7 +465,7 @@ func _check_main_scene() -> void:
 	for g in ["Hull", "Deck", "Interior", "Fittings", "Cabin", "Rig"]:
 		_ok(boat.get_node_or_null(g) != null, "main: boat group " + g)
 	var planks := _descendants_mesh(boat, "DeckPlank")
-	_ok(planks.size() == 7, "main: 7 deck planks in the live scene")
+	_ok(planks.size() == 3, "main: 3 deck planks in the live scene (open cockpit)")
 	_ok(_descendants_mesh(boat, "OarShaft").size() == 2, "main: 2 oars in the live scene")
 	_ok(_descendants_mesh(boat, "Rib").size() == 16, "main: 16 frame bars in the live scene")
 	var lantern := _find_mesh(boat, "SternLantern")

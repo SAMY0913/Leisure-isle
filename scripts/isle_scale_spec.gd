@@ -62,8 +62,9 @@ const TOL_ABS := 0.010              # 小尺寸（<0.2 m）额外允许 ±1 cm
 # 每项：size=目标包围盒 (x 宽, y 高, z 深)，tol=相对容差，category=类别，note=采用依据。
 static var _REGISTRY: Dictionary = {
 	# ---- 1.50 m 人体参照（临时，仅测量用）----
-	"human_ref": {"size": Vector3(0.36, 1.50, 0.24), "tol": 0.01, "category": "human",
-		"note": "岛民规定总高 1.50 m（脚底到头发最高点），临时人形仅用于比例测量"},
+	"human_ref": {"size": Vector3(0.47, 1.50, 0.24), "tol": 0.01, "category": "human",
+		"note": "岛民规定总高 1.50 m（脚底到头发最高点）；AABB 宽 0.47（手臂自然下垂）/深 0.24；由 scripts/isle_scale_figure.gd 生成并用 tools/probe_scale_world.gd 实测"},
+
 
 	# ---- 门窗 ----
 	"door_opening": {"size": Vector3(1.14, 1.94, 0.30), "tol": 0.05, "category": "architecture",
@@ -199,3 +200,188 @@ static func human_landmarks() -> Dictionary:
 		"shoulder": HUMAN_SHOULDER_H, "chin": HUMAN_CHIN_H, "eye": HUMAN_EYE_H,
 		"head_top": HUMAN_HEAD_TOP_H,
 	}
+
+# ================= P7-V3.2 Task A 增补：资产/环境/相机目标与实测登记 =================
+# 说明：本节目标是“验收目标”，几何来源仍在各自脚本（IsleMath / IsleHouseProps / IsleWorld /
+# IsleCottage / main.gd）。改几何后必须同步本表，并用 tools/probe_scale_world.gd 实测登记。
+
+# ---- 房屋结构验收目标（来源 lead_scale_plan_v1.md；局部坐标 y=0 为 cottage 原点，地面 fy=0.55）----
+const HOUSE_W := 7.60               # 外墙外皮宽
+const HOUSE_D := 6.20               # 外墙外皮深
+const HOUSE_WALL_H := 3.18          # 外墙高（fy → roof_base）
+const HOUSE_ROOF_H := 2.47          # roof_base → ridge（坡高）
+const HOUSE_RIDGE_Y := 6.20         # 屋脊标高（局部，自 cottage 原点）
+const HOUSE_FY := 0.55              # 一层室内地面标高（局部）
+const HOUSE_WALL_T := 0.30          # 外墙厚
+const HOUSE_EAVE_OV := 0.60         # 檐口挑出（沿坡向）
+const HOUSE_PITCH_DEG := 33.0       # 屋顶坡度
+const HOUSE_ATTIC_FLOOR_Y := 3.17   # 阁楼楼板顶标高
+const HOUSE_ATTIC_KNEE_H := 0.56    # 阁楼膝墙
+const HOUSE_CHIMNEY_ABOVE_RIDGE := 0.35
+const PORCH_DECK_Y := 0.42          # 门廊台面
+const PORCH_STEP_RISE := 0.14       # 门廊台阶踏高
+const PORCH_STEP_RUN := 0.30        # 门廊台阶踏面深
+const ATTIC_WINDOW_BOTTOM_ABOVE_FLOOR := 0.10
+
+# ---- 标量目标区间：min ≤ 实测 ≤ max 为 PASS；超出区间 ≤10% 为 WARN；再外为 FAIL ----
+static var _RANGES: Dictionary = {
+	"porch_deck_y": {"min": 0.42, "max": 0.44, "unit": "m", "category": "architecture",
+		"note": "门廊台面高：1.50 m 人物上一步 0.42–0.44 舒适", "measured_by": "PorchSteps meta top_y + 台面顶点实测"},
+	"stair_landing": {"min": 0.80, "max": 1.00, "unit": "m", "category": "architecture",
+		"note": "L 形楼梯平台边长 0.85–0.95；两侧转身余量", "measured_by": "Staircase batch_manifest 平台板"},
+	"cat_shoulder_h": {"min": 0.25, "max": 0.35, "unit": "m", "category": "creature",
+		"note": "家猫肩高真实值 0.23–0.35 m（参考 1.50 m 人物约 1/5 身高）", "measured_by": "PorchCat 躯干段 AABB 高"},
+	"cat_body_len": {"min": 0.40, "max": 0.60, "unit": "m", "category": "creature",
+		"note": "家猫体长（不含尾）0.40–0.60 m", "measured_by": "PorchCat 头部到臀部 AABB 深"},
+	"gull_body_len": {"min": 0.40, "max": 0.70, "unit": "m", "category": "creature",
+		"note": "海鸥 body-only 体长 0.40–0.70：实测 0.671，T4 判保留（远景可读性 + 绘本夸张），不缩",
+		"measured_by": "fx Bird0 躯干+头+喙+尾网格合并 AABB 深（不含翼/腿）；翼展单列 gull_wingspan"},
+	"gull_wingspan": {"min": 1.10, "max": 1.50, "unit": "m", "category": "creature",
+		"note": "海鸥翼展 1.10–1.50 m", "measured_by": "海鸥节点 AABB 宽"},
+	"boat_hull_len": {"min": 3.00, "max": 6.00, "unit": "m", "category": "asset",
+		"note": "小船是载 2–4 人的小帆船/划艇：3–6 m；实测后决定保留夸张或按真实区间微调", "measured_by": "Sailboat 船体 Gunwale/Hull 部件 AABB 长"},
+	"boat_hull_beam": {"min": 1.20, "max": 2.00, "unit": "m", "category": "asset",
+		"note": "船长/船宽比 2.5–3.2 的小船；干舷 0.25–0.60", "measured_by": "Sailboat 船体 AABB 宽"},
+	"boat_freeboard": {"min": 0.25, "max": 0.70, "unit": "m", "category": "asset",
+		"note": "干舷（水面到舷缘）0.25–0.70（T4 实测舷缘顶 0.660；5 m 小帆船合理偏高，保留船体不缩）",
+		"measured_by": "两种量法并列：①世界量法=舷缘 Gunwale 顶世界 Y − 海面世界 Y(0)；②局部设计水线=船节点局部舷缘顶 Y（船局部 y=0 为设计水线）。probe_scale_world 同时输出 boat_freeboard_world / boat_freeboard_local"},
+	"street_lamp_h": {"min": 2.70, "max": 3.05, "unit": "m", "category": "asset",
+		"note": "地面→灯帽顶/杆顶总高 2.70–3.05（T4 实测帽顶 2.75、灯中心 2.55；旧 2.8–3.8 作废）",
+		"measured_by": "路灯节点子树 AABB 高（基座底面→灯帽/杆顶，实测世界高度）"},
+	"street_lamp_center": {"min": 2.45, "max": 2.65, "unit": "m", "category": "asset",
+		"note": "灯具/光心离地高 2.45–2.65（T4 已按灯中心 2.55 执行）；决定夜间光斑位置与人物抬头视角",
+		"measured_by": "world._lamp 返回的 lantern 世界坐标 Y − 灯基座世界 Y；并与灯箱网格 AABB 中心互校"},
+	"lighthouse_steps_count": {"min": 6.9, "max": 7.1, "unit": "step", "category": "asset",
+		"note": "灯塔入口环绕石阶 7 级（T4 已修：每级内半径 = 该高度基座半径 + 0.02、径向外露 0.38、台地 0.16 → 门槛 1.20）",
+		"measured_by": "Lighthouse 下 DoorStep0..6 节点数量"},
+	"lighthouse_step_rise": {"min": 0.15, "max": 0.17, "unit": "m", "category": "asset",
+		"note": "灯塔石阶踏高 0.16 m（7 级 × 0.16 = 1.12，再加 0.08 到门槛 1.20）",
+		"measured_by": "DoorStep 节点顶面局部 y 升序相邻差中位数"},
+	"lighthouse_step_depth": {"min": 0.34, "max": 0.42, "unit": "m", "category": "asset",
+		"note": "灯塔石阶径向踏面深 0.38 m（BoxMesh 局部 z 向）",
+		"measured_by": "DoorStep 各节点 BoxMesh.size.z 中位数"},
+	"lighthouse_step_top": {"min": 1.10, "max": 1.14, "unit": "m", "category": "asset",
+		"note": "最高一级石阶顶 1.12 m（门槛顶 1.20，gap 0.08；1.50 m 访客一步跨上）",
+		"measured_by": "DoorStep0 顶面局部 y（相对 Lighthouse 节点原点）"},
+	"camera_orbit_r": {"min": 70.0, "max": 95.0, "unit": "m", "category": "camera",
+		"note": "初始轨道相机距离 82 m：保证直径约 63.6 m 的岛全部入画", "measured_by": "main._build_camera IsleFlyCam radius / CAM_START_R"},
+	"camera_fly_radius": {"min": 110.0, "max": 150.0, "unit": "m", "category": "camera",
+		"note": "自由视角可移动半径 130 m：不飞出远景岛群", "measured_by": "IsleFlyCam.radius"},
+	"camera_fov": {"min": 45.0, "max": 75.0, "unit": "deg", "category": "camera",
+		"note": "≥45° 保证小岛全景，≤75° 控制透视变形", "measured_by": "Camera3D.fov"},
+	"camera_near": {"min": 0.10, "max": 0.50, "unit": "m", "category": "camera",
+		"note": "near 0.3：1 m 级近景不穿模、远处海面仍稳定", "measured_by": "Camera3D.near"},
+	"island_diameter": {"min": 55.0, "max": 75.0, "unit": "m", "category": "environment",
+		"note": "岛屿直径约 63.6 m；保留现状（reference_keep），仅审计", "measured_by": "Terrain AABB / coast_radius"},
+}
+
+# ---- reference_keep：明确“保留现有夸张/既定比例”的对象与理由（不做等比缩放的依据）----
+static var _REFERENCE_KEEP: Dictionary = {
+	"lighthouse": {"hint": 18.28, "unit": "m", "node": "Island/Lighthouse",
+		"reason": "灯塔是岛屿地标与夜间导航视觉焦点：18.28 m 保证 60 m 外仍可读，灯室/平台/perch/光束已按此高度设计，缩小后与远岛群比例失衡",
+		"keep_conditions": "保留总高 18.28±0.20；只允许局部可读性修整（灯室/平台/梯段），不整体缩放"},
+	"island_terrain": {"hint": 63.6, "unit": "m", "node": "Island/Terrain",
+		"reason": "岛屿直径≈63.6 m、地形由 coast_radius/terrain_height 程序化生成；重定比例会破坏房屋/花园/秋千/码头/小路既有摆位与远景海平线",
+		"keep_conditions": "保留地形与岸线；仅审计地形起伏是否压得过 1.5 m 人物尺度（如台阶/坡道可读性）"},
+	"sea_surface": {"hint": 0.0, "unit": "m", "node": "Island/Sea",
+		"reason": "海面高度 y=0 是干舷、码头台面（0.72 m）、船体吃水的共同基准；改变会使三者同时失准",
+		"keep_conditions": "海面 y=0 固定；船只/码头据此审计"},
+	"big_tree": {"hint": 12.0, "unit": "m", "node": "Island/BigTree",
+		"reason": "大树是主要取景框与秋千挂点（SWING_LIMB_Y 5.55）；按真实树高重算会牵动秋千绳长/摆幅、相机取景与树冠遮蔽",
+		"keep_conditions": "保留树高与秋千挂点；秋千座面/绳长按 1.5 m 人物舒适度审计"},
+	"day_night_cycle": {"hint": 0.0, "unit": "-", "node": "main/日月球",
+		"reason": "日月球与光照按现有世界比例调过，不属于尺度对象；本轮只做相机/灯光距离审计",
+		"keep_conditions": "不重定比例"},
+	"windmill_old": {"hint": 12.19, "unit": "m", "node": "（已替换）",
+		"reason": "旧风车 12.1839 m 已由灯塔替换，仅作为历史记录保留在 IsleWorld 返回值中，不重建",
+		"keep_conditions": "仅记录，不再生成"},
+	"boat_behavior": {"hint": 0.0, "unit": "-", "node": "Island/Sailboat",
+		"reason": "小船航线/回港/夜景状态机与码头/航道摆位绑定；尺度调整只允许改船体几何，状态机与路径保留",
+		"keep_conditions": "保留 boat 状态机/航线/回港路径；只改船体比例"},
+}
+
+# ---- 实测登记表：key -> 探针如何得到这个数（防止“只读登记表不看真实几何”）----
+static var _MEASURE: Dictionary = {
+	"human_ref": {"probe": "figure.build+measure", "path": "scripts/isle_scale_figure.gd", "method": "构建参照人形后取重建世界 AABB（父级缩放会暴露）"},
+	"door_opening": {"probe": "house.door", "path": "Island/Cottage", "method": "前墙平面射线-三角形扫描：无命中列高/行宽"},
+	"window_front": {"probe": "house.windows", "path": "Cottage/WindowFront*", "method": "窗玻璃真实 Mesh AABB + 0.02 玻璃缝隙"},
+	"window_side": {"probe": "house.windows", "path": "Cottage/WindowLeft/Right", "method": "同上"},
+	"window_back": {"probe": "house.windows", "path": "Cottage/WindowBack", "method": "同上"},
+	"window_attic": {"probe": "house.attic_window", "path": "Cottage/AtticWindow", "method": "阁楼窗玻璃 Mesh AABB"},
+}
+# 家具统一实测方式
+const FURNITURE_MEASURE := "tools/probe_scale_world.gd：IsleHouseProps.build(kind) 后逐 MeshInstance 真实 AABB（排除 Glow/Halo/Blob），再与目标比较"
+
+# ---- 区间 / 保留 / 登记 查询 ----
+static func ranges() -> Dictionary:
+	return _RANGES
+
+static func range_of(key: String) -> Dictionary:
+	return _RANGES.get(key, {})
+
+static func reference_keeps() -> Dictionary:
+	return _REFERENCE_KEEP
+
+static func is_reference_keep(key: String) -> bool:
+	return _REFERENCE_KEEP.has(key)
+
+static func keep_entry(key: String) -> Dictionary:
+	return _REFERENCE_KEEP.get(key, {})
+
+static func measurement_of(key: String) -> Dictionary:
+	if _MEASURE.has(key):
+		return _MEASURE[key]
+	var cat := category_of(key)
+	if cat == "furniture":
+		return {"probe": "furniture.build+measure", "path": "scripts/isle_house_props.gd", "method": FURNITURE_MEASURE}
+	return {}
+
+## 区间检查：min ≤ actual ≤ max 为 PASS；超出 ≤10% 区间宽度为 WARN；再外为 FAIL。
+static func check_range(key: String, actual: float) -> Dictionary:
+	var r: Dictionary = range_of(key)
+	if r.is_empty():
+		return {"key": key, "actual": actual, "status": "FAIL", "detail": "未登记目标区间"}
+	var lo: float = float(r["min"])
+	var hi: float = float(r["max"])
+	var span: float = maxf(hi - lo, 1e-6)
+	var status := "PASS"
+	var margin: float = 0.0
+	if actual < lo:
+		margin = lo - actual
+		status = "WARN" if margin <= span * 0.10 else "FAIL"
+	elif actual > hi:
+		margin = actual - hi
+		status = "WARN" if margin <= span * 0.10 else "FAIL"
+	var rel: float = 0.0
+	var mid: float = (lo + hi) * 0.5
+	if absf(mid) > 1e-6:
+		rel = absf(actual - mid) / mid
+	return {"key": key, "actual": actual, "min": lo, "max": hi, "max_rel_err": rel,
+		"status": status, "note": String(r.get("note", "")),
+		"detail": "%s 实测 %.3f %s / 区间 [%.3f, %.3f] %s → %s" % [
+			key, actual, String(r.get("unit", "")), lo, hi, "PASS" if status == "PASS" else ("WARN" if status == "WARN" else "FAIL"), status]}
+
+## 与任意显式目标比较（非登记表项，例如结构标量）。
+static func check_custom(label: String, actual: Vector3, target: Vector3, tol: float = TOL) -> Dictionary:
+	var rel := Vector3.ZERO
+	for i in 3:
+		var t: float = target[i]
+		rel[i] = 0.0 if absf(t) < 1e-6 else absf(actual[i] - t) / t
+	var max_rel: float = maxf(rel.x, maxf(rel.y, rel.z))
+	var status := "PASS"
+	if max_rel > WARN_TOL:
+		status = "FAIL"
+	elif max_rel > tol:
+		status = "WARN"
+	return {"key": label, "target": target, "actual": actual, "rel_err": rel,
+		"max_rel_err": max_rel, "status": status,
+		"detail": "%s 实测 %.3f×%.3f×%.3f m / 目标 %.3f×%.3f×%.3f m (误差 %.1f%%)" % [
+			label, actual.x, actual.y, actual.z, target.x, target.y, target.z, max_rel * 100.0]}
+
+## 状态排序：PASS=0 WARN=1 FAIL=2（汇总统计用）。
+static func status_rank(s: String) -> int:
+	if s == "PASS":
+		return 0
+	if s == "WARN":
+		return 1
+	return 2
