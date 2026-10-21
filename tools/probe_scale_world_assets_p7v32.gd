@@ -21,6 +21,7 @@ func _initialize() -> void:
 	_measure_dock(world)
 	_measure_boat(world)
 	_measure_lighthouse(world)
+	_measure_lighthouse_door_cam(world)
 	_measure_swing(world)
 	_measure_lamps(world)
 	_measure_perches(world)
@@ -344,6 +345,30 @@ func _measure_lighthouse_stairs(lh: Node3D, oy: float) -> void:
 		if thr_top - step0_top < 0.0 or thr_top - step0_top > 0.25:
 			_issue("lighthouse top step %.3f to threshold %.3f mismatch" % [step0_top, thr_top])
 	_line("lh.stairs_checked=%d max_outer_jump=%.3f" % [checked, max_dr])
+
+# ---------------------------------------------------------- door cam plan --
+## 供 T5 统一截图用的灯塔门口特写机位（含 1.50 m 人形站位），只打印参数。
+func _measure_lighthouse_door_cam(world: Dictionary) -> void:
+	var lh: Node3D = world["lighthouse"]
+	var lh_pos := _gpos(lh)
+	# world.gd 门朝向 door_dir = normalize(-LIGHTHOUSE_X, 0, -LIGHTHOUSE_Z)（由灯塔指向岛心）
+	var dir := Vector3(-lh_pos.x, 0.0, -lh_pos.z).normalized()
+	var side := Vector3(-dir.z, 0.0, dir.x)
+	var door_mid := lh_pos + dir * 1.76 + Vector3(0.0, 2.13, 0.0)   # 门扇中心 local y 2.13
+	var thr := lh_pos + dir * 1.84 + Vector3(0.0, 1.20, 0.0)        # 门槛顶
+	var cam_xz := lh_pos + dir * 6.06
+	var cam := Vector3(cam_xz.x, M.terrain_height(cam_xz.x, cam_xz.z) + 1.38, cam_xz.z)
+	# 人形站露台（半径 2.85 内）门侧 0.95 m，脚点=露台顶 lh_pos.y
+	var figure := lh_pos + dir * 2.20 + side * 0.95
+	figure.y = lh_pos.y
+	_line("lh.door_cam plan: cam=(%.3f,%.3f,%.3f) target=(%.3f,%.3f,%.3f) fov=50.0 time=12:20 quality=2" % [
+		cam.x, cam.y, cam.z, door_mid.x, door_mid.y, door_mid.z])
+	_line("lh.door_cam plan: dist_to_door=%.3f yaw=%.3f pitch=%.3f figure=(%.3f,%.3f,%.3f)" % [
+		cam.distance_to(door_mid), atan2(cam.x - door_mid.x, cam.z - door_mid.z),
+		atan2(door_mid.y - cam.y, Vector2(door_mid.x - cam.x, door_mid.z - cam.z).length()),
+		figure.x, figure.y, figure.z])
+	_line("lh.door_cam ref: threshold_top=(%.3f,%.3f,%.3f) door_leaf_mid=(%.3f,%.3f,%.3f)" % [
+		thr.x, thr.y, thr.z, door_mid.x, door_mid.y, door_mid.z])
 
 # ------------------------------------------------------------------- swing --
 func _measure_swing(world: Dictionary) -> void:

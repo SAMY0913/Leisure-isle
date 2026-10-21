@@ -192,13 +192,31 @@ func _annotate_house() -> void:
 	_label("阁楼楼板 attic_floor=%.2f m" % attic, front + Vector3(2.0, attic + 0.10, 0.0), C_LABEL_WARN)
 	var pivot := _find_named(c3, "DoorPivot")
 	if pivot is Node3D:
-		var pv: Node3D = pivot
-		var door_top: float = pv.global_position.y + 2.26
-		var pa := _global_aabb(pv)
-		if pa.size.y > 0.1:
-			door_top = pa.end.y
-		_label("门洞 净高≈%.2f m（门扇 %.2f×%.2f）" % [door_top - (c3.global_position.y + fy + deck), pa.size.x, pa.size.y],
-			pv.global_position + Vector3(0.0, 2.7, 0.6), C_LABEL)
+		# 门洞标注口径与 isle_scale_spec / 探针审计一致（Lead m00651）：
+		#   T2 在 cottage root 写入 door_clear（净宽/中心净高/拱脚/门扇/气窗），优先读 meta；
+		#   meta 缺失时回退到规范常量并标注"规范回退"，绝不用门扇 AABB 高度冒充净高（旧版算成 1.48 的错误来源）。
+		var dc: Dictionary = {}
+		var meta_dc = c3.get_meta("door_clear", {})
+		if meta_dc is Dictionary:
+			dc = meta_dc
+		var dw: float = float(dc.get("w", Spec.DOOR_CLEAR_W))
+		var dh: float = float(dc.get("h", Spec.DOOR_CLEAR_H))
+		var leaf_w: float = float(dc.get("leaf_w", 1.00))
+		var leaf_h: float = float(dc.get("leaf_h", 1.40))
+		var arch_ri: float = float(dc.get("arch_ri", 0.52))
+		var arch_foot: float = dh - arch_ri
+		if dc.has("spring_y"):
+			arch_foot = float(dc.get("spring_y")) - fy
+		var suffix := ""
+		if dc.is_empty():
+			dw = Spec.DOOR_CLEAR_W
+			dh = Spec.DOOR_CLEAR_H
+			leaf_w = 1.00
+			leaf_h = 1.40
+			arch_foot = dh - 0.52
+			suffix = "（规范回退·缺 door_clear meta）"
+		var door_txt := "门洞 净宽 %.2f m / 中心净高 %.2f m（拱脚 %.2f m；门扇 %.2f×%.2f + 气窗）%s" % [dw, dh, arch_foot, leaf_w, leaf_h, suffix]
+		_label(door_txt, c3.global_transform * Vector3(0.0, fy + dh + 0.30, float(M.HOUSE_D) * 0.5 + 0.80), C_LABEL)
 	var stairs := _find_named(c3, "Staircase")
 	if stairs is Node3D:
 		var sa := _global_aabb(stairs)

@@ -287,6 +287,8 @@ func _ready() -> void:
 		var scale_overlay: Node3D = ScaleOverlay.new()
 		scale_overlay.name = "ScaleDebugOverlay"
 		add_child(scale_overlay)
+		print("[SCALE] ScaleDebugOverlay installed built=%s children=%d" % [
+			str(scale_overlay.is_built()), scale_overlay.get_child_count()])
 	if _selftest:
 		_run_selftest()
 	elif _perf:
@@ -1575,8 +1577,9 @@ func _run_shots() -> void:
 	_elev = 0.25
 	_radius = 8.0
 	var stair_door := IsleMath.door_world()
-	var stair_gy: float = IsleMath.terrain_height(stair_door.x, stair_door.z)
-	_cam_target = Vector3(stair_door.x, stair_gy + 0.75, stair_door.z)
+	# P7-V3.2：取景对准门槛下方约一档台阶。door_world().y = 地坪 + 0.55（门槛高），
+	# 不再用 terrain+0.75 硬编码（地形采样点在台阶体下方，会与踏面高度不一致）。
+	_cam_target = Vector3(stair_door.x, stair_door.y + 0.20, stair_door.z)
 	_fov = 50.0
 	await get_tree().create_timer(0.5).timeout
 	await _save_shot("03_stairs_close")

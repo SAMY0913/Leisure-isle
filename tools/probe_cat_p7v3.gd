@@ -149,16 +149,23 @@ func _aabb_in_root(node: Node, root: Node3D) -> AABB:
 	_acc_aabb(node, root.global_transform.affine_inverse(), acc)
 	return acc["aabb"]
 
-func _find_sphere_mesh(node: Node, radius: float) -> MeshInstance3D:
-	if node is MeshInstance3D:
-		var mi: MeshInstance3D = node
-		if mi.mesh is SphereMesh and absf((mi.mesh as SphereMesh).radius - radius) < 0.002:
-			return mi
+func _find_named_mi(node: Node, nm: String) -> MeshInstance3D:
+	if node is MeshInstance3D and String(node.name) == nm:
+		return node as MeshInstance3D
 	for c in node.get_children():
-		var r := _find_sphere_mesh(c, radius)
+		var r := _find_named_mi(c, nm)
 		if r != null:
 			return r
 	return null
+
+## 统计猫子树里节点 scale 非单位的 MeshInstance3D（P7-V3.2 禁节点缩放）。
+func _nonunit_scale_meshes(node: Node, out: Array) -> void:
+	if node is Node3D and node is MeshInstance3D:
+		var s3: Vector3 = (node as Node3D).scale
+		if absf(s3.x - 1.0) > 0.01 or absf(s3.y - 1.0) > 0.01 or absf(s3.z - 1.0) > 0.01:
+			out.append(String(node.name))
+	for c in node.get_children():
+		_nonunit_scale_meshes(c, out)
 
 # ---------------------------------------------------------------------------
 # 1) 结构与部件
@@ -222,18 +229,27 @@ func _test_geometry() -> void:
 	var s: float = CAT.CAT_MODEL_SCALE
 	var body: Node3D = _cat["body"] as Node3D
 	var head: Node3D = _cat["head"] as Node3D
-	var torso := _find_sphere_mesh(body, 0.23 * s)
-	var head_mi := _find_sphere_mesh(head, 0.155 * s)
-	_ok(torso != null, "身体椭球半径 0.23*scale(%.3f) 存在" % [0.23 * s])
-	_ok(head_mi != null, "头球半径 0.155*scale(%.3f) 存在" % [0.155 * s])
+	# P7-V3.2：非均匀比例烘进网格（ArrayMesh），靠 TorsoEllipsoid/HeadEllipsoid 命名查找；
+	# 节点 scale 必须为 1（禁止用节点缩放冒充重建）。
+	var torso := _find_named_mi(body, "TorsoEllipsoid")
+	var head_mi := _find_named_mi(head, "HeadEllipsoid")
+	_ok(torso != null, "身体椭球 TorsoEllipsoid 存在（网格烘焙，半径 0.23*scale）")
+	_ok(head_mi != null, "头球 HeadEllipsoid 存在（网格烘焙，半径 0.155*scale）")
+	var bad_scale: Array = []
+	_nonunit_scale_meshes(root, bad_scale)
+	_ok(bad_scale.is_empty(), "猫全部网格节点 scale=1（构造烘焙无节点缩放）%s" % str(bad_scale.slice(0, 8)))
 	if torso != null:
-		_ok_near(torso.scale.x, 1.0, 0.01, "身体 scale x = 1.0")
-		_ok_near(torso.scale.y, 0.80, 0.01, "身体 scale y = 0.80")
-		_ok_near(torso.scale.z, 1.45, 0.01, "身体 scale z = 1.45")
+		var ts: Vector3 = torso.mesh.get_aabb().size
+		# 说明：14/8 分段的 SphereMesh 顶点多边形近似使 AABB 比理论直径小 ~1–4%，
+		# 因此直径断言容差放到 0.015（比例/头身比断言另行校验）。
+		_ok_near(ts.x, 2.0 * 0.23 * s * 1.00, 0.015, "身体椭球 x 直径 = %.3f m" % (2.0 * 0.23 * s))
+		_ok_near(ts.y, 2.0 * 0.23 * s * 0.80, 0.013, "身体椭球 y 直径比 0.80（%.3f m）" % (2.0 * 0.23 * s * 0.80))
+		_ok_near(ts.z, 2.0 * 0.23 * s * 1.45, 0.015, "身体椭球 z 直径比 1.45（%.3f m）" % (2.0 * 0.23 * s * 1.45))
+		_ok(torso.scale.is_equal_approx(Vector3.ONE), "身体网格节点 scale = 1")
 		_ok_near(torso.rotation.x, -0.20, 0.01, "身体前高后低倾斜 -0.20 rad")
 	if torso != null and head_mi != null:
-		var body_len: float = 2.0 * 0.23 * s * torso.scale.z
-		var head_d: float = 2.0 * 0.155 * s * head_mi.scale.x
+		var body_len: float = torso.mesh.get_aabb().size.z
+		var head_d: float = head_mi.mesh.get_aabb().size.x
 		var ratio: float = body_len / head_d
 		_ok(ratio > 1.85 and ratio < 2.45, "头身比 ≈1:2.2（体长/头径 = %.2f）" % ratio)
 	# 三角锥耳朵（3 侧面 + 底面；Godot 4.7.2 CylinderMesh 最小径向 4 段，故用 ArrayMesh 精确 3 段）

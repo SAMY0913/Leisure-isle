@@ -34,6 +34,7 @@ var _cottage: Dictionary = {}
 var _world_root: Node3D = null
 var _cot_root: Node3D = null
 var _cot_aabbs: Array = []
+var _cot_parts: Array = []   # 门廊扶手净空用：未合批实体(粗 AABB) + batch_manifest 部件(精确形状距离)
 var _legs_aabb: AABB = AABB()
 var _legs_mesh: ArrayMesh = null
 var _fx_script: GDScript = null
@@ -58,7 +59,13 @@ func _initialize() -> void:
 	var wp: Array = (_island["perches"] as Array).duplicate()
 	var cp: Array = (_cottage["perches"] as Array).duplicate()
 	print("[LOAD] world_perches=", wp.size(), " cottage_perches=", cp.size())
-	_cot_aabbs = _aabb_entries(_all_geometry(_cot_root))
+	# 合批后 Batch_* 是整块 ArrayMesh，其 AABB 过粗（会包住门廊踏板等真实间隙）。
+	# 用"未合批实体 AABB + batch_manifest 部件级 AABB"混合口径，保持真实间隙判定。
+	var live_aabbs: Array = _aabb_entries(_all_geometry_excluding(_cot_root, "Batch_"))
+	var manifest_parts: Array = _manifest_part_aabbs()
+	_cot_aabbs = live_aabbs + manifest_parts
+	_cot_parts = live_aabbs + manifest_parts
+	print("[LOAD] cottage part aabbs: live=", live_aabbs.size(), " manifest=", manifest_parts.size(), " total=", _cot_aabbs.size())
 	_fx_script = load("res://scripts/fx.gd") as GDScript
 	_fx_ok = _fx_script != null
 	if _fx_ok:
@@ -100,6 +107,101 @@ func _all_geometry(node: Node) -> Array:
 				out.append(c)
 			stack.append(c)
 	return out
+
+func _all_geometry_excluding(node: Node, name_prefix: String) -> Array:
+	var out: Array = []
+	var stack: Array = [node]
+	while not stack.is_empty():
+		var cur: Node = stack.pop_back()
+		for c in cur.get_children():
+			if c is GeometryInstance3D:
+				if name_prefix.is_empty() or not String(c.name).begins_with(name_prefix):
+					out.append(c)
+			stack.append(c)
+	return out
+
+## batch_manifest 部件级 AABB（合并前 Box/Cyl/Sphere/Prism/Quad 的真实尺寸与变换）。
+func _manifest_part_aabbs() -> Array:
+	var out: Array = []
+	if not _cot_root.has_meta("batch_manifest"):
+		return out
+	var man: Variant = _cot_root.get_meta("batch_manifest")
+	if not (man is Array):
+		return out
+	var root_xf: Transform3D = _cot_root.global_transform
+	for e_v in (man as Array):
+		if not (e_v is Dictionary):
+			continue
+		var e: Dictionary = e_v
+		if not (e.has("kind") and e.has("size") and e.has("xf_group")):
+			continue
+		var kind := String(e["kind"])
+		var s: Vector3 = e["size"]
+		var dims: Vector3
+		match kind:
+			"Box":
+				dims = s
+			"Cyl":
+				var r: float = maxf(s.x, s.z)
+				dims = Vector3(r * 2.0, s.y, r * 2.0)
+			"Sphere":
+				dims = Vector3(s.x * 2.0, s.y, s.x * 2.0)
+			"Prism":
+				dims = s
+			"Quad":
+				dims = Vector3(s.x, s.y, 0.001)
+			_:
+				continue
+		if dims.x <= 0.0 or dims.y <= 0.0 or dims.z <= 0.0:
+			continue
+		var xf: Transform3D = root_xf * (e["xf_group"] as Transform3D)
+		var half: Vector3 = dims * 0.5
+		var mn := Vector3(1.0e9, 1.0e9, 1.0e9)
+		var mx := Vector3(-1.0e9, -1.0e9, -1.0e9)
+		for ci in range(8):
+			var corner := Vector3(
+				half.x if (ci & 1) != 0 else -half.x,
+				half.y if (ci & 2) != 0 else -half.y,
+				half.z if (ci & 4) != 0 else -half.z)
+			var w: Vector3 = xf * corner
+			mn = Vector3(minf(mn.x, w.x), minf(mn.y, w.y), minf(mn.z, w.z))
+			mx = Vector3(maxf(mx.x, w.x), maxf(mx.y, w.y), maxf(mx.z, w.z))
+		var entry := {
+			"name": "manifest:" + kind + ":" + String(e.get("name", "")),
+			"aabb": AABB(mn, mx - mn),
+			"xf": xf,
+			"half": half,
+		}
+		# 精确形状距离（避免 AABB 在圆柱/球/斜置盒角部虚报净空）
+		match kind:
+			"Box", "Prism", "Quad":
+				entry["shape"] = "Box"
+			"Cyl":
+				entry["shape"] = "Cyl"
+				entry["cyl_top"] = s.x
+				entry["cyl_bottom"] = s.z
+			"Sphere":
+				entry["shape"] = "Sphere"
+				entry["radius"] = s.x
+		out.append(entry)
+	return out
+
+## 部件局部空间精确点距（Box=OBB；Cyl=锥台；Sphere）。
+func _part_point_dist(e: Dictionary, p: Vector3) -> float:
+	var lp: Vector3 = (e["xf"] as Transform3D).affine_inverse() * p
+	var half: Vector3 = e["half"]
+	match String(e.get("shape", "Box")):
+		"Cyl":
+			var h2: float = half.y
+			var dy: float = maxf(absf(lp.y) - h2, 0.0)
+			var t: float = clampf((lp.y + h2) / (2.0 * h2), 0.0, 1.0) if h2 > 0.0 else 0.0
+			var rad: float = lerpf(float(e["cyl_bottom"]), float(e["cyl_top"]), t)
+			var dh: float = maxf(sqrt(lp.x * lp.x + lp.z * lp.z) - rad, 0.0)
+			return sqrt(dh * dh + dy * dy)
+		"Sphere":
+			return maxf(lp.length() - float(e["radius"]), 0.0)
+		_:
+			return _aabb_point_dist(AABB(-half, half * 2.0), lp)
 
 func _world_aabb(gi: GeometryInstance3D) -> AABB:
 	var local := AABB()
@@ -143,6 +245,12 @@ func _clearance(entries: Array, points: Array) -> Dictionary:
 		var p: Vector3 = p_v
 		for e_v in entries:
 			var e: Dictionary = e_v
+			if e.has("shape"):
+				var d: float = _part_point_dist(e, p)
+				if d <= 1.0e-6 and not hits.has(String(e["name"])):
+					hits.append(String(e["name"]))
+				min_clear = minf(min_clear, d)
+				continue
 			var aabb: AABB = e["aabb"]
 			if aabb.has_point(p):
 				if not hits.has(String(e["name"])):
@@ -334,31 +442,63 @@ func _probe_counts(wp: Array, cp: Array) -> void:
 	_check(lamp_struct_ok, "lamps 每项仍为 4 元组 [mat, halo, light, info]")
 
 # ============================================================
-# 2) cottage 门廊扶手 porch_rail：真实 BoxMesh 顶面
+# 2) cottage 门廊扶手 porch_rail：真实几何顶面反查
 # ============================================================
-func _find_box_meshes(node: Node, size: Vector3) -> Array:
+# Lead m00780 / T2 m00904：不写死扶手 BoxMesh 尺寸/位置（T2 改门廊后会漂移）。
+# T2 已把 4 根门廊扶手保留为独立 MeshInstance3D（BoxMesh + meta no_batch=true，
+# 名字 PorchRailSideL/R、PorchRailFrontL/R），它们不会进入 batch_manifest。
+# 因此这里直接遍历 cottage root 下"未被合批"的 BoxMesh 真实节点，按
+# "栖点正下方、顶面不高于栖点 0.15 m 内、水平投影覆盖栖点的最高 Box 件"反查；
+# 命中后"最近下方实体顶面 == 扶手顶面"断言再用混合 AABB 口径复核一次。
+# 注意：world 位置一律与节点全局变换比较，不再与 root 局部 AABB 混比。
+func _live_box_entries() -> Array:
 	var out: Array = []
-	var stack: Array = [node]
-	while not stack.is_empty():
-		var cur: Node = stack.pop_back()
-		for c in cur.get_children():
-			if c is MeshInstance3D:
-				var mi: MeshInstance3D = c
-				if mi.mesh is BoxMesh:
-					var bm: BoxMesh = mi.mesh
-					if bm.size.distance_to(size) < EPS:
-						out.append(mi)
-			stack.append(c)
+	for gi_v in _all_geometry_excluding(_cot_root, "Batch_"):
+		if not (gi_v is MeshInstance3D):
+			continue
+		var mi: MeshInstance3D = gi_v
+		var mesh: Mesh = mi.mesh
+		if not (mesh is BoxMesh):
+			continue
+		var bx: BoxMesh = mesh
+		out.append({"node": mi, "name": String(mi.name), "size": bx.size,
+			"xf": mi.global_transform, "half": bx.size * 0.5})
 	return out
+
+func _find_support_live_box(boxes: Array, world_pos: Vector3) -> Dictionary:
+	var named_best: Dictionary = {}
+	var named_top := -1.0e9
+	var any_best: Dictionary = {}
+	var any_top := -1.0e9
+	for e_v in boxes:
+		var e: Dictionary = e_v
+		var xf: Transform3D = e["xf"]
+		var half: Vector3 = e["half"]
+		var rel: Vector3 = xf.affine_inverse() * world_pos
+		if absf(rel.x) > half.x + 0.005 or absf(rel.z) > half.z + 0.005:
+			continue
+		var top_y: float = (xf * Vector3(0.0, half.y, 0.0)).y
+		if top_y > world_pos.y + 0.005 or world_pos.y - top_y > 0.15:
+			continue
+		var hit := {"entry": e, "xf": xf, "size": e["size"], "half": half,
+			"top_world": top_y, "name": e["name"], "rel": rel}
+		if top_y > any_top:
+			any_top = top_y
+			any_best = hit
+		if String(e["name"]).begins_with("PorchRail") and top_y > named_top:
+			named_top = top_y
+			named_best = hit
+	return named_best if not named_best.is_empty() else any_best
 
 func _probe_rails(cp: Array) -> void:
 	print("--- PORCH RAILS (cottage real box tops) ---")
-	var side_rails: Array = _find_box_meshes(_cot_root, Vector3(0.10, 0.09, 2.60))
-	var front_rails: Array = _find_box_meshes(_cot_root, Vector3(2.24, 0.09, 0.10))
-	_check(side_rails.size() == 2, "找到 2 条真实侧扶手 BoxMesh(0.10,0.09,2.60)（实际 %d）" % side_rails.size())
-	_check(front_rails.size() == 2, "找到 2 条真实前扶手 BoxMesh(2.24,0.09,0.10)（实际 %d）" % front_rails.size())
-	var posts: Array = _find_box_meshes(_cot_root, Vector3(0.12, 0.95, 0.12))
-	print("[RAIL] post_boxes(0.12,0.95,0.12)=", posts.size())
+	var boxes: Array = _live_box_entries()
+	print("[RAIL] cottage 未合批 BoxMesh 实体=", boxes.size(), "（T2 的 4 根 PorchRail* 应在此）")
+	print("[RAIL] 检测方式：栖点正下方未合批真实 BoxMesh 节点 AABB 顶面反查（不写死尺寸/位置）")
+	var live_names: Array = []
+	for e_v in boxes:
+		live_names.append(String((e_v as Dictionary)["name"]))
+	print("[RAIL] 候选节点名=", str(live_names))
 	var rail_ids: Array = ["porch_rail_L", "porch_rail_R", "porch_rail_FL", "porch_rail_FR"]
 	var found_ids: Array = []
 	for p_v in cp:
@@ -376,45 +516,33 @@ func _probe_rails(cp: Array) -> void:
 		var n: Vector3 = (p["normal"] as Vector3).normalized()
 		var lp: Vector3 = _cot_root.to_local(pos)
 		var is_front: bool = pid.begins_with("porch_rail_F")
-		var sx: float = signf(lp.x)
-		var support: MeshInstance3D = null
-		if is_front:
-			for mi_v in front_rails:
-				var mi: MeshInstance3D = mi_v
-				if absf(mi.position.x - sx * 3.00) < EPS and absf(mi.position.z - 6.95) < EPS:
-					support = mi
-		else:
-			for mi2_v in side_rails:
-				var mi2: MeshInstance3D = mi2_v
-				if absf(mi2.position.x - sx * 4.12) < EPS and absf(mi2.position.z - 5.78) < EPS:
-					support = mi2
-		_check(support != null, pid + " 找到对应真实扶手网格")
-		if support == null:
+		var support: Dictionary = _find_support_live_box(boxes, pos)
+		_check(not support.is_empty(), pid + " 找到对应未合批扶手 BoxMesh（真实节点反查）")
+		if support.is_empty():
 			continue
-		var bm: BoxMesh = support.mesh
-		var half: Vector3 = bm.size * 0.5
-		var support_top: Vector3 = support.global_transform * Vector3(0.0, half.y, 0.0)
-		var gap: float = pos.y - support_top.y
+		var sxf: Transform3D = support["xf"]
+		var half: Vector3 = support["half"]
+		var support_top_y: float = float(support["top_world"])
+		var support_top: Vector3 = Vector3(0.0, support_top_y, 0.0)
+		var gap: float = pos.y - support_top_y
+		print("[RAIL] %s support_node=%s size=%s top=%.4f" % [
+			pid, String(support["name"]), _fmtv(support["size"]), support_top_y])
 		_check(absf(gap - GAP) <= EPS and gap >= 0.02 and gap <= 0.04,
-			pid + " pos 距真实扶手顶面垂直间隙 = %.4f m（要求 0.03±0.001）" % gap)
-		# 扶手顶面法线（真实网格变换）
-		var face_n: Vector3 = (support.global_transform.basis * Vector3.UP).normalized()
+			pid + " pos 距真实扶手顶面垂直间隙 = %.4f m（要求 0.03±0.001；支撑件 %s）" % [gap, _fmtv(support["size"])])
+		# 扶手顶面法线（真实几何变换）
+		var face_n: Vector3 = (sxf.basis * Vector3.UP).normalized()
 		var n_align: float = rad_to_deg(acos(clampf(n.dot(face_n), -1.0, 1.0)))
 		_check(n_align <= 0.1 and n.y > 0.9999, pid + " normal == 扶手顶面法线 UP（偏差 %.3f°）" % n_align)
 		_check(absf(float(p["slope"])) <= 1e-6, pid + " slope == 0（实际 %.6f）" % float(p["slope"]))
-		# 水平落点：扶手顶面矩形 / 立柱间自由段
-		var dloc: Vector3 = lp - support.position
+		# 水平落点：扶手顶面矩形内，且距扶手两端（立柱位置）>= 0.30 m
+		var rel: Vector3 = sxf.affine_inverse() * pos   # 世界点 -> 扶手节点局部
+		var dloc: Vector3 = rel - Vector3(0.0, half.y, 0.0)
 		var in_rect: bool = absf(dloc.x) <= half.x + EPS and absf(dloc.z) <= half.z + EPS
 		_check(in_rect, pid + " 落点在扶手顶面矩形内（局部偏移 %s，half=%s）" % [_fmtv(dloc), _fmtv(half)])
-		var free_ok: bool
-		var free_desc: String
-		if is_front:
-			free_ok = absf(lp.x) >= 1.94 - EPS and absf(lp.x) <= 4.06 + EPS
-			free_desc = "x∈[1.94,4.06]（立柱 x=±1.88/±4.12）"
-		else:
-			free_ok = lp.z >= 4.66 - EPS and lp.z <= 6.89 + EPS
-			free_desc = "z∈[4.66,6.89]（立柱 z=4.60/6.95）"
-		_check(free_ok, pid + " 落点在立柱间自由段 %s（local=%s）" % [free_desc, _fmtv(lp)])
+		var along: float = rel.x if is_front else rel.z
+		var along_half: float = half.x if is_front else half.z
+		var end_gap: float = along_half - absf(along)
+		_check(end_gap >= 0.30, pid + " 落点距扶手端头（立柱）%.3f m >= 0.30（半长 %.3f，沿轴 %.3f）" % [end_gap, along_half, along])
 		# 朝向：任务契约要求 facing 沿栏杆方向（侧栏局部 +Z，前栏局部 +X）；slots=1 故不会产生槽位横向偏移
 		var floc: Vector3 = _cot_root.to_local(pos + facing) - lp
 		var facing_ok := false
@@ -428,18 +556,18 @@ func _probe_rails(cp: Array) -> void:
 			pid + " radius ∈ [0.15,0.20]（语义半径，实际 %.3f；slots=1 已固定单鸟）" % float(p["radius"]))
 		# 脚点 / 鸟体不穿模
 		var foot: Vector3 = pos + n * FOOT_LIFT
-		var foot_clear: Dictionary = _clearance(_cot_aabbs, [foot])
+		var foot_clear: Dictionary = _clearance(_cot_parts, [foot])
 		_check((foot_clear["hits"] as Array).is_empty(),
 			pid + " 脚点不在任何 cottage 实体 AABB 内（命中 %s）" % str(foot_clear["hits"]))
 		_check(float(foot_clear["min_clear"]) >= 0.03,
 			pid + " 脚点距最近 cottage 实体 >= 0.03（实际 %.4f m）" % float(foot_clear["min_clear"]))
-		var bird_clear: Dictionary = _clearance(_cot_aabbs, _bird_points(foot, n, facing))
+		var bird_clear: Dictionary = _clearance(_cot_parts, _bird_points(foot, n, facing))
 		_check((bird_clear["hits"] as Array).is_empty(),
 			pid + " 海鸥体包围采样不穿 cottage 实体（命中 %s）" % str(bird_clear["hits"]))
 		_check(float(bird_clear["min_clear"]) >= 0.02,
 			pid + " 海鸥体最近实体净空 >= 0.02（实际 %.4f m）" % float(bird_clear["min_clear"]))
 		if _fx_ok:
-			var leg_clear: Dictionary = _clearance(_cot_aabbs, _leg_points(foot, n, facing))
+			var leg_clear: Dictionary = _clearance(_cot_parts, _leg_points(foot, n, facing))
 			_check((leg_clear["hits"] as Array).is_empty(),
 				pid + " 海鸥腿/趾真实网格角点不穿 cottage 实体（命中 %s）" % str(leg_clear["hits"]))
 			_check(float(leg_clear["min_clear"]) >= 0.02,
@@ -448,13 +576,6 @@ func _probe_rails(cp: Array) -> void:
 		var nb: Dictionary = _nearest_top_below(_cot_aabbs, foot, pos.y - 0.0005)
 		_check(absf(float(nb["top"]) - support_top.y) <= 0.002,
 			pid + " 最近下方实体顶面就是扶手顶面（最近=%.4f 扶手=%.4f）" % [float(nb["top"]), support_top.y])
-		# 距最近栏杆立柱的水平距离（避让立柱）
-		var min_post := 1.0e9
-		for pm_v in posts:
-			var pm: MeshInstance3D = pm_v
-			var d2 := Vector2(lp.x - pm.position.x, lp.z - pm.position.z)
-			min_post = minf(min_post, d2.length())
-		_check(min_post >= 0.30, pid + " 距最近栏杆立柱 %.3f m >= 0.30" % min_post)
 		_support[pid] = {"kind": "porch_rail", "support_top": support_top.y, "gap": gap, "pos": pos,
 			"facing": facing, "normal": n, "slope": float(p["slope"]), "slots": int(p.get("slots", 0)),
 			"foot": foot}
@@ -474,9 +595,9 @@ func _lamp_parts(node: Node3D) -> Dictionary:
 			if (absf(cm.top_radius - 0.13) < EPS and absf(cm.bottom_radius - 0.17) < EPS
 					and absf(cm.height - 0.06) < EPS and absf(mi.position.y - 2.72) < EPS):
 				out["cap"] = mi
-			elif absf(cm.top_radius - 0.013) < EPS and absf(cm.height - 0.22) < EPS:
+			elif absf(cm.top_radius - 0.013) < EPS and absf(cm.height - 0.20) < EPS:
 				out["rod"] = mi
-			elif absf(cm.height - 2.30) < EPS:
+			elif absf(cm.height - 2.82) < EPS:
 				out["pole"] = mi
 		elif mi.mesh is BoxMesh:
 			var bm: BoxMesh = mi.mesh
@@ -730,6 +851,9 @@ func _probe_fx(wp: Array, cp: Array) -> void:
 		var item: Dictionary = item_v
 		var b: Dictionary = item["bird"]
 		var pid6: String = String(item["id"])
+		if not by_id.has(pid6) or not _support.has(pid6):
+			_check(false, pid6 + " fx 归一化/探针支撑数据缺失，无法做强制停栖断言（by_id=%s support=%s）" % [by_id.has(pid6), _support.has(pid6)])
+			continue
 		var np2: Dictionary = by_id[pid6]
 		var pos2: Vector3 = np2["pos"]
 		var n2: Vector3 = (_support[pid6]["normal"] as Vector3)
@@ -778,6 +902,9 @@ func _probe_fx(wp: Array, cp: Array) -> void:
 		var item2: Dictionary = item2_v
 		var b2: Dictionary = item2["bird"]
 		var pid7: String = String(item2["id"])
+		if not by_id.has(pid7) or not _support.has(pid7):
+			bad_after.append("%s:missing_by_id_or_support" % pid7)
+			continue
 		var np3: Dictionary = by_id[pid7]
 		var support: Dictionary = _support[pid7]
 		var node2: Node3D = b2["node"]

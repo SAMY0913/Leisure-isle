@@ -28,6 +28,51 @@ static func _world(root: Node3D, local: Vector3) -> Vector3:
         return root.to_global(local)
     return root.transform * local
 
+## P7-V3.2 修正：isle_math.make_prism_mesh 的三角形绕序在 Godot 中全是背面
+## （主 pass 被 cull_back 剔除，只剩 outline next_pass 的 cull_front 轮廓壳可见，
+##  门廊雨棚前山墙因此整片显示成描边深藏青）。这里给出绕序修正的同形状版本：
+## 参数/尺寸/位置/材质口径与 M.prism 完全一致，只是三角形顶点顺序反转（法线保持外向）。
+static func _add_tri_front(st: SurfaceTool, p: Vector3, q: Vector3, r: Vector3) -> void:
+    var n: Vector3 = (q - p).cross(r - p).normalized()
+    st.set_normal(n)
+    st.add_vertex(p)
+    st.set_normal(n)
+    st.add_vertex(r)
+    st.set_normal(n)
+    st.add_vertex(q)
+
+## 四个点按 isle_math._add_quad 的同一顺序给（a,b,c,d 共面，外法线 = (b-a)x(c-a)）。
+static func _add_quad_front(st: SurfaceTool, a: Vector3, b: Vector3, c: Vector3, d: Vector3) -> void:
+    _add_tri_front(st, a, b, c)
+    _add_tri_front(st, a, c, d)
+
+## 山墙三角板（绕序修正版 M.prism）：w 沿 X、h 沿 +Y、d 沿 Z，pos 为底面中心。
+static func prism_front(parent: Node3D, w: float, h: float, d: float, pos: Vector3, color: Color, rot_y: float = 0.0, opts: Dictionary = {}) -> MeshInstance3D:
+    var st := SurfaceTool.new()
+    st.begin(Mesh.PRIMITIVE_TRIANGLES)
+    var hw: float = w * 0.5
+    var hd: float = d * 0.5
+    var a := Vector3(-hw, 0.0, -hd)
+    var b := Vector3(hw, 0.0, -hd)
+    var c := Vector3(0.0, h, -hd)
+    var e := Vector3(-hw, 0.0, hd)
+    var f := Vector3(hw, 0.0, hd)
+    var g := Vector3(0.0, h, hd)
+    _add_tri_front(st, a, c, b)      # 后盖（外法线 -Z）
+    _add_tri_front(st, e, f, g)      # 前盖（外法线 +Z）
+    _add_quad_front(st, a, b, f, e)  # 底
+    _add_quad_front(st, a, e, g, c)  # 左坡
+    _add_quad_front(st, b, c, g, f)  # 右坡
+    st.index()
+    var mi := MeshInstance3D.new()
+    mi.mesh = st.commit()
+    mi.material_override = M.toon_material(color, opts)
+    mi.position = pos
+    mi.rotation.y = rot_y
+    mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+    parent.add_child(mi)
+    return mi
+
 static func build(parent: Node3D) -> Dictionary:
     var root := Node3D.new()
     root.name = "Cottage"
@@ -62,7 +107,7 @@ static func build(parent: Node3D) -> Dictionary:
     var chimney_hit := M.hitbox(parent, "ChimneyHit", _world(root, Vector3(C["ch_x"], 5.10, C["ch_z"])), Vector3(1.1, 2.9, 1.1))
     var chimney_top := Node3D.new()
     chimney_top.name = "ChimneyTop"
-    chimney_top.position = Vector3(C["ch_x"], C["ch_top"] + 0.05, C["ch_z"])
+    chimney_top.position = Vector3(C["ch_x"], C["ch_top"] + 0.35, C["ch_z"])
     root.add_child(chimney_top)
 
     # ---- 鸟落点：Array[Dictionary]（fx 需要 id/pos/facing/radius/kind）----
@@ -75,7 +120,7 @@ static func build(parent: Node3D) -> Dictionary:
     # ---- 暖光光源位置（世界坐标；main 写进 shader 的解析点光）----
     var lantern_world: Vector3 = _world(root, C["lantern_pos"])
     var lantern_world_right: Vector3 = _world(root, C["lantern_pos_right"])
-    var lamp_world: Vector3 = _world(root, Vector3(1.85, C["in_top"] - 0.62, 1.50))
+    var lamp_world: Vector3 = _world(root, Vector3(1.45, C["in_top"] - 0.62, 0.80))
     var fire_world: Vector3 = _world(root, Vector3(C["ch_x"], fy + 0.55, -2.30))
     var attic_lamp_world: Vector3 = C["attic_lamp_world"]
     var attic_lamp2_world: Vector3 = _world(root, C["attic_lamp2_pos"])
@@ -840,7 +885,8 @@ static func _roof(root: Node3D, C: Dictionary) -> void:
     var hz: float = roof_z * 0.5
     # 前山墙（带 1.50x1.50 阁楼窗矩形洞口）+ 后山墙
     _front_gable(root, C)
-    M.prism(root, w, rh, wt, Vector3(0.0, roof_base, -(hd - wt * 0.5)), M.C_WALL, 0.0, {"outline": 0.03})
+    # 绕序修正版（M.prism 的盖面在 Godot 中是背面，会被主 pass 剔除）
+    prism_front(root, w, rh, wt, Vector3(0.0, roof_base, -(hd - wt * 0.5)), M.C_WALL, 0.0, {"outline": 0.03})
     # 双坡屋面板
     for side in [-1.0, 1.0]:
         var down := Vector3(side * cp, -sp, 0.0)
@@ -1135,8 +1181,13 @@ static func _porch(root: Node3D, C: Dictionary) -> void:
         M.box(root, Vector3(0.11, 0.84, 0.11), Vector3(sx * 2.82, deck_top + 0.42, 3.25), wood, 0.0, yo)
         M.box(root, Vector3(0.11, 0.84, 0.11), Vector3(sx * 2.82, deck_top + 0.42, 4.60), wood, 0.0, yo)
         M.box(root, Vector3(0.11, 0.84, 0.11), Vector3(sx * 1.45, deck_top + 0.42, 4.60), wood, 0.0, yo)
-        M.box(root, Vector3(0.09, 0.08, 1.36), Vector3(sx * 2.82, deck_top + 0.80, 3.925), wood_d, 0.0, yo)
-        M.box(root, Vector3(1.40, 0.08, 0.09), Vector3(sx * 2.135, deck_top + 0.80, 4.60), wood_d, 0.0, yo)
+        # 门廊扶手保留独立 MeshInstance（no_batch）：T4 栖点探针需按扶手顶面真实 BoxMesh 反查
+        var rail_side: MeshInstance3D = M.box(root, Vector3(0.09, 0.08, 1.36), Vector3(sx * 2.82, deck_top + 0.80, 3.925), wood_d, 0.0, yo)
+        rail_side.name = "PorchRailSide" + ("L" if sx < 0.0 else "R")
+        rail_side.set_meta("no_batch", true)
+        var rail_front: MeshInstance3D = M.box(root, Vector3(1.40, 0.08, 0.09), Vector3(sx * 2.135, deck_top + 0.80, 4.60), wood_d, 0.0, yo)
+        rail_front.name = "PorchRailFront" + ("L" if sx < 0.0 else "R")
+        rail_front.set_meta("no_batch", true)
     var bal_mesh := BoxMesh.new()
     bal_mesh.size = Vector3(0.05, 0.60, 0.05)
     var bal_mat: ShaderMaterial = M.toon_material(wood_d, {"bands": 3.0})
@@ -1172,7 +1223,8 @@ static func _porch(root: Node3D, C: Dictionary) -> void:
     ridge_log.position = Vector3(0.0, ridge2 + 0.03, cz)
     root.add_child(ridge_log)
     # 前山墙封板 / 两侧封板
-    M.prism(root, 6.90, 0.60, 0.12, Vector3(0.0, ridge2 - 0.60, cz + cdepth * 0.5 - 0.03), M.C_WALL, 0.0, {"outline": 0.03})
+    # 绕序修正版（原先整片显示成 outline 深藏青——prism 盖面绕序反了）
+    prism_front(root, 6.90, 0.60, 0.12, Vector3(0.0, ridge2 - 0.60, cz + cdepth * 0.5 - 0.03), M.C_WALL, 0.0, {"outline": 0.03})
     for side in [-1.0, 1.0]:
         M.box(root, Vector3(0.09, 0.18, cdepth + 0.04), Vector3(side * 3.47, ridge2 - 0.66, cz), M.C_WALL, 0.0, yo)
     # 雨棚柱 / 横梁 / 斜撑
@@ -1240,7 +1292,7 @@ static func _porch(root: Node3D, C: Dictionary) -> void:
         root.add_child(body)
         M.box(root, Vector3(0.30, 0.05, 0.30), lpos + Vector3(0.0, 0.19, 0.0), M.C_WOOD_DARK, 0.0, {"outline": 0.02})
         M.box(root, Vector3(0.28, 0.04, 0.28), lpos + Vector3(0.0, -0.18, 0.0), M.C_WOOD_DARK, 0.0, {"outline": 0.02})
-        var halo: MeshInstance3D = M.halo(root, _world(root, lpos), 1.10, Color(2.4, 1.6, 0.8, 1.0))
+        var halo: MeshInstance3D = M.halo(root, lpos, 1.10, Color(2.4, 1.6, 0.8, 1.0))
         C["lantern_halos"].append(halo)
         if not C.has("lantern_halo"):
             C["lantern_halo"] = halo
@@ -1559,13 +1611,13 @@ static func _attic_interior(root: Node3D, C: Dictionary) -> void:
     bulb.material_override = lamp_mat
     bulb.position = lamp_pos
     ia.add_child(bulb)
-    var halo: MeshInstance3D = M.halo(ia, _world(root, lamp_pos), 0.95, Color(2.2, 1.5, 0.85, 1.0))
+    var halo: MeshInstance3D = M.halo(ia, lamp_pos, 0.95, Color(2.2, 1.5, 0.85, 1.0))
     ia.set_meta("attic_lamp_halo", halo)
     C["attic_lamp_world"] = _world(root, lamp_pos)
     # ---- 阁楼家具 15 件（T3 最终 DIMS；原点=占地中心，落地件 y=地面）----
     var fl: float = attic_floor + 0.02
-    # 床内移：床尾靠墙端 |x| 最大 3.05，屋面下皮(T3 口径 6.10-|x|*tan33°)=3.86 > 床顶 4.04
-    P.build(ia, "bed", Vector3(-2.10, fl, -0.90), -PI * 0.5)
+    # 床内移：床尾靠墙端 |x| 最大 2.95，屋面下皮(T3 口径 6.20-0.6494|x|-0.167)=4.117 > 床顶 4.04
+    P.build(ia, "bed", Vector3(-2.00, fl, -0.90), -PI * 0.5)
     # 床头柜贴床头（床侧 z=-1.40，间隙 0.02）+ 台灯台面 0.50
     # 床头柜贴床头（床头板平面 x=-1.15，AABB 到床距 0.02 ≤0.20）
     P.build(ia, "nightstand", Vector3(-1.15, fl, -1.61), 0.0)
@@ -1580,7 +1632,7 @@ static func _attic_interior(root: Node3D, C: Dictionary) -> void:
     P.build(ia, "side_table", Vector3(1.60, fl, 0.45), 0.0)
     P.build(ia, "rug", Vector3(0.0, fl + 0.004, 0.90), 0.0)
     P.build(ia, "plant_pot", Vector3(2.55, fl, 2.20), 0.0)
-    P.build(ia, "picture_frame", Vector3(-1.75, attic_floor + 1.40, -2.79), 0.0)
+    P.build(ia, "picture_frame", Vector3(1.12, attic_floor + 1.48, -2.79), 0.0)
     # 帘杆高 = attic_floor+1.75（T3 区间 1.70-2.40；窗顶 4.77 上方 0.15）
     P.build(ia, "curtain", Vector3(-1.03, attic_floor + 1.75, 2.80), PI)
     P.build(ia, "curtain", Vector3(1.03, attic_floor + 1.75, 2.80), PI)
@@ -1673,7 +1725,7 @@ static func _interior(root: Node3D, C: Dictionary) -> void:
         fmi.material_override = fire_mat
         fmi.position = Vector3(ch_x - 0.22 + float(k) * 0.22, fy + 0.16, -2.52)
         root.add_child(fmi)
-    M.halo(root, _world(root, Vector3(ch_x, fy + 0.32, -2.42)), 0.85, Color(2.4, 1.2, 0.45, 1.0))
+    M.halo(root, Vector3(ch_x, fy + 0.32, -2.42), 0.85, Color(2.4, 1.2, 0.45, 1.0))
     # ---- 吊灯（餐桌上方）----
     var lamp_mat: ShaderMaterial = M.toon_material(Color("ffd79b"), {"self_lit": true, "glow": 1.05})
     var rod := MeshInstance3D.new()
@@ -1684,7 +1736,7 @@ static func _interior(root: Node3D, C: Dictionary) -> void:
     rm.radial_segments = 6
     rod.mesh = rm
     rod.material_override = M.toon_material(wood_d, {"bands": 3.0})
-    rod.position = Vector3(1.85, in_top - 0.225, 1.50)
+    rod.position = Vector3(1.45, in_top - 0.225, 0.80)
     root.add_child(rod)
     var shade := MeshInstance3D.new()
     var sm := CylinderMesh.new()
@@ -1694,7 +1746,7 @@ static func _interior(root: Node3D, C: Dictionary) -> void:
     sm.radial_segments = 10
     shade.mesh = sm
     shade.material_override = lamp_mat
-    shade.position = Vector3(1.85, in_top - 0.55, 1.50)
+    shade.position = Vector3(1.45, in_top - 0.55, 0.80)
     root.add_child(shade)
     var bulb := MeshInstance3D.new()
     var bm := SphereMesh.new()
@@ -1704,20 +1756,20 @@ static func _interior(root: Node3D, C: Dictionary) -> void:
     bm.rings = 6
     bulb.mesh = bm
     bulb.material_override = lamp_mat
-    bulb.position = Vector3(1.85, in_top - 0.62, 1.50)
+    bulb.position = Vector3(1.45, in_top - 0.62, 0.80)
     root.add_child(bulb)
-    M.halo(root, _world(root, Vector3(1.85, in_top - 0.62, 1.50)), 1.10, Color(2.2, 1.5, 0.85, 1.0))
+    M.halo(root, Vector3(1.45, in_top - 0.62, 0.80), 1.10, Color(2.2, 1.5, 0.85, 1.0))
     # ---- 一层家具 23 件（T3 最终 DIMS；fl=板条面）----
     var fl: float = fy + 0.02
     P.build(root, "doormat", Vector3(0.0, fl, 2.30), 0.0)
     P.build(root, "shoe_bench", Vector3(1.15, fl, 2.60), PI)
     P.build(root, "coat_rack", Vector3(-1.15, fy + 0.92, 2.79), PI)
     P.build(root, "wall_clock", Vector3(3.49, fy + 1.60, 0.60), -PI * 0.5)
-    P.build(root, "plant_pot", Vector3(2.90, fl, 2.35), 0.6)
-    P.build(root, "rug", Vector3(-2.10, fl + 0.004, 1.05), 0.0)
-    P.build(root, "sofa", Vector3(-2.10, fl, 1.75), PI)
-    P.build(root, "coffee_table", Vector3(-2.10, fl, 0.60), 0.0)
-    P.build(root, "armchair", Vector3(-0.75, fl, 0.25), 2.36)
+    P.build(root, "plant_pot", Vector3(3.15, fl, 2.52), 0.6)
+    P.build(root, "rug", Vector3(-2.10, fl + 0.004, 1.62), 0.0)
+    P.build(root, "sofa", Vector3(-2.10, fl, 2.22), PI)
+    P.build(root, "coffee_table", Vector3(-2.10, fl, 1.12), 0.0)
+    P.build(root, "armchair", Vector3(-0.92, fl, 1.12), -PI * 0.5)
     P.build(root, "floor_lamp", Vector3(-3.12, fl, 2.35), 0.3)
     P.build(root, "firewood_basket", Vector3(-2.95, fl, -1.70), 0.4)
     P.build(root, "desk", Vector3(-3.19, fl, 0.30), PI * 0.5)
@@ -1726,11 +1778,11 @@ static func _interior(root: Node3D, C: Dictionary) -> void:
     P.build(root, "tall_cupboard", Vector3(-1.00, fl, -2.60), 0.0)
     P.build(root, "sideboard", Vector3(0.20, fl, -2.60), 0.0)
     P.build(root, "table_lamp", Vector3(0.20, fl + 0.80, -2.60), 0.0)
-    P.build(root, "dining_table", Vector3(1.85, fl, 1.50), 0.0)
-    P.build(root, "chair", Vector3(1.85, fl, 2.12), PI)
-    P.build(root, "chair", Vector3(1.85, fl, 0.88), 0.0)
-    P.build(root, "chair", Vector3(2.52, fl, 1.50), -PI * 0.5)
-    P.build(root, "chair", Vector3(1.18, fl, 1.50), PI * 0.5)
+    P.build(root, "dining_table", Vector3(1.45, fl, 0.80), PI * 0.5)
+    P.build(root, "chair", Vector3(1.45, fl, 1.57), PI)
+    P.build(root, "chair", Vector3(1.45, fl, 0.03), 0.0)
+    P.build(root, "chair", Vector3(1.97, fl, 0.80), -PI * 0.5)
+    P.build(root, "chair", Vector3(0.93, fl, 0.80), PI * 0.5)
     P.build(root, "picture_frame", Vector3(-3.49, fy + 1.45, 0.90), PI * 0.5)
     _merge_props_of(root)
 
@@ -1772,12 +1824,13 @@ static func _make_perches(root: Node3D, C: Dictionary) -> Array[Dictionary]:
     # 门廊横梁 2（梁顶 2.60）
     for sx2 in [-1.0, 1.0]:
         out.append(_mk_perch(root, "porch_beam_%s" % ("L" if sx2 < 0.0 else "R"), Vector3(sx2 * 2.10, 2.63 + gap, 4.55), Vector3(0.0, 0.0, 1.0), Vector3(0.0, 1.0, 0.0), 0.0, 0.18, "porch_beam"))
-    # 门廊侧扶手 2（扶手顶 1.26）
+    # 门廊扶手 4（扶手顶 = deck_top + 0.84；栖点 = 顶面 + gap，与 _porch 的扶手几何同源）
+    var rail_top: float = deck_top + 0.84
     for sx3 in [-1.0, 1.0]:
-        out.append(_mk_perch(root, "porch_rail_%s" % ("L" if sx3 < 0.0 else "R"), Vector3(sx3 * 2.82, 1.26 + gap, 3.925), Vector3(0.0, 0.0, 1.0), Vector3(0.0, 1.0, 0.0), 0.0, 0.18, "porch_rail", 1))
+        out.append(_mk_perch(root, "porch_rail_%s" % ("L" if sx3 < 0.0 else "R"), Vector3(sx3 * 2.82, rail_top + gap, 3.925), Vector3(0.0, 0.0, 1.0), Vector3(0.0, 1.0, 0.0), 0.0, 0.18, "porch_rail", 1))
     # 门廊前扶手 2
     for sx4 in [-1.0, 1.0]:
-        out.append(_mk_perch(root, "porch_rail_F%s" % ("L" if sx4 < 0.0 else "R"), Vector3(sx4 * 2.135, 1.26 + gap, 4.60), Vector3(1.0, 0.0, 0.0), Vector3(0.0, 1.0, 0.0), 0.0, 0.18, "porch_rail", 1))
+        out.append(_mk_perch(root, "porch_rail_F%s" % ("L" if sx4 < 0.0 else "R"), Vector3(sx4 * 2.135, rail_top + gap, 4.60), Vector3(1.0, 0.0, 0.0), Vector3(0.0, 1.0, 0.0), 0.0, 0.18, "porch_rail", 1))
     return out
 
 static func _mk_perch(root: Node3D, id: String, local_pos: Vector3, facing_local: Vector3, normal_local: Vector3, slope: float, radius: float, kind: String, slots: int = 0) -> Dictionary:

@@ -725,6 +725,9 @@ func _companion_of(seat: Dictionary) -> Dictionary:
 	var best_fwd := 1e9
 	for kind in ["dining_table", "desk", "coffee_table", "side_table"]:
 		for o in _kind_entries(kind):
+			# 配套家具必须同层：跨层（阁楼椅 vs 一层桌）不是"配套"，且世界 y 混算会产生伪腿部空间
+			if o["room"] != seat["room"]:
+				continue
 			var dir: Vector3 = o["aabb"].get_center() - seat["aabb"].get_center()
 			dir.y = 0.0
 			var fdist: float = dir.dot(fwd)

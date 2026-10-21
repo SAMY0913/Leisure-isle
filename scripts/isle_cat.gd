@@ -543,30 +543,32 @@ static func build(parent: Node3D, pos: Vector3, yaw: float = -0.6, opts: Diction
 # ---------------------------------------------------------------------------
 static func _build_body(body: Node3D) -> void:
 	var s := CAT_MODEL_SCALE
-	var torso := M.sphere(body, BODY_R * s, BODY_CENTER * s, C_FUR, Vector3(1.0, 0.80, 1.45), {"outline": 0.02, "rim": 0.10, "bands": 4.0})
+	var torso := _ellipsoid(body, BODY_R * s, BODY_CENTER * s, C_FUR, Vector3(1.0, 0.80, 1.45), {"outline": 0.02, "rim": 0.10, "bands": 4.0})
+	torso.name = "TorsoEllipsoid"
 	torso.rotation.x = BODY_TILT
 	# 后臀补形（坐姿重心，底部与躯干后缘共同贴地）
-	M.sphere(body, 0.155 * s, Vector3(0.0, 0.185, -0.295) * s, C_FUR, Vector3(1.18, 0.82, 1.02), {"outline": 0.02, "rim": 0.10})
+	_ellipsoid(body, 0.155 * s, Vector3(0.0, 0.185, -0.295) * s, C_FUR, Vector3(1.18, 0.82, 1.02), {"outline": 0.02, "rim": 0.10})
 	# 奶油色胸脯/围兜（头下方）
-	M.sphere(body, 0.105 * s, Vector3(0.0, 0.305, 0.160) * s, C_CREAM, Vector3(1.02, 1.05, 0.72), {"outline": 0.0, "rim": 0.05})
-	M.sphere(body, 0.075 * s, Vector3(0.0, 0.160, 0.175) * s, C_CREAM, Vector3(0.92, 0.85, 0.55), {"outline": 0.0, "rim": 0.04})
+	_ellipsoid(body, 0.105 * s, Vector3(0.0, 0.305, 0.160) * s, C_CREAM, Vector3(1.02, 1.05, 0.72), {"outline": 0.0, "rim": 0.05})
+	_ellipsoid(body, 0.075 * s, Vector3(0.0, 0.160, 0.175) * s, C_CREAM, Vector3(0.92, 0.85, 0.55), {"outline": 0.0, "rim": 0.04})
 
 # ---------------------------------------------------------------------------
 # 头：头球 + 口鼻/鼻/嘴/颊/须 + 眼（扁球+竖瞳+高光）+ 眼睑 + 三角耳
 # ---------------------------------------------------------------------------
 static func _build_head(core: Node3D) -> Dictionary:
 	var s := CAT_MODEL_SCALE
-	M.sphere(core, HEAD_R * s, Vector3.ZERO, C_FUR_HEAD, Vector3(1.03, 0.97, 1.0), {"outline": 0.02, "rim": 0.10, "bands": 4.0})
+	var head_sphere := _ellipsoid(core, HEAD_R * s, Vector3.ZERO, C_FUR_HEAD, Vector3(1.03, 0.97, 1.0), {"outline": 0.02, "rim": 0.10, "bands": 4.0})
+	head_sphere.name = "HeadEllipsoid"
 	# 口鼻（奶油色宽吻）+ 两侧颊
-	M.sphere(core, 0.062 * s, Vector3(0.0, -0.055, 0.128) * s, C_CREAM, Vector3(1.35, 0.80, 0.95), {"outline": 0.0, "rim": 0.05})
+	_ellipsoid(core, 0.062 * s, Vector3(0.0, -0.055, 0.128) * s, C_CREAM, Vector3(1.35, 0.80, 0.95), {"outline": 0.0, "rim": 0.05})
 	for sx in [-1.0, 1.0]:
-		M.sphere(core, 0.045 * s, Vector3(sx * 0.055, -0.050, 0.128) * s, C_CREAM, Vector3(1.0, 0.88, 0.85), {"outline": 0.0, "rim": 0.04})
+		_ellipsoid(core, 0.045 * s, Vector3(sx * 0.055, -0.050, 0.128) * s, C_CREAM, Vector3(1.0, 0.88, 0.85), {"outline": 0.0, "rim": 0.04})
 	# 鼻 + 嘴（两条短线组成 V 形）
-	M.sphere(core, 0.018 * s, Vector3(0.0, -0.026, 0.196) * s, C_NOSE, Vector3(1.25, 0.85, 0.72), {"outline": 0.0, "rim": 0.0})
+	_ellipsoid(core, 0.018 * s, Vector3(0.0, -0.026, 0.196) * s, C_NOSE, Vector3(1.25, 0.85, 0.72), {"outline": 0.0, "rim": 0.0})
 	for sx in [-1.0, 1.0]:
 		M.box_rot(core, Vector3(0.030, 0.007, 0.007) * s, Vector3(sx * 0.016, -0.063, 0.192) * s, Color("3a3330"), Vector3(0.0, 0.0, sx * 0.42), {"outline": 0.0, "rim": 0.0})
 	# 下巴
-	M.sphere(core, 0.030 * s, Vector3(0.0, -0.092, 0.145) * s, C_CREAM, Vector3(1.10, 0.70, 0.80), {"outline": 0.0, "rim": 0.02})
+	_ellipsoid(core, 0.030 * s, Vector3(0.0, -0.092, 0.145) * s, C_CREAM, Vector3(1.10, 0.70, 0.80), {"outline": 0.0, "rim": 0.02})
 
 	# ---- 眼睛（扁球 + 竖瞳 + 高光点），眼睑枢轴在眼睛上方 ----
 	# 注：toon.gdshader 中 self_lit=1 时 col = base * glow，glow 缺省 0 → 纯黑，
@@ -581,9 +583,9 @@ static func _build_head(core: Node3D) -> Dictionary:
 		eye.name = "EyeL" if sx < 0.0 else "EyeR"
 		eye.position = Vector3(sx * 0.060, 0.045, 0.120) * s
 		eyes.add_child(eye)
-		M.sphere(eye, 0.048 * s, Vector3.ZERO, C_EYE, Vector3(0.82, 1.12, 0.50), {"outline": 0.0, "rim": 0.18, "glow": 1.05, "self_lit": true})
-		M.sphere(eye, 0.023 * s, Vector3(0.0, 0.002, 0.028) * s, C_PUPIL, Vector3(0.58, 1.15, 0.34), {"outline": 0.0, "rim": 0.0, "self_lit": true})
-		M.sphere(eye, 0.010 * s, Vector3(-0.014, 0.021, 0.041) * s, C_HILITE, Vector3(1.0, 1.0, 0.60), {"outline": 0.0, "rim": 0.0, "self_lit": true, "glow": 2.2})
+		_ellipsoid(eye, 0.048 * s, Vector3.ZERO, C_EYE, Vector3(0.82, 1.12, 0.50), {"outline": 0.0, "rim": 0.18, "glow": 1.05, "self_lit": true})
+		_ellipsoid(eye, 0.023 * s, Vector3(0.0, 0.002, 0.028) * s, C_PUPIL, Vector3(0.58, 1.15, 0.34), {"outline": 0.0, "rim": 0.0, "self_lit": true})
+		_ellipsoid(eye, 0.010 * s, Vector3(-0.014, 0.021, 0.041) * s, C_HILITE, Vector3(1.0, 1.0, 0.60), {"outline": 0.0, "rim": 0.0, "self_lit": true, "glow": 2.2})
 		eye_nodes.append(eye)
 		# 眼睑：毛色扁球，枢轴在眼睛上缘；张开时收进头内（rotation.x≈1.38），闭合时盖住眼睛
 		var lid := Node3D.new()
@@ -591,7 +593,7 @@ static func _build_head(core: Node3D) -> Dictionary:
 		lid.position = Vector3(sx * 0.060, 0.090, 0.110) * s
 		lid.rotation.x = 1.38
 		eyes.add_child(lid)
-		M.sphere(lid, 0.054 * s, Vector3(0.0, -0.048, 0.030) * s, C_FUR_HEAD, Vector3(0.92, 1.06, 0.72), {"outline": 0.010, "rim": 0.08})
+		_ellipsoid(lid, 0.054 * s, Vector3(0.0, -0.048, 0.030) * s, C_FUR_HEAD, Vector3(0.92, 1.06, 0.72), {"outline": 0.010, "rim": 0.08})
 		lid_nodes.append(lid)
 
 	# ---- 耳朵：3 棱锥（三角锥）外耳 + 浅色内耳 ----
@@ -605,9 +607,9 @@ static func _build_head(core: Node3D) -> Dictionary:
 		ear.rotation = Vector3(-0.10, sx * 0.16, -sx * 0.30)
 		core.add_child(ear)
 		_ear_mesh(ear, 0.085 * s, 0.140 * s, C_FUR_HEAD, {"outline": 0.015, "rim": 0.10})
-		var inner := _ear_mesh(ear, 0.060 * s, 0.110 * s, C_EAR_IN, {"outline": 0.0, "rim": 0.02, "self_lit": true, "glow": 0.85})
+		# 内耳比例直接烘进网格（0.95/0.95/0.70），不再用节点 scale（P7-V3.2 禁节点缩放）
+		var inner := _ear_mesh(ear, 0.060 * s, 0.110 * s, C_EAR_IN, {"outline": 0.0, "rim": 0.02, "self_lit": true, "glow": 0.85}, Vector3(0.95, 0.95, 0.70))
 		inner.position = Vector3(0.0, 0.028, 0.014) * s
-		inner.scale = Vector3(0.95, 0.95, 0.70)
 		ears.append(ear)
 
 	# ---- 胡须：每侧 3 根细圆柱 ----
@@ -640,21 +642,21 @@ static func _build_tail(tail: Node3D) -> Array:
 	j0.rotation = Vector3(-0.74, 0.12, 0.05)
 	tail.add_child(j0)
 	M.cyl(j0, 0.040 * s, 0.047 * s, 0.16 * s, Vector3(0.0, 0.080, 0.0) * s, C_FUR, 0.0, {"outline": 0.02, "rim": 0.10})
-	M.sphere(j0, 0.043 * s, Vector3(0.0, 0.160, 0.0) * s, C_FUR, Vector3.ONE, {"outline": 0.015, "rim": 0.10})
+	_ellipsoid(j0, 0.043 * s, Vector3(0.0, 0.160, 0.0) * s, C_FUR, Vector3.ONE, {"outline": 0.015, "rim": 0.10})
 	var j1 := Node3D.new()
 	j1.name = "TailJ1"
 	j1.position = Vector3(0.0, 0.160, 0.0) * s
 	j1.rotation = Vector3(-0.44, -0.16, -0.05)
 	j0.add_child(j1)
 	M.cyl(j1, 0.034 * s, 0.040 * s, 0.15 * s, Vector3(0.0, 0.075, 0.0) * s, C_FUR, 0.0, {"outline": 0.02, "rim": 0.10})
-	M.sphere(j1, 0.036 * s, Vector3(0.0, 0.150, 0.0) * s, C_FUR, Vector3.ONE, {"outline": 0.015, "rim": 0.10})
+	_ellipsoid(j1, 0.036 * s, Vector3(0.0, 0.150, 0.0) * s, C_FUR, Vector3.ONE, {"outline": 0.015, "rim": 0.10})
 	var j2 := Node3D.new()
 	j2.name = "TailJ2"
 	j2.position = Vector3(0.0, 0.150, 0.0) * s
 	j2.rotation = Vector3(0.55, -0.18, 0.10)
 	j1.add_child(j2)
 	M.cyl(j2, 0.024 * s, 0.033 * s, 0.13 * s, Vector3(0.0, 0.065, 0.0) * s, C_FUR_HEAD, 0.0, {"outline": 0.015, "rim": 0.10})
-	M.sphere(j2, 0.030 * s, Vector3(0.0, 0.132, 0.0) * s, C_FUR_HEAD, Vector3.ONE, {"outline": 0.015, "rim": 0.10})
+	_ellipsoid(j2, 0.030 * s, Vector3(0.0, 0.132, 0.0) * s, C_FUR_HEAD, Vector3.ONE, {"outline": 0.015, "rim": 0.10})
 	return [j0, j1, j2]
 
 # ---------------------------------------------------------------------------
@@ -670,40 +672,71 @@ static func _build_legs(legs: Node3D) -> Dictionary:
 		fl.name = "FrontLegL" if sx < 0.0 else "FrontLegR"
 		fl.position = Vector3(sx * 0.105, 0.345, 0.205) * s
 		legs.add_child(fl)
-		M.sphere(fl, 0.082 * s, Vector3(0.0, -0.010, 0.0) * s, C_FUR, Vector3.ONE, {"outline": 0.02, "rim": 0.10})
+		_ellipsoid(fl, 0.082 * s, Vector3(0.0, -0.010, 0.0) * s, C_FUR, Vector3.ONE, {"outline": 0.02, "rim": 0.10})
 		M.cyl(fl, 0.070 * s, 0.058 * s, 0.31 * s, Vector3(0.0, -0.155, 0.012) * s, C_FUR, 0.0, {"outline": 0.02, "rim": 0.10})
-		var paw := M.sphere(fl, 0.060 * s, Vector3(0.0, -0.312, 0.055) * s, C_FUR_HEAD, Vector3(1.05, 0.55, 1.35), {"outline": 0.015, "rim": 0.10})
+		var paw := _ellipsoid(fl, 0.060 * s, Vector3(0.0, -0.312, 0.055) * s, C_FUR_HEAD, Vector3(1.05, 0.55, 1.35), {"outline": 0.015, "rim": 0.10})
 		front_legs.append(fl)
 		paws.append(paw)
 		# 后腿收拢（贴在身体后侧，爪尖朝前）
-		M.sphere(legs, 0.140 * s, Vector3(sx * 0.118, 0.160, -0.200) * s, C_FUR, Vector3(0.95, 0.95, 1.15), {"outline": 0.02, "rim": 0.10})
-		M.sphere(legs, 0.078 * s, Vector3(sx * 0.138, 0.100, -0.020) * s, C_FUR, Vector3(0.95, 0.90, 1.0), {"outline": 0.02, "rim": 0.10})
-		var hp := M.sphere(legs, 0.055 * s, Vector3(sx * 0.112, 0.028, 0.060) * s, C_FUR_HEAD, Vector3(1.0, 0.50, 1.45), {"outline": 0.015, "rim": 0.10})
+		_ellipsoid(legs, 0.140 * s, Vector3(sx * 0.118, 0.160, -0.200) * s, C_FUR, Vector3(0.95, 0.95, 1.15), {"outline": 0.02, "rim": 0.10})
+		_ellipsoid(legs, 0.078 * s, Vector3(sx * 0.138, 0.100, -0.020) * s, C_FUR, Vector3(0.95, 0.90, 1.0), {"outline": 0.02, "rim": 0.10})
+		var hp := _ellipsoid(legs, 0.055 * s, Vector3(sx * 0.112, 0.028, 0.060) * s, C_FUR_HEAD, Vector3(1.0, 0.50, 1.45), {"outline": 0.015, "rim": 0.10})
 		paws.append(hp)
 	return {"front_legs": front_legs, "paws": paws}
 
 # ---------------------------------------------------------------------------
 # 静态辅助
 # ---------------------------------------------------------------------------
+## 椭球：把非均匀 scl 烘进 ArrayMesh 顶点/法线，节点 scale 恒为 1。
+## P7-V3.2 尺度规范禁止用节点 scale 冒充重建，猫的所有椭球部件因此改为网格级烘焙。
+static func _ellipsoid(parent: Node3D, radius: float, pos: Vector3, color: Color,
+		scl: Vector3 = Vector3.ONE, opts: Dictionary = {}) -> MeshInstance3D:
+	var mi := MeshInstance3D.new()
+	var sm := SphereMesh.new()
+	sm.radius = radius
+	sm.height = radius * 2.0
+	sm.radial_segments = 14
+	sm.rings = 8
+	var arrays: Array = sm.get_mesh_arrays()
+	var verts: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+	for i in verts.size():
+		verts[i] = Vector3(verts[i].x * scl.x, verts[i].y * scl.y, verts[i].z * scl.z)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	var norms: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
+	for i in norms.size():
+		norms[i] = Vector3(norms[i].x / scl.x, norms[i].y / scl.y, norms[i].z / scl.z).normalized()
+	arrays[Mesh.ARRAY_NORMAL] = norms
+	var am := ArrayMesh.new()
+	am.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	mi.mesh = am
+	mi.material_override = M.toon_material(color, opts)
+	mi.position = pos
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	parent.add_child(mi)
+	return mi
+
 ## 耳朵：3 棱锥（三角锥）。Godot 4.7.2 的 CylinderMesh 会把 radial_segments 钳到最小 4，
 ## 这里用 ArrayMesh 精确构造 3 个侧面 + 1 个底面（等价 radial=3 圆锥），底面在 y=0。
-static func _ear_mesh(parent: Node3D, base_r: float, h: float, color: Color, mat_opts: Dictionary) -> MeshInstance3D:
+## scl 直接烘进顶点（内耳用），节点 scale 保持 1。
+static func _ear_mesh(parent: Node3D, base_r: float, h: float, color: Color, mat_opts: Dictionary,
+		scl: Vector3 = Vector3.ONE) -> MeshInstance3D:
 	var mi := MeshInstance3D.new()
-	mi.mesh = _tri_cone_mesh(base_r, h)
+	mi.mesh = _tri_cone_mesh(base_r, h, scl)
 	mi.material_override = M.toon_material(color, mat_opts)
 	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	parent.add_child(mi)
 	return mi
 
 ## 3 棱锥网格：底面 3 个角点（y=0，一个角点朝 -Z）+ 顶点（0,h,0），3 侧面 + 1 底面。
-static func _tri_cone_mesh(base_r: float, h: float) -> ArrayMesh:
+## scl 把椭圆化比例烘进顶点（节点 scale 恒 1）。
+static func _tri_cone_mesh(base_r: float, h: float, scl: Vector3 = Vector3.ONE) -> ArrayMesh:
 	var st := SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
 	var base: Array = []
 	for i in range(3):
 		var ang: float = TAU * float(i) / 3.0 - PI * 0.5
-		base.append(Vector3(cos(ang) * base_r, 0.0, sin(ang) * base_r))
-	var apex := Vector3(0.0, h, 0.0)
+		base.append(Vector3(cos(ang) * base_r * scl.x, 0.0, sin(ang) * base_r * scl.z))
+	var apex := Vector3(0.0, h * scl.y, 0.0)
 	var center := Vector3(0.0, h * 0.25, 0.0)
 	for i in range(3):
 		var a: Vector3 = base[i]

@@ -18,6 +18,7 @@ extends SceneTree
 const SPEC := preload("res://scripts/isle_scale_spec.gd")
 const FIG := preload("res://scripts/isle_scale_figure.gd")
 const PROPS := preload("res://scripts/isle_house_props.gd")
+const OVERLAY := preload("res://tools/scale_debug_overlay.gd")
 
 const DEFAULT_OUT := "D:/休闲小岛幻境/开发产物/p7v32/scale"
 
@@ -69,6 +70,10 @@ func _initialize() -> void:
     if c is Dictionary:
         _cottage = c
     print("[SCALE] START mode=%s tag=%s engine=%s" % [_mode, _tag, String(Engine.get_version_info().get("string", "?"))])
+    if _mode == "overlay":
+        await _group_overlay()
+        _finish()
+        return
     _group_human()
     _group_house()
     _group_furniture()
@@ -102,7 +107,7 @@ func _parse_args() -> void:
         elif a.begins_with("--out="):
             _out_dir = a.substr(6)
         i += 1
-    if _mode != "inventory":
+    if _mode != "inventory" and _mode != "overlay":
         _mode = "audit"
 
 # ============================================================== 通用小工具 ====
@@ -438,8 +443,9 @@ func _keep(group: String, key: String, actual: float, hint: float, abs_tol: floa
         extra = "；" + note
     _add(group, key, actual, hint, "INFO", "%s（保留·不评分）实测 %.3f / hint %.3f，偏差 %.3f%s" % [key, actual, hint, diff, extra])
 
+## 仅登记项（不参与判分）：用于双口径/参考值/世界量法并列，避免把"记录"算成 PASS。
 func _info(group: String, key: String, actual, target, note := "") -> void:
-    _add(group, key, actual, target, "PASS", "%s %s%s" % [key, str(actual), "" if note == "" else "；" + note])
+    _add(group, key, actual, target, "INFO", "%s %s（仅登记·不评分）%s" % [key, str(actual), "" if note == "" else "；" + note])
 
 func _fmt(v: Vector3) -> String:
     return "%.3f×%.3f×%.3f" % [v.x, v.y, v.z]
@@ -559,19 +565,34 @@ func _group_house() -> void:
     var wall_h := wall_top - fy
     _chk_scalar("house", "wall_h", wall_h, SPEC.HOUSE_WALL_H, "fy→墙顶（檐口结构线）")
     _put_raw("house.wall_top", wall_top)
-    var ridge := _max_y_where(shell_tris, func(v: Vector3) -> bool:
+    var ctx: Dictionary = {}
+    var ctx_v = root.get_meta("cottage_ctx", {})
+    if ctx_v is Dictionary:
+        ctx = ctx_v
+    var ctx_ridge := float(ctx.get("ridge_y", 0.0))
+    var ctx_roof_base := float(ctx.get("roof_base", 0.0))
+    var ridge_geom := _max_y_where(shell_tris, func(v: Vector3) -> bool:
         return absf(v.x) <= 0.6 and absf(v.z) <= d * 0.5 + 1.0)
-    _chk_scalar("house", "ridge_y", ridge, SPEC.HOUSE_RIDGE_Y, "屋脊结构线顶（局部 y，自 cottage 原点）")
-    if wall_top > 0.0:
-        _chk_scalar("house", "roof_h", ridge - wall_top, SPEC.HOUSE_ROOF_H, "墙顶→屋脊高差")
-    var pitch_normals := _roof_pitch(shell_tris, wall_top, ridge)
+    _put_raw("house.ridge_geom", ridge_geom)
+    # 结构线优先：cottage root meta 的 ridge_y/roof_base 是施工结构线；实测几何 AABB 含脊瓦厚度（约 +0.24 m）。
+    var ridge := ridge_geom
+    if ctx_ridge > 0.0:
+        ridge = ctx_ridge
+    _chk_scalar("house", "ridge_y", ridge, SPEC.HOUSE_RIDGE_Y, "屋脊结构线（root meta cottage_ctx.ridge_y；几何 AABB %.3f 含脊瓦厚度 → RAW house.ridge_geom）" % ridge_geom)
+    var wall_struct := wall_top
+    if ctx_roof_base > 0.0:
+        wall_struct = ctx_roof_base
+    _put_raw("house.wall_struct", wall_struct)
+    if wall_struct > 0.0:
+        _chk_scalar("house", "roof_h", ridge - wall_struct, SPEC.HOUSE_ROOF_H, "檐口结构线→屋脊结构线（roof_base→ridge_y）")
+    var pitch_normals := _roof_pitch(shell_tris, wall_struct, ridge)
     _put_raw("house.pitch_normals", pitch_normals)
-    if ridge > wall_top and w > 0.5:
-        var pitch_geom := rad_to_deg(atan2(ridge - wall_top, w * 0.5))
+    if ridge > wall_struct and w > 0.5:
+        var pitch_geom := rad_to_deg(atan2(ridge - wall_struct, w * 0.5))
         _chk_abs("house", "pitch_deg", pitch_geom, SPEC.HOUSE_PITCH_DEG, 2.5, "deg", "几何法：atan2(实测屋脊-实测墙顶, 实测外墙半宽)；法线法结果见 RAW house.pitch_normals")
     else:
         _add("house", "pitch_deg", 0.0, SPEC.HOUSE_PITCH_DEG, "FAIL", "屋脊/墙顶测量无效，无法反推坡度")
-    var eave_overhang := _eave_overhang(shell_tris, w, wall_top, ridge)
+    var eave_overhang := _eave_overhang(shell_tris, w, wall_top, ridge_geom)
     if eave_overhang > 0.0:
         _chk_abs("house", "eave_overhang_h", eave_overhang, SPEC.HOUSE_EAVE_OV * cos(deg_to_rad(SPEC.HOUSE_PITCH_DEG)), 0.10, "m", "檐口水平挑出（沿坡 0.60 → 水平 0.50）")
     var floor_top := _interior_floor_top(root, fy)
@@ -586,7 +607,7 @@ func _group_house() -> void:
         _chk_scalar("house", "attic_floor_y", attic_floor, SPEC.HOUSE_ATTIC_FLOOR_Y, "阁楼楼板顶标高（局部 y）")
         # 膝墙高定义：外墙顶（檐口/屋面起始平面，实测 wall_top）− 阁楼楼板顶。
         # 旧实现按 x=w/2-wall_t 内推屋檐下皮，会因屋面出挑/檐口装饰把膝墙高抬高约 0.24 m。
-        var knee := wall_top - attic_floor
+        var knee := wall_struct - attic_floor
         if knee > 0.0:
             _chk_abs("house", "attic_knee_h", knee, SPEC.HOUSE_ATTIC_KNEE_H, 0.12, "m", "阁楼膝墙高 = 实测墙顶 − 实测阁楼楼板顶（檐口平面定义）")
         _put_raw("house.attic_knee", knee)
@@ -694,11 +715,35 @@ func _group_house() -> void:
             _add("house", "porch_step_count", pc, 3.0, "WARN" if absf(pc - 3.0) > 1.0 else "PASS", "门廊台阶实测级数 %.0f（Plan 目标 3 级×0.14）" % pc)
     else:
         _add("house", "porch", 0.0, 0.0, "FAIL", "门廊测量失败：" + String(porch.get("why", "")))
+    # 烟囱顶：读真实几何（root batch_manifest 中烟囱平面附近的部件 AABB 顶），不读 ChimneyTop 标记节点
+    # （标记节点 y=ch_top+0.05=6.25，真实石块顶 6.55，读标记会少 0.30 m，见 Lead m00438）。
+    var chx := float(ctx.get("ch_x", -2.20))
+    var chz := float(ctx.get("ch_z", -2.60))
+    var ch_top_geom := -1.0e20
+    var ch_parts: Array = []
+    for p_v in _group_parts(root):
+        var part: Dictionary = p_v
+        var a: AABB = part["aabb"]
+        var c := a.get_center()
+        if absf(c.x - chx) > 1.0 or absf(c.z - chz) > 1.0:
+            continue
+        if a.end.y <= fy + 2.0:
+            continue
+        ch_parts.append([String(part["name"]), a.end.y])
+        if a.end.y > ch_top_geom:
+            ch_top_geom = a.end.y
+    var ch_marker := 0.0
     var ch = _find_name(root, "ChimneyTop")
-    if ch is Node3D and ridge > 0.0:
-        var ch_local: Vector3 = root.global_transform.affine_inverse() * (ch as Node3D).global_position
-        _chk_abs("house", "chimney_above_ridge", ch_local.y - ridge, SPEC.HOUSE_CHIMNEY_ABOVE_RIDGE, 0.20, "m", "烟囱顶高出屋脊")
-        _put_raw("house.chimney_top", ch_local.y)
+    if ch is Node3D:
+        ch_marker = (root.global_transform.affine_inverse() * (ch as Node3D).global_position).y
+    _put_raw("house.chimney_marker_y", ch_marker)
+    _put_raw("house.chimney_parts", ch_parts)
+    if ch_top_geom > -1.0e19 and ridge > 0.0:
+        _chk_abs("house", "chimney_above_ridge", ch_top_geom - ridge, SPEC.HOUSE_CHIMNEY_ABOVE_RIDGE, 0.20, "m", "烟囱真实几何 AABB 顶（batch_manifest 烟囱平面附近部件）− 屋脊结构线；ChimneyTop 标记仅参考（RAW house.chimney_marker_y = %.2f）" % ch_marker)
+        _put_raw("house.chimney_top", ch_top_geom)
+    elif ch is Node3D and ridge > 0.0:
+        _chk_abs("house", "chimney_above_ridge", ch_marker - ridge, SPEC.HOUSE_CHIMNEY_ABOVE_RIDGE, 0.20, "m", "烟囱几何部件未找到，回退 ChimneyTop 标记节点")
+        _put_raw("house.chimney_top", ch_marker)
 
 func _landmark_pos(lms: Dictionary, key: String) -> Dictionary:
     if lms.has(key):
@@ -1344,12 +1389,14 @@ func _group_boat(island: Node3D) -> void:
     var hull: Node3D = boat.get_node_or_null("Hull") as Node3D
     var hull_aabb := _subtree_aabb(boat, hull) if hull != null else _subtree_aabb(boat, boat)
     var gunwale_top := -1e20
+    var gunwale_samples: Array = []   # [z, 顶面局部 y]
     for mi_v in _mesh_insts_under(boat, [], [], false):
         var mi: MeshInstance3D = mi_v
         if not String(mi.name).begins_with("Gunwale"):
             continue
         var a := _local_aabb_of(mi, boat)
         gunwale_top = maxf(gunwale_top, a.end.y)
+        gunwale_samples.append([a.get_center().z, a.end.y])
     var deck: Node3D = boat.get_node_or_null("Deck") as Node3D
     var deck_aabb := _subtree_aabb(boat, deck) if deck != null else AABB()
     var cabin: Node3D = boat.get_node_or_null("Cabin") as Node3D
@@ -1362,9 +1409,24 @@ func _group_boat(island: Node3D) -> void:
     var length := hull_aabb.size.z
     _chk_range("world", "boat_hull_len", length, "船体局部 z 向 AABB（船长）")
     _chk_range("world", "boat_hull_beam", beam, "船体局部 x 向 AABB（船宽）")
+    # 两种口径：midship（船舯附近舷缘）与 max sheer（最高舷弧点）。Lead/T4 口径以 midship 为准（0.660）。
+    var mid_z := hull_aabb.get_center().z
+    var midship_top := gunwale_top
+    var best_dz := 1.0e20
+    for s_v in gunwale_samples:
+        var dz: float = absf(float((s_v as Array)[0]) - mid_z)
+        if dz < best_dz:
+            best_dz = dz
+            midship_top = float((s_v as Array)[1])
+    _put_raw("world.boat.gunwale_samples", gunwale_samples)
+    _put_raw("world.boat.freeboard_max_sheer_local", gunwale_top)
+    _put_raw("world.boat.freeboard_midship_local", midship_top)
     var freeboard_world := (boat.global_transform * Vector3(0.0, gunwale_top, 0.0)).y
-    _chk_range("world", "boat_freeboard", gunwale_top, "局部设计水线量法：船局部舷缘顶 y（船局部 y=0 为设计水线）")
-    _info("world", "boat_freeboard_world", freeboard_world, 0.0, "世界量法：舷缘顶世界 Y − 海面世界 Y(0)；两种量法并列登记")
+    var freeboard_mid_world := (boat.global_transform * Vector3(0.0, midship_top, 0.0)).y
+    _chk_range("world", "boat_freeboard", midship_top, "midship 局部舷缘顶 y（局部设计水线量法，T4 口径 0.660；max sheer %.3f 另记 RAW）" % gunwale_top)
+    _info("world", "boat_freeboard_max_sheer", gunwale_top, 0.0, "max sheer 局部舷缘顶（最高舷弧点，仅登记；两口径并列）")
+    _info("world", "boat_freeboard_world", freeboard_world, 0.0, "世界量法 max sheer：舷缘顶世界 Y − 海面 0")
+    _info("world", "boat_freeboard_midship_world", freeboard_mid_world, 0.0, "世界量法 midship：舷缘顶世界 Y − 海面 0")
     _info("world", "boat_deck_top", deck_aabb.end.y, 0.52, "甲板顶局部 y（船局部 y=0 为水面）")
     _keep("world", "boat_behavior", 0.0, 0.0, 999.0, "航线/回港/夜景状态机保留（未改），仅船体几何审计")
 
@@ -1697,6 +1759,129 @@ func _js(v):
         return dd
     return str(v)
 
+# ============================================================ overlay 自检 ====
+## 开发模式标尺运行时自检（--mode overlay）：真实实例化 tools/scale_debug_overlay.gd，
+## 检查构建成功/人形 1.50 m（合批后从 batch_manifest 反推）/可隐藏/重建无重复/清理无残留/无常驻 _process。
+func _group_overlay() -> void:
+    var enabled_no_flag: bool = OVERLAY.enabled()
+    _add("overlay", "enabled_no_flag", enabled_no_flag, false,
+        "PASS" if not enabled_no_flag else "FAIL",
+        "未传 --scale-debug 时 enabled()=%s（期望 false：默认不创建、零常驻开销）" % str(enabled_no_flag))
+    var ov: Node3D = OVERLAY.new()
+    ov.name = "ScaleDebugOverlay"
+    _main.add_child(ov)
+    await process_frame
+    await process_frame
+    var built: bool = ov.call("is_built")
+    _add("overlay", "built", built, true, "PASS" if built else "FAIL",
+        "overlay 加入场景树后 is_built()=%s（_ready 构建一次）" % str(built))
+    var st: Dictionary = _overlay_stats(ov)
+    var meshes := int(st["meshes"])
+    var labels := int(st["labels"])
+    var nodes := int(st["nodes"])
+    _add("overlay", "mesh_instances", meshes, "<=120",
+        "PASS" if meshes <= 120 else "WARN",
+        "构建后子树 MeshInstance3D=%d（合批后为 Batch_* 网格，原始小件已并入）、Label3D=%d、节点总数=%d" % [meshes, labels, nodes])
+    _add("overlay", "labels", labels, ">=8", "PASS" if labels >= 8 else "FAIL",
+        "尺寸标注 Label3D=%d（1 m 立方/1.50 m 人形/房屋层高/门洞/船/灯塔/路灯/树/猫/鸥等）" % labels)
+    var figs := 0
+    for n in _walk(ov):
+        if String((n as Node).name) == FIG.FIG_NAME:
+            figs += 1
+    _add("overlay", "figure_node", figs, 1, "PASS" if figs == 1 else "FAIL",
+        "overlay 子树内 1.50 m 人形节点（%s）数量=%d" % [FIG.FIG_NAME, figs])
+    # 合批后原 Mesh 已并入 Batch_*，用人形部件的 batch_manifest 条目反推世界 AABB。
+    var fig_ab: Dictionary = _manifest_aabb_by_prefix(ov, "Ref_")
+    if bool(fig_ab.get("ok", false)):
+        var ab: AABB = fig_ab["aabb"]
+        var h := ab.size.y
+        _add("overlay", "figure_height", h, SPEC.HUMAN_HEIGHT,
+            "PASS" if absf(h - SPEC.HUMAN_HEIGHT) <= SPEC.HUMAN_HEIGHT_TOL else "FAIL",
+            "合批后按 batch_manifest 的 Ref_* 部件反推人形世界高 %.3f m（目标 %.3f ± %.3f）" % [h, SPEC.HUMAN_HEIGHT, SPEC.HUMAN_HEIGHT_TOL])
+        var anchor: Vector3 = ov.get("_anchor")
+        var foot_local := ab.position.y - anchor.y
+        _add("overlay", "figure_foot_y_above_anchor", foot_local, 0.0, "PASS" if absf(foot_local) <= 0.02 else "WARN",
+            "人形脚底相对落点 anchor.y=%.3f 的高度差 %.3f m（应为 0：脚底贴地）" % [anchor.y, foot_local])
+    else:
+        _add("overlay", "figure_height", -1.0, SPEC.HUMAN_HEIGHT, "FAIL",
+            "合批后 batch_manifest 中找不到 Ref_* 人形部件，无法反推高度")
+    # 再次 rebuild：不应重复叠加
+    ov.call("rebuild")
+    await process_frame
+    await process_frame
+    var st2: Dictionary = _overlay_stats(ov)
+    var figs2 := 0
+    for n in _walk(ov):
+        if String((n as Node).name) == FIG.FIG_NAME:
+            figs2 += 1
+    _add("overlay", "rebuild_no_duplicate", figs2, 1, "PASS" if figs2 == 1 else "FAIL",
+        "rebuild() 后人形节点=%d（期望 1，不重复叠加）、MeshInstance3D=%d、Label3D=%d" % [figs2, int(st2["meshes"]), int(st2["labels"])])
+    # 隐藏开关
+    ov.call("set_debug_visible", false)
+    var hidden: bool = not ov.visible
+    ov.call("set_debug_visible", true)
+    _add("overlay", "hide_toggle", hidden, true, "PASS" if hidden else "FAIL",
+        "set_debug_visible(false) 时 visible 变 false（检测到 hidden=%s；随后已恢复 true；只切显示、不重建节点）" % str(hidden))
+    # 无 _process 常驻：脚本未声明 _process/_physics_process
+    var scr: Script = ov.get_script()
+    var src := ""
+    var gs := scr as GDScript
+    if gs != null:
+        src = gs.source_code
+    var has_proc := src.contains("func _process")
+    var has_phys := src.contains("func _physics_process")
+    _add("overlay", "no_per_frame_process", not (has_proc or has_phys), true,
+        "PASS" if not (has_proc or has_phys) else "FAIL",
+        "脚本声明 _process=%s / _physics_process=%s（标尺只在构建时工作，不每帧重建）" % [str(has_proc), str(has_phys)])
+    # 清理：从主场景移除后不留节点
+    ov.free()
+    await process_frame
+    var leftover := _find_name(get_root(), "ScaleDebugOverlay")
+    _add("overlay", "cleanup", leftover == null, true, "PASS" if leftover == null else "FAIL",
+        "free() 后场景树中 ScaleDebugOverlay 残留=%s" % str(leftover != null))
+
+func _overlay_stats(ov: Node) -> Dictionary:
+    var meshes := 0
+    var labels := 0
+    var nodes := 0
+    for n in _walk(ov):
+        nodes += 1
+        if n is MeshInstance3D:
+            meshes += 1
+        elif n is Label3D:
+            labels += 1
+    return {"meshes": meshes, "labels": labels, "nodes": nodes}
+
+## 从 overlay 的 batch_manifest（IsleBatch.merge_static 写入）中按部件名前缀反推 AABB。
+func _manifest_aabb_by_prefix(ov: Node, prefix: String) -> Dictionary:
+    if not ov.has_meta("batch_manifest"):
+        return {}
+    var man: Array = ov.get_meta("batch_manifest")
+    var acc := AABB()
+    var found := false
+    for e_v in man:
+        var e: Dictionary = e_v
+        if not String(e.get("name", "")).begins_with(prefix):
+            continue
+        var kind := String(e.get("kind", ""))
+        var size: Vector3 = e["size"]
+        var xf: Transform3D = e["xf_group"]
+        var base := AABB()
+        if kind == "Box":
+            base = AABB(-size * 0.5, size)
+        elif kind == "Sphere" or kind == "Cyl":
+            var r := maxf(size.x, size.z)
+            base = AABB(Vector3(-r, -size.y * 0.5, -r), Vector3(2.0 * r, size.y, 2.0 * r))
+        else:
+            continue
+        var b: AABB = xf * base
+        if not found:
+            acc = b
+            found = true
+        else:
+            acc = acc.merge(b)
+    return {"ok": found, "aabb": acc}
+
 func _finish() -> void:
     var pass_n := 0
     var warn_n := 0
@@ -1716,6 +1901,10 @@ func _finish() -> void:
         print("[SCALE] %s %s/%s | %s" % [st, r["group"], r["key"], r["detail"]])
     for k in _raw.keys():
         print("[SCALE] RAW %s = %s" % [k, str(_js(_raw[k]))])
+    if _mode == "overlay":
+        print("[SCALE] RESULT pass=%d warn=%d fail=%d info=%d mode=%s tag=%s" % [pass_n, warn_n, fail_n, info_n, _mode, _tag])
+        quit(1 if fail_n > 0 else 0)
+        return
     var base := "inventory_baseline" if _mode == "inventory" else "inventory"
     var json_path := _out_dir + "/" + base + ".json"
     var md_path := _out_dir + "/" + base + ".md"
