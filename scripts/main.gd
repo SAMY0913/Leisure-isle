@@ -11,6 +11,7 @@ const P8_MOON_DIR := "D:/休闲小岛幻境/开发产物/p8/moon/"
 const P8_SEASON_DIR := "D:/休闲小岛幻境/开发产物/p8/seasons/"
 const P8_WEATHER_DIR := "D:/休闲小岛幻境/开发产物/p8/weather/"
 const P8_WFX_DIR := "D:/休闲小岛幻境/开发产物/p8/weatherfx/"
+const P8_ECO_DIR := "D:/休闲小岛幻境/开发产物/p8/ecology/"
 const VIGNETTE_SHADER := "res://shaders/vignette.gdshader"
 const SKY_SHADER := "res://shaders/sky.gdshader"
 const SEA_SHADER := "res://shaders/sea.gdshader"
@@ -55,6 +56,7 @@ var _p8moon := false      # --p8moon：八相月球专项截图（固定日期�
 var _p8seasons := false   # --p8seasons：四季视觉专项截图（固定日期样本）
 var _p8weather := false   # --p8weather：天气面板与天气状态专项截图（固定日期样本）
 var _p8wfx := false       # --p8wfx：天气视觉专项截图（雨/雪/台风/室内/低画质，固定日期样本）
+var _p8eco := false       # --p8eco：生态联动专项截图（雨日岛民门廊 / 晴雨夜萤火对比）
 var _p8perf := false      # --p8perf：天气视觉性能对比（晴/阴/雨/雷暴/雪/台风 × 画质档）
 var _p8_moon_clear := false   # 月相诊断截图：临时清空云层，避免云遮住月盘判相
 
@@ -231,6 +233,7 @@ var _sail_phase := "docked"
 var _sail_dist2 := 0.0
 var _sail_wait := 0.0
 var _sail_dwell := 4.0
+var _boat_wx_hold := false
 var _sail_heading := 0.0
 var _sail_trip_speed := 3.4
 var _sail_boat_visible := true
@@ -311,8 +314,9 @@ func _ready() -> void:
 	_p8seasons = "--p8seasons" in OS.get_cmdline_args() or "--p8seasons" in OS.get_cmdline_user_args()
 	_p8weather = "--p8weather" in OS.get_cmdline_args() or "--p8weather" in OS.get_cmdline_user_args()
 	_p8wfx = "--p8wfx" in OS.get_cmdline_args() or "--p8wfx" in OS.get_cmdline_user_args()
+	_p8eco = "--p8eco" in OS.get_cmdline_args() or "--p8eco" in OS.get_cmdline_user_args()
 	_p8perf = "--p8perf" in OS.get_cmdline_args() or "--p8perf" in OS.get_cmdline_user_args()
-	_shots = "--shots" in OS.get_cmdline_args() or "--shots" in OS.get_cmdline_user_args() or _p7shots or _p8shots or _p8moon or _p8seasons or _p8weather or _p8wfx
+	_shots = "--shots" in OS.get_cmdline_args() or "--shots" in OS.get_cmdline_user_args() or _p7shots or _p8shots or _p8moon or _p8seasons or _p8weather or _p8wfx or _p8eco
 	_transition = "--transition" in OS.get_cmdline_args() or "--transition" in OS.get_cmdline_user_args()
 	_selftest = "--selftest" in OS.get_cmdline_args() or "--selftest" in OS.get_cmdline_user_args()
 	_perf = "--perf" in OS.get_cmdline_args() or "--perf" in OS.get_cmdline_user_args()
@@ -325,7 +329,7 @@ func _ready() -> void:
 		DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
 	# 读取用户设置：菜单、时钟、画质、音量、窗口模式共用同一份数据。
 	# 自动化运行（截图/性能/自测/转场）使用默认设置，保证结果可复现且不受玩家配置影响。
-	var automation := _shots or _perf or _selftest or _transition or _p7shots or _p8shots or _p8moon or _p8seasons or _p8weather or _p8wfx or _p8perf
+	var automation := _shots or _perf or _selftest or _transition or _p7shots or _p8shots or _p8moon or _p8seasons or _p8weather or _p8wfx or _p8eco or _p8perf
 	_settings = Settings.defaults() if automation else Settings.load_settings()
 	_setup_time_api()
 	_time_source = String(_settings.get("time_source", "sim"))
@@ -380,6 +384,8 @@ func _ready() -> void:
 		_run_p8weathershots()
 	elif _p8wfx:
 		_run_p8wfxs()
+	elif _p8eco:
+		_run_p8ecoshots()
 	elif _p8perf:
 		_run_p8perf()
 	elif _p7shots:
@@ -587,7 +593,10 @@ func _build_world() -> void:
 	fx_holder.name = "Fx"
 	add_child(fx_holder)
 	_fx["smoke"] = IsleFx.smoke(fx_holder, (_cottage["chimney_top"] as Node3D).global_position + Vector3(0, 0.4, 0))
-	_fx["fireflies"] = IsleFx.fireflies(fx_holder, Vector3(-3.0, 2.0, 3.5))
+	# P8 修复：萤火曾经的 y=2.0 固定在岛面以下（本岛草地约 y≈8.4），夜间实际不可见；
+	# 改为按地形高度抬升到草地上方 1.5 m，仍由同一发射器/同一套昼夜与天气逻辑驱动。
+	var ff_gy := IsleMath.terrain_height(-3.0, 3.5)
+	_fx["fireflies"] = IsleFx.fireflies(fx_holder, Vector3(-3.0, ff_gy + 1.5, 3.5))
 	_fx["petals"] = IsleFx.petals(fx_holder, Vector3(IsleMath.BIG_TREE_X, 5.0, IsleMath.BIG_TREE_Z))
 	# P8 四季：秋叶（同一树冠附近缓慢飘落；由季节权重控制开关/密度，不为每片叶建节点）。
 	_fx["leaves"] = IsleFx.leaves(fx_holder, Vector3(IsleMath.BIG_TREE_X, 13.6, IsleMath.BIG_TREE_Z))
@@ -1480,6 +1489,20 @@ func _start_blend(to: String, from_pose: Dictionary, done: Callable) -> void:
 # ============================================================
 # 光照 / 材质每帧
 # ============================================================
+## P8 阶段 7：供岛民/海鸥/炊烟/萤火消费的天气快照。只读 _weather_state 派生，
+## 不建立第二份天气状态；暂停时数值冻结（状态机自身不推进）。
+func _weather_eco() -> Dictionary:
+	return {
+		"type": String(_weather_state.get("type", "clear")),
+		"precip_type": String(_weather_state.get("precip_type", "none")),
+		"precip_intensity": float(_weather_state.get("precip_intensity", 0.0)),
+		"wind_strength": _weather_wind,
+		"wind_x": _weather_wind_dir_smooth.x,
+		"wind_z": _weather_wind_dir_smooth.y,
+		"storm": _weather_storm,
+		"cloud": _weather_cloud,
+	}
+
 ## P7：交给海鸥状态机的权威时间/阶段信息（生态事件只消费这些，不另建世界时钟）。
 func _eco_ctx() -> Dictionary:
 	return {
@@ -1489,6 +1512,7 @@ func _eco_ctx() -> Dictionary:
 		"time_source": _time_source,
 		"paused": _paused,
 		"sim_rate": _sim_rate,  # 模拟秒/真实秒：生态超前量 = 过渡时长 × 该倍率
+		"weather": _weather_eco(),
 	}
 
 func _update_lighting() -> void:
@@ -1695,6 +1719,11 @@ func _update_lighting() -> void:
 		var fnode: GPUParticles3D = ff["node"] as GPUParticles3D
 		if fnode != null:
 			var ffi := clampf(float(p["fireflyI"]), 0.0, 1.0)
+			# P8 阶段 7：雨/雪/强风/风暴中萤火避雨——只缩放既有发光强度，不新建状态。
+			var wx_fire := 1.0 - clampf(_weather_rain * 1.8 + _weather_snow * 1.8, 0.0, 1.0)
+			wx_fire *= 1.0 - clampf((_weather_wind - 0.55) * 1.6, 0.0, 1.0)
+			wx_fire *= 1.0 - clampf((_weather_storm - 0.35) * 1.6, 0.0, 1.0)
+			ffi *= clampf(wx_fire, 0.0, 1.0)
 			fnode.emitting = ffi > 0.02
 			fnode.amount_ratio = maxf(ffi, 0.0)
 	# 特效
@@ -1982,6 +2011,9 @@ func _update_smoke_clock() -> void:
 		var hold := false
 		if _birds != null and _birds.has_method("smoke_hold_remaining"):
 			hold = float(_birds.smoke_hold_remaining()) > 0.0
+		# P8 阶段 7：强风把烟吹斜/吹短，雨雪把烟压淡（复用既有粒子系统，不新建特效）。
+		if ctl.has_method("set_weather"):
+			ctl.set_weather(_weather_wind, _weather_rain, _weather_snow, _weather_storm)
 		ctl.set_sim_seconds(fposmod(_sim_seconds, 86400.0), hold)
 
 func _on_settings_changed(s: Dictionary) -> void:
@@ -2252,6 +2284,7 @@ func _villager_ctx() -> Dictionary:
 		"time_jump": _time_jump,
 		"frozen": (_mode != Mode.PLAYING) or _paused,
 		"door_set": Callable(self, "_set_door_state"),
+		"weather": _weather_eco(),
 	}
 
 # ============================================================
@@ -3120,6 +3153,15 @@ func _run_selftest() -> void:
 		night_glow = float((_window_mats[0] as ShaderMaterial).get_shader_parameter("glow"))
 	results.append(["夜间窗灯亮于白天", night_glow > day_glow + 0.15])
 	# 22. 场景动效：大船（状态机出港）/ 灯塔旋转灯室 / 秋千
+	# P8 阶段 7：出港已按天气门控；本条只验证状态机本身，测试窗口内固定晴天，测完恢复自动天气。
+	# 固定白天晴天 + 停靠状态：夜间休息与自动天气不再影响状态机验证。
+	if _weather != null:
+		_on_weather_type_requested("clear")
+		_update_weather(0.0, true)
+		_update_weather_fx(0.0)
+	_set_time_of_day(12.0 * 60.0 + 20.0)
+	_boat_state = "DOCKED"
+	_boat_rest_until = 0.0
 	if _sail_dwell > 0.0:
 		_sail_dwell = -1.0
 	var sail0: Vector3 = _sailboat.global_position if _sailboat != null else Vector3.ZERO
@@ -3132,6 +3174,9 @@ func _run_selftest() -> void:
 	results.append(["帆船出港航行", sail_moved])
 	results.append(["灯塔灯室旋转", lh_moved])
 	results.append(["秋千摆动", sw_moved])
+	if _weather != null:
+		_on_weather_auto_requested(true)
+		_update_weather(0.0, true)
 	# 23. 设置持久化（写临时文件，避免覆盖玩家真实设置）
 	# 本沙箱环境禁止 Godot 写 C:/Users（user://），持久化测试改用工作区绝对路径；
 	# 读取/写入代码路径与正式 user://settings.cfg 完全一致（ConfigFile）。
@@ -3602,6 +3647,34 @@ func _run_selftest() -> void:
 	var snow_depth_now := float(_weather_state.get("snow_depth", 0.0))
 	var snow_ok: bool = String(_weather_state.get("precip_type", "")) == "snow" 		and snow_depth_now > 0.3 and snow_node != null and snow_node.emitting
 	results.append(["P8 低画质仍保留降水且积雪随降雪累积", low_rain_ok and snow_ok])
+	_on_weather_auto_requested(true)
+	_update_weather(0.0, true)
+	_update_weather_fx(0.0)
+	# --- P8 阶段 7：生态联动（岛民天气上下文 / 海鸥 / 船只停航 / 萤火） ---
+	_jump_datetime(2026, 7, 15, 22, 0, 0)
+	_on_weather_type_requested("clear")
+	_update_weather(0.0, true)
+	_update_weather_fx(0.0)
+	_update_lighting()
+	var eco_wx: Dictionary = _eco_ctx().get("weather", {})
+	var vil_wx: Dictionary = _villager_ctx().get("weather", {})
+	var eco_ok: bool = eco_wx.has("type") and eco_wx.has("precip_type") 		and eco_wx.has("wind_strength") and eco_wx.has("storm") 		and String(vil_wx.get("type", "")) == String(eco_wx.get("type", ""))
+	# 晴夜萤火应亮；大雨时萤火避雨（同一 _update_lighting，不新建状态）。
+	var ff_entry: Dictionary = _fx.get("fireflies", {})
+	var ff_node := ff_entry.get("node", null) as GPUParticles3D
+	var fire_clear := ff_node != null and ff_node.emitting and ff_node.amount_ratio > 0.1
+	_on_weather_type_requested("heavy_rain")
+	_update_weather(0.0, true)
+	_update_weather_fx(0.0)
+	_update_lighting()
+	var fire_rain := ff_node != null and (not ff_node.emitting) and ff_node.amount_ratio <= 0.02
+	# 船只停航判定：大雨停航、转晴后恢复出航资格。
+	var boat_hold_rain := _boat_weather_hold()
+	_on_weather_type_requested("clear")
+	_update_weather(0.0, true)
+	_update_weather_fx(0.0)
+	var boat_hold_clear := _boat_weather_hold()
+	results.append(["P8 生态天气上下文与雨天船只停航", eco_ok and fire_clear and fire_rain and boat_hold_rain and not boat_hold_clear])
 	_on_weather_auto_requested(true)
 	_update_weather(0.0, true)
 	_update_weather_fx(0.0)
@@ -4140,6 +4213,17 @@ func _boat_dock_anchor() -> Array:
 func _choose_sail_route() -> void:
 	_start_boat_departure()
 
+## P8 阶段 7：出港天气门控——大雨/雷暴/台风/大雪或风暴强时停航。
+func _boat_weather_hold() -> bool:
+	var type_id := String(_weather_state.get("type", "clear"))
+	if _weather_storm > 0.55:
+		return true
+	if type_id == "heavy_rain" or type_id == "thunder" or type_id == "typhoon" or type_id == "heavy_snow":
+		return true
+	if _weather_snow >= 0.55:
+		return true
+	return false
+
 ## 出航：从码头锚点出发，随机选一条完整路线；整条路线在出港瞬间确定，途中不再重随机
 func _start_boat_departure() -> void:
 	if _sail_routes.is_empty():
@@ -4311,7 +4395,17 @@ func _update_boat(delta: float) -> void:
 			if not _paused:
 				_sail_dwell -= delta
 			if _sail_dwell <= 0.0:
-				_start_boat_departure()
+				# P8 阶段 7：恶劣天气不出港（只在出港判定处拦截，不改航线数据）。
+				# 停航时把等待时间往后顺延，天气转好后自然恢复出航。
+				if _boat_weather_hold():
+					if not _boat_wx_hold:
+						_boat_wx_hold = true
+						print("[BOAT] weather_hold type=", String(_weather_state.get("type", "clear")),
+							" storm=", snappedf(_weather_storm, 0.01))
+					_sail_dwell = 30.0
+				else:
+					_boat_wx_hold = false
+					_start_boat_departure()
 		"DEPARTING":
 			# 平滑加速，离港段不瞬间到最大速度
 			_boat_speed_cur = minf(_boat_route_speed, _boat_speed_cur + maxf(0.8, _boat_route_speed * 0.55) * delta)
@@ -5299,6 +5393,109 @@ func _run_p8weathershots() -> void:
 	await _save_shot("p8_weather_04_pills", P8_WEATHER_DIR)
 	print("[P8WEATHER] done")
 	get_tree().quit()
+
+
+## P8 阶段 7 生态联动截图（--p8eco）：雨日岛民改在门廊、晴夜/雨夜萤火对比。
+## 全部使用固定日期 + 手动天气 + 真实 sim_tick 推进，打印状态供报告引用；不是硬编码摆拍。
+func _run_p8ecoshots() -> void:
+	_mode = Mode.PLAYING
+	_started = true
+	_paused = true
+	_menu.instant_finish()
+	_blending = ""
+	_auto_orbit = false
+	_shot_beam_lock = true
+	_time_source = "sim"
+	_realtime = false
+	_hud.set_hud_visible(false, false)
+	_apply_quality(2)
+	# 1) 雨日上午：岛民应从户外/散步改为门廊避雨
+	_jump_datetime(2026, 7, 15, 10, 0, 0)
+	_on_weather_type_requested("heavy_rain")
+	_update_weather(0.0, true)
+	_update_weather_fx(0.0)
+	var vs0: Dictionary = {}
+	if _villager != null:
+		vs0 = _villager.debug_state()
+	print("[P8ECO] start state=", String(vs0.get("state", "-")),
+		" kind=", String(vs0.get("kind", "-")),
+		" window=", String(vs0.get("window", "-")))
+	# 暂停中岛民不推进；短暂恢复真实时间让 _detect_jump 与天气重规划落地，再暂停取证。
+	_paused = false
+	await get_tree().create_timer(3.6).timeout
+	_paused = true
+	_update_weather(0.0, true)
+	_update_weather_fx(0.0)
+	var vs: Dictionary = {}
+	if _villager != null:
+		vs = _villager.debug_state()
+	var sch: Dictionary = vs.get("schedule", {})
+	print("[P8ECO] rain state=", String(vs.get("state", "-")),
+		" kind=", String(vs.get("kind", "-")),
+		" region=", String(vs.get("region", "-")),
+		" window=", String(vs.get("window", "-")),
+		" pos=", str(vs.get("pos", Vector3.ZERO)),
+		" schedule_last_kind=", String(sch.get("last_kind", "-")))
+	_p8_camera_porch_villager()
+	await get_tree().create_timer(0.5).timeout
+	await _save_shot("p8_eco_00_rain_villager_porch", P8_ECO_DIR)
+	# 2) 萤火对比：同一天 22:00 晴夜 vs 雨夜，同一机位
+	_jump_datetime(2026, 7, 15, 22, 0, 0)
+	_on_weather_type_requested("clear")
+	_update_weather(0.0, true)
+	_update_weather_fx(0.0)
+	var ff_center := Vector3(-3.0, IsleMath.terrain_height(-3.0, 3.5) + 1.5, 3.5)
+	_pose_look(ff_center + Vector3(-7.0, 1.6, 5.5), ff_center + Vector3(0.0, 0.8, 0.0), 52.0)
+	# 粒子数量 90、寿命 9s：夜间刚点亮时约 10 粒/秒，等 3s 才有稳定可见密度。
+	await get_tree().create_timer(3.0).timeout
+	await _save_shot("p8_eco_01_clear_night_fireflies", P8_ECO_DIR)
+	print("[P8ECO] clear firefly amount_ratio=", "%.3f" % _p8_firefly_ratio())
+	_on_weather_type_requested("heavy_rain")
+	_update_weather(0.0, true)
+	_update_weather_fx(0.0)
+	# 已有萤火粒子寿命 9s：等它们自然消失，避免用 restart() 造假。
+	await get_tree().create_timer(9.6).timeout
+	await _save_shot("p8_eco_02_rain_night_fireflies", P8_ECO_DIR)
+	print("[P8ECO] rain firefly amount_ratio=", "%.3f" % _p8_firefly_ratio())
+	# 3) 停航判定（只打印状态机输入，不移动船只）
+	print("[P8ECO] rain boat_hold=", _boat_weather_hold(),
+		" type=", String(_weather_state.get("type", "")),
+		" storm=", "%.2f" % float(_weather_state.get("storm", 0.0)))
+	_on_weather_type_requested("clear")
+	_update_weather(0.0, true)
+	print("[P8ECO] clear boat_hold=", _boat_weather_hold(),
+		" type=", String(_weather_state.get("type", "")))
+	print("[P8ECO] done")
+	get_tree().quit()
+
+
+## 门廊机位：从房屋正面稍高处看向大门，覆盖整个门廊（岛民常驻点之一）。
+func _p8_camera_porch_villager() -> void:
+	var front := Vector3(0.0, 0.0, 1.0)
+	var raw: Variant = _cottage.get("beam_occluders", [])
+	if raw is Array and not (raw as Array).is_empty() and (raw as Array)[0] is Dictionary:
+		var bd: Dictionary = (raw as Array)[0]
+		var yaw := float(bd.get("yaw", 0.0))
+		var rot_y := -yaw
+		front = Vector3(sin(rot_y), 0.0, cos(rot_y))
+	var pivot: Node3D = _cottage.get("door_pivot", null) as Node3D
+	var door := Vector3.ZERO
+	if pivot != null:
+		door = pivot.global_position
+	else:
+		door = _cottage.get("interior_pos", Vector3.ZERO)
+	var side := front.cross(Vector3.UP).normalized()
+	var target := door + Vector3(0.0, 1.05, 0.0)
+	var eye := door + front * 7.0 + side * 1.8 + Vector3(0.0, 2.35, 0.0)
+	_pose_look(eye, target, 58.0)
+
+
+func _p8_firefly_ratio() -> float:
+	var ff: Dictionary = _fx.get("fireflies", {})
+	var node := ff.get("node", null) as GPUParticles3D
+	if node == null:
+		return -1.0
+	return node.amount_ratio
 
 
 ## P8 阶段 6 天气视觉截图（--p8wfx）：固定日期样本，逐类天气拍宽景/近景/夜景/室内/低画质。

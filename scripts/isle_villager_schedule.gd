@@ -196,6 +196,30 @@ func choose(ctx: Dictionary) -> Dictionary:
         region_pref = "indoor"
     elif wkind == "lunch" or wkind == "dinner":
         region_pref = "floor1"
+    # P8 阶段 7：天气过滤（只改本次活动的 kind/区域偏好，不改变日程窗口与预约逻辑）。
+    #   severe（雷暴/台风/风暴强）→ 一律室内，散步改原地待着；
+    #   雨/雪/强风 → 户外停留改到有顶门廊，散步改坐；小雪且风弱时保留少量户外赏雪。
+    var weather: Dictionary = ctx.get("weather", {})
+    if not weather.is_empty():
+        var wx_type := String(weather.get("type", "clear"))
+        var wx_precip := String(weather.get("precip_type", "none"))
+        var wx_pint := float(weather.get("precip_intensity", 0.0))
+        var wx_wind := float(weather.get("wind_strength", 0.0))
+        var wx_storm := float(weather.get("storm", 0.0))
+        var wx_severe := wx_storm > 0.60 or wx_type == "typhoon" or wx_type == "thunder"
+        var wx_wet := wx_precip != "none" and wx_pint > 0.25
+        var wx_gusty := wx_wind > 0.72
+        var wx_snow_calm := wx_precip == "snow" and wx_pint < 0.40 and wx_storm <= 0.60
+        if wx_severe:
+            # 已经在室内区域（餐桌/阁楼）的日程保持原区域，只把户外/门廊改成室内。
+            if region_pref != "floor1" and region_pref != "attic":
+                region_pref = "indoor"
+            if kind == "stroll":
+                kind = "idle"
+        elif (wx_wet or wx_gusty) and region_pref == "outdoor" and not wx_snow_calm:
+            region_pref = "porch"
+            if kind == "stroll":
+                kind = "sit"
     _last_reason = "window %s -> %s (%.1f real s, pref %s)" % [wid, kind, dur, region_pref]
     return {
         "kind": kind,

@@ -637,6 +637,22 @@ class ChimneySmoke extends Node3D:
 	func _exit_tree() -> void:
 		IsleFx._smoke_unregister(self)
 
+	## P8 阶段 7：风力/雨雪只调整既有炊烟粒子的方向、速度与透明度，不新建任何节点。
+	## wind/rain/snow/storm 均为 0..1 的共享天气参数（来自 main._weather_state）。
+	func set_weather(wind: float, rain: float, snow: float, storm: float) -> void:
+		if particles == null or not is_instance_valid(particles):
+			return
+		var w := clampf(wind, 0.0, 1.0)
+		var pm := particles.process_material as ParticleProcessMaterial
+		if pm != null:
+			pm.direction = Vector3(w * 2.2, 1.0, w * 0.35).normalized()
+			pm.gravity = Vector3(0.52 + w * 1.35, 0.12 + w * 0.20, 0.0)
+			pm.initial_velocity_min = 0.60 + w * 0.35
+			pm.initial_velocity_max = 1.30 + w * 0.85
+		if mat != null:
+			var wet := clampf(rain * 1.2 + snow * 1.0 + storm * 0.5, 0.0, 1.0)
+			mat.albedo_color = Color(0.72, 0.72, 0.75, lerpf(0.72, 0.30, wet))
+
 	## main 每帧调用；sim_seconds = 游戏内当天秒（0..86400），不用系统时间/独立计时器。
 	## main 每帧调用；sim_seconds = 游戏内当天秒（0..86400），不用系统时间/独立计时器。
 	## P7-V2：hold=true 时仍更新模拟时钟/窗口判断/time_label，但强制不冒烟
@@ -823,7 +839,9 @@ static func fireflies(parent: Node3D, center: Vector3) -> Dictionary:
 	pm.color_ramp = gt
 	p.process_material = pm
 	var quad := QuadMesh.new()
-	quad.size = Vector2(0.42, 0.42)
+	# P8 修复：萤火原先 y 轴埋在岛面以下，从未真正可见；抬高后原 0.42 m 面片在近景
+	# 会像漂浮灯笼，收敛到 0.16 m 才是萤火虫尺度（亮度仍由 additive 颜色决定）。
+	quad.size = Vector2(0.16, 0.16)
 	var mat := M.additive_material(M.soft_dot_texture(64), Color(2.2, 1.9, 0.75))
 	quad.material = mat
 	p.draw_pass_1 = quad
@@ -1603,6 +1621,13 @@ class BirdFlock extends Node3D:
 	var _boat_pass_birds := 0
 	var _boat_skip_reason := ""
 	var _eco_paused := false
+
+	# P8 阶段 7：海鸥天气权重（来自 main._eco_ctx()["weather"]；坏天气不回栖枝、缩短飞行）
+	var _wx_bad := false
+	var _wx_wind := 0.0
+	var _wx_wind_x := 0.0
+	var _wx_wind_z := -1.0
+	var _wx_storm := 0.0
 
 	# P7-V2：停栖待机 / 随机分布 / 烟囱禁停 状态
 	var _perch_rng := RandomNumberGenerator.new()
@@ -2997,8 +3022,30 @@ class BirdFlock extends Node3D:
 			print("[ECO] dusk_roost complete landings=", _roost_landings, " alt=", snappedf(sun_alt, 0.01))
 
 	# ---------------- per-bird state updates ----------------
+	## P8 阶段 7：坏天气时海鸥留在栖枝；风力只作为飞行漂移，不改变栖点分配算法。
+	func _update_weather_eco(ctx: Dictionary) -> void:
+		var wx: Dictionary = ctx.get("weather", {})
+		if wx.is_empty():
+			_wx_storm = 0.0
+			_wx_wind = 0.0
+			_wx_bad = false
+			return
+		var precip := String(wx.get("precip_type", "none"))
+		var p_int := float(wx.get("precip_intensity", 0.0))
+		_wx_storm = clampf(float(wx.get("storm", 0.0)), 0.0, 1.0)
+		_wx_wind = clampf(float(wx.get("wind_strength", 0.0)), 0.0, 1.0)
+		_wx_wind_x = float(wx.get("wind_x", 0.0))
+		_wx_wind_z = float(wx.get("wind_z", -1.0))
+		# 雷暴/台风/大雨/大雪：不外出；中雨以下仍可短时飞行。
+		_wx_bad = _wx_storm > 0.60 or (precip != "none" and p_int > 0.62)
+		if _eco_paused:
+			_wx_bad = false
+
 	func _update_perched(b: Dictionary, delta: float) -> void:
 		if _night:
+			return
+		# 坏天气不起飞：留在栖枝避风避雨（船鸟联动的起飞请求同样被压住）。
+		if _wx_bad:
 			return
 		# P7：船鸟联动的第二只响应鸟延迟起飞（到期后走既有起飞接口）。
 		var resp_delay: float = float(b.get("resp_delay", 0.0))
@@ -3043,6 +3090,12 @@ class BirdFlock extends Node3D:
 		var target: Vector3 = _flight_target(b, angle)
 		var k: float = 1.0 - exp(-3.2 * delta)
 		node.position = node.position.lerp(target, k)
+		# 同一套风场轻微推着海鸥飞，不改变航线/栖点，只做视觉漂移。
+		if _wx_wind > 0.05:
+			node.position += Vector3(_wx_wind_x, 0.0, _wx_wind_z) * (_wx_wind * 1.6 * delta)
+		if _wx_bad:
+			# 坏天气收短滞空：把剩余绕飞时间压到 1.2s 内，尽快落回栖枝。
+			b["timer"] = minf(float(b["timer"]), 1.2)
 		b["timer"] = float(b["timer"]) - delta
 		if float(b["timer"]) > 0.0:
 			return
@@ -3423,6 +3476,7 @@ class BirdFlock extends Node3D:
 		_sun_alt_cur = sun_alt
 		_update_day_night(delta, sun_alt)
 		_update_eco(delta, sun_alt, ctx)
+		_update_weather_eco(ctx)
 		_update_perch_evictions()
 		_check_perch_validity(delta)
 		for b_v in _birds:

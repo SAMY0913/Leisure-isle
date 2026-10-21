@@ -721,6 +721,8 @@ func _choose_activity() -> void:
 		"sim_rate": float(_ctx.get("sim_rate", 144.0)),
 		"sun_alt": float(_ctx.get("sun_alt", 30.0)),
 		"events": events,
+		# P8 阶段 7：天气只作为额外过滤条件传给日程，不建立第二份天气状态。
+		"weather": _ctx.get("weather", {}),
 	})
 	var kind := String(c.get("kind", "idle"))
 	_act = {
@@ -1024,6 +1026,7 @@ func debug_state() -> Dictionary:
 	return {
 		"state": state_name(),
 		"kind": String(_act.get("kind", "")),
+		"region": String(_act.get("region_pref", "")),
 		"spot_id": String(_act.get("spot_id", "")),
 		"act_dur": activity_dur(),
 		"hold_t": _hold_t,
