@@ -10,7 +10,8 @@ extends RefCounted
 ##   func configure(cfg: Dictionary) -> void  可选；部分键覆盖，缺省用本文件校准默认值
 ##   func enter(from_xf: Transform3D, fov: float, home_xf: Transform3D = Transform3D.IDENTITY) -> void
 ##   func request_exit() -> void              立即释放鼠标，进入 smoothstep 回位混合
-##   func handle_event(e: InputEvent) -> bool 仅消费鼠标移动；其余返回 false
+##   func handle_event(e: InputEvent) -> bool 消费右键按住转向与拖动中的鼠标移动；
+##                                            左键/其它返回 false（交给 main 做场景拾取）
 ##   func update(delta: float, terrain_height: Callable) -> bool  返回是否仍控制相机
 ##   func apply_to(cam: Camera3D) -> void
 ##   func help_text() -> String
@@ -19,13 +20,14 @@ extends RefCounted
 ##
 ## 运动语义：
 ##   * WASD 只按 yaw 做水平前/右（不含 pitch，向下看不自动下降）；
-##   * Space 上升 / Shift 下降（独立垂直轴，世界单位/秒）；
-##   * Ctrl 临时加速：倍率 BOOST_MULT_DEFAULT≈2.09×（=speed_boost/speed_regular=21.7/10.4），
+##   * Space 上升 / Ctrl 下降（独立垂直轴，世界单位/秒；P7-V3 与 Shift 对调）；
+##   * Shift 临时冲刺：倍率 BOOST_MULT_DEFAULT=2.0×（=speed_boost/speed_regular=24.96/12.48），
 ##     加速端平滑（τ≈1/8s），松开立即回落 1×；
 ##   * 所有速度均为“每秒世界单位”；速度阻尼按指数时间常数解析积分，和帧率无关；
 ##   * 边界：水平距 center 超过 radius → 切向滑动 + clamp（不瞬移）；y 夹在
 ##     [max(min_y, terrain_height(x,z)+0.8), max_y]，绝不低于海平面；
-##   * FOV：加速时平滑 +boost_fov_add，松开/退出平滑恢复；退出混合期间不做飞行输入响应。
+##   * FOV：基础 FOV 由 main 传入（=玩家设置 FOV，默认 42），冲刺时平滑 +boost_fov_add，
+##     松开/退出平滑恢复；退出混合期间不做飞行输入响应。
 ##
 ## 本文件内不读取/改写 main.gd 的轨道参数（_theta/_elev/_radius/_cam_target/_fov），
 ## 进入时快照、退出时按快照回位，由 main 决定何时恢复轨道运镜。
@@ -36,17 +38,17 @@ extends RefCounted
 # 地形网格外缘 ≈40 m 半径。R=130 m ≈ 2.0× 岛最大直径（任务书要求 2–3 倍），覆盖全岛 + 周边海域。
 # （旧口径 164 = 2×轨道相机半径 CAM_START_R，与"自由视角观察范围"不同，已按 §7.2 更正。）
 const REF_RANGE_D := 260.0
-# 普通速度 = D/25 = 260/25 = 10.4 m/s（完整穿越 D 约 25 s，落在 20–30 s 验收区间）。
-const DEFAULT_SPEED_REGULAR := 10.4
-# 加速 = D/12 = 260/12 ≈ 21.7 m/s（完整穿越约 12 s，落在 10–15 s 验收区间）。
-const DEFAULT_SPEED_BOOST := 21.7
-# 加速倍率由两档速度派生（21.7/10.4≈2.0865×），不硬编码，改速度后自动一致。
+# 普通速度 = D/25 ≈ 10.4 m/s 基础上 P7-V3 +20% = 12.48 m/s（完整穿越 D 约 20.8 s，落在 20–30 s 验收区间）。
+const DEFAULT_SPEED_REGULAR := 12.48
+# 冲刺 = 普通精确 2 倍 = 24.96 m/s（完整穿越约 10.4 s，落在 10–15 s 验收区间）。
+const DEFAULT_SPEED_BOOST := 24.96
+# 加速倍率由两档速度派生（24.96/12.48 = 2.0×），不硬编码，改速度后自动一致。
 const BOOST_MULT_DEFAULT := DEFAULT_SPEED_BOOST / DEFAULT_SPEED_REGULAR
-# 垂直速度：普通 5.5 m/s；加速时同倍率放大（×≈2.09 ≈ 11.5 m/s）。
-const DEFAULT_VERTICAL_SPEED := 5.5
+# 垂直速度：普通 6.6 m/s（P7-V3 +20%）；冲刺时同倍率放大（×2.0 = 13.2 m/s）。
+const DEFAULT_VERTICAL_SPEED := 6.6
 # 鼠标视角灵敏度：rad/像素（0.0022 rad/px ≈ 全屏宽 1440px 转身 181°），main 可乘用户灵敏度。
 const DEFAULT_LOOK_SENSITIVITY := 0.0022
-# 加速 FOV 增量：FOV 42 → 46.5（+10.7%，参考 Minecraft 加速 +10% FOV）。
+# 冲刺 FOV 增量：基础 FOV 42 时 42 → 46.5（+10.7%，参考 Minecraft 加速 +10% FOV）。
 const DEFAULT_BOOST_FOV_ADD := 4.5
 # 退出回位混合时长（smoothstep），比菜单 2.4s 转场短，交互更利落。
 const DEFAULT_EXIT_BLEND_DUR := 0.6
@@ -72,8 +74,8 @@ const ACT_BACK := "fly_back"         # S=83
 const ACT_LEFT := "fly_left"         # A=65
 const ACT_RIGHT := "fly_right"       # D=68
 const ACT_UP := "fly_up"             # Space=32
-const ACT_DOWN := "fly_down"         # Shift=4194325
-const ACT_BOOST := "fly_boost"       # Ctrl=4194326
+const ACT_DOWN := "fly_down"         # Ctrl=4194326（P7-V3：下降）
+const ACT_BOOST := "fly_boost"       # Shift=4194325（P7-V3：冲刺加速）
 
 # ---------------- 公共状态 ----------------
 ## 是否仍由本类控制相机。退出混合期间保持 true，混合结束后置 false（任务契约）。
@@ -102,6 +104,8 @@ var _boost_scale := 1.0
 var _base_fov := 42.0
 var _fov := 42.0
 var _hit_bound := false
+# 右键按住 = 转向中：只有按住右键时鼠标相对位移才改变 yaw/pitch。
+var _look_drag := false
 
 # 退出/回位快照
 var _blend_t := 0.0
@@ -168,7 +172,8 @@ static func default_config() -> Dictionary:
 # ============================================================
 # 进入 / 退出
 # ============================================================
-## 进入自由视角：记录起点位姿、FOV 与回位目标（home_xf 省略时 = from_xf），并捕获鼠标。
+## 进入自由视角：记录起点位姿、FOV 与回位目标（home_xf 省略时 = from_xf）。
+## P7-V3 起鼠标保持可见：右键按住拖动转向、左键点击场景（拾取交给 main）。
 func enter(from_xf: Transform3D, fov: float, home_xf: Transform3D = Transform3D.IDENTITY) -> void:
 	if active and not _exiting:
 		return
@@ -185,7 +190,8 @@ func enter(from_xf: Transform3D, fov: float, home_xf: Transform3D = Transform3D.
 	active = true
 	_exiting = false
 	_blend_t = 0.0
-	Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
+	_look_drag = false
+	Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
 
 
 ## 请求退出：立即释放鼠标，记录当前位姿并开始 smoothstep 回位混合。
@@ -195,6 +201,7 @@ func request_exit() -> void:
 	if not active or _exiting:
 		return
 	_exiting = true
+	_look_drag = false
 	_blend_t = 0.0
 	_exit_from_pos = _pos
 	_exit_from_yaw = _yaw
@@ -219,10 +226,18 @@ func update(delta: float, terrain_height: Callable) -> bool:
 	return true
 
 
+## 输入分发：右键按下开始转向、按住时的鼠标位移改变 yaw/pitch；右键松开结束转向。
+## 左键与其它事件一律返回 false，交给 main 做场景点击（_click_at）。
 func handle_event(e: InputEvent) -> bool:
 	if not active or _exiting:
 		return false
-	if e is InputEventMouseMotion:
+	if e is InputEventMouseButton:
+		var mb := e as InputEventMouseButton
+		if mb.button_index == MOUSE_BUTTON_RIGHT:
+			_look_drag = mb.pressed
+			return true
+		return false
+	if e is InputEventMouseMotion and _look_drag:
 		var mm := e as InputEventMouseMotion
 		# 鼠标右移 → yaw 减小（向右转）；鼠标下移 → pitch 减小（向下看）
 		_yaw = wrapf(_yaw - mm.relative.x * look_sensitivity, -PI, PI)
@@ -239,8 +254,14 @@ func apply_to(cam: Camera3D) -> void:
 	cam.fov = _fov
 
 
+## 同步飞行基础 FOV（=玩家设置 FOV，默认 42）：main 在应用设置后调用，
+## 保证轨道视角与自由视角共用同一个玩家 FOV；冲刺增量在其上叠加。
+func set_base_fov(fov: float) -> void:
+	_base_fov = clampf(fov, 1.0, 179.0)
+
+
 func help_text() -> String:
-	return "自由视角：WASD 水平移动 · Space 上升 · Shift 下降 · Ctrl 加速 · 鼠标转向 · F 退出 · ESC 返回"
+	return "自由视角：WASD 水平移动 · Space 上升 · Ctrl 下降 · Shift 冲刺 · 右键按住拖动转向 · 左键点击场景 · F 退出 · ESC 返回"
 
 
 func saved_home() -> Dictionary:
@@ -277,6 +298,7 @@ func debug_state() -> Dictionary:
 		"base_fov": _base_fov,
 		"boost_fov_add": boost_fov_add,
 		"look_sensitivity": look_sensitivity,
+		"look_drag": _look_drag,
 		"blend_t": _blend_t,
 		"exit_blend_dur": exit_blend_dur,
 		"home_pos": _home_pos,
@@ -303,6 +325,7 @@ func _active_setup(pos: Vector3, basis: Basis, fov: float) -> void:
 	_vel = Vector3.ZERO
 	_boost_scale = 1.0
 	_hit_bound = false
+	_look_drag = false
 
 
 func _current_transform() -> Transform3D:
@@ -313,8 +336,8 @@ func _current_transform() -> Transform3D:
 # 内部：飞行移动（指数阻尼 + 位置解析积分 → 帧率无关）
 # ============================================================
 func _update_movement(dt: float, terrain_height: Callable) -> void:
-	# 加速倍率：按下 Ctrl 由 1 → 2.10 平滑上升；松开立即回落 1（任务契约）。
-	var boost_pressed := _act_pressed(ACT_BOOST, KEY_CTRL)
+	# 冲刺倍率：按下 Shift 由 1 → 2.0 平滑上升；松开立即回落 1（任务契约）。
+	var boost_pressed := _act_pressed(ACT_BOOST, KEY_SHIFT)
 	if boost_pressed:
 		_boost_scale = lerpf(_boost_scale, _boost_mult, 1.0 - exp(-BOOST_RESPONSE * dt))
 	else:
@@ -329,7 +352,7 @@ func _update_movement(dt: float, terrain_height: Callable) -> void:
 	if wish.length_squared() > 1.0:
 		wish = wish.normalized()
 
-	var up_in := _act_strength(ACT_UP, KEY_SPACE) - _act_strength(ACT_DOWN, KEY_SHIFT)
+	var up_in := _act_strength(ACT_UP, KEY_SPACE) - _act_strength(ACT_DOWN, KEY_CTRL)
 	var target := wish * (speed_regular * _boost_scale)
 	target.y = up_in * vertical_speed * _boost_scale
 

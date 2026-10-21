@@ -98,6 +98,7 @@ var _bar_h: float = 0.0
 var _values: Dictionary = {
     "day_length": 600.0,
     "sensitivity": 1.0,
+    "fov": S.FOV_DEFAULT,
     "auto": true,
     "quality": 2,
     "quality_overrides": {},
@@ -304,6 +305,10 @@ func _build_settings() -> void:
     # ---- 画面 ----
     _add_section(vb, "画面 · DISPLAY")
     _add_slider_row(vb, "sensitivity", "相机灵敏度", SENS_MIN, SENS_MAX, SENS_STEP)
+    # P7-V3：视野范围（FOV）。默认 42°，35–65°、步进 1°，恢复默认即 42°。
+    _add_slider_row(vb, "fov", "视野范围（FOV）", S.FOV_MIN, S.FOV_MAX, 1.0)
+    if _sliders.has("fov"):
+        (_sliders["fov"] as Control).tooltip_text = "视野角度：数值越小越聚焦，越大越广角；默认 42°"
     _add_setting_row(vb, "auto", "自动运镜", "开")
     _add_setting_row(vb, "window_mode", "窗口模式", "窗口化")
     _add_resolution_slider_row(vb)
@@ -829,6 +834,10 @@ func close_settings_instant() -> void:
     _settings_dim.visible = false
     _settings_panel.visible = false
 
+## main.gd 用它判断「设置面板打开」以做 FOV 实时预览 / 屏蔽场景点击。
+func is_settings_open() -> bool:
+    return _settings_open
+
 # ============================================================
 # ESC 菜单动画：从屏幕外左 / 右 / 下错峰滑入，关闭时反向滑出。
 # 单一 Tween 驱动全部控件，反复开关 / 半途反转都不叠加、不跳变。
@@ -1165,6 +1174,8 @@ func _on_slider_changed(key: String, value: float) -> void:
             _values["day_length"] = float(presets[idx])
         "sensitivity":
             _values["sensitivity"] = clampf(value, SENS_MIN, SENS_MAX)
+        "fov":
+            _values["fov"] = S.sanitize_fov(value)
         "quality":
             if not (_values["quality_overrides"] as Dictionary).is_empty():
                 # 重选预设档位 = 放弃一切高级覆盖，回到预设参数。
@@ -1324,6 +1335,8 @@ func _refresh_slider_label(key: String) -> void:
             l.text = S.day_length_label(float(_values["day_length"]))
         "sensitivity":
             l.text = "%.2f×" % float(_values["sensitivity"])
+        "fov":
+            l.text = "%d°" % int(round(S.sanitize_fov(_values.get("fov", S.FOV_DEFAULT))))
         "quality":
             l.text = S.quality_summary(_values)
         "resolution":
@@ -1338,6 +1351,7 @@ func get_settings() -> Dictionary:
     var out := {
         "day_length": S.sanitize_day_length(float(_values["day_length"])),
         "sensitivity": clampf(float(_values["sensitivity"]), SENS_MIN, SENS_MAX),
+        "fov": S.sanitize_fov(_values.get("fov", S.FOV_DEFAULT)),
         "auto_orbit": bool(_values["auto"]),
         "quality": clampi(int(_values["quality"]), 0, S.QUALITY_COUNT - 1),
         "quality_overrides": (_values.get("quality_overrides", {}) as Dictionary).duplicate(true),
@@ -1358,6 +1372,8 @@ func set_settings(s: Dictionary) -> void:
         _values["day_length"] = S.sanitize_day_length(float(s["day_length"]))
     if s.has("sensitivity"):
         _values["sensitivity"] = clampf(float(s["sensitivity"]), SENS_MIN, SENS_MAX)
+    if s.has("fov"):
+        _values["fov"] = S.sanitize_fov(s["fov"])
     if s.has("auto_orbit"):
         _values["auto"] = bool(s["auto_orbit"])
     if s.has("quality"):
@@ -1400,6 +1416,10 @@ func _set_settings_visuals() -> void:
     if _sliders.has("sensitivity"):
         (_sliders["sensitivity"] as Control).call("set_value", float(_values["sensitivity"]), false)
         _refresh_slider_label("sensitivity")
+    if _sliders.has("fov"):
+        _values["fov"] = S.sanitize_fov(_values.get("fov", S.FOV_DEFAULT))
+        (_sliders["fov"] as Control).call("set_value", float(_values["fov"]), false)
+        _refresh_slider_label("fov")
     if _sliders.has("quality"):
         (_sliders["quality"] as Control).call("set_value", float(int(_values["quality"])), false)
         _refresh_slider_label("quality")

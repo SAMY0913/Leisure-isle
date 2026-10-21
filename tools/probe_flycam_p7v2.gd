@@ -1,5 +1,5 @@
 extends SceneTree
-## P7-V2 task-3 自由飞行观景相机探针（headless，全部逻辑用固定 dt，不读真实时钟）
+## P7-V3 任务C 自由飞行观景相机探针（headless，全部逻辑用固定 dt，不读真实时钟）
 ## 运行：
 ##   "$ENG" --headless --path "D:/休闲小岛幻境/游戏工程" --script res://tools/probe_flycam_p7v2.gd
 ## 判据：exit 0 且 [FLYCAM] RESULT fail=0。
@@ -9,12 +9,13 @@ extends SceneTree
 ##   3  校准值实测（IsleMath.coast_radius / terrain_height 采样 + D=2×边界半径 R=260，§7.2 口径）与常量一致性
 ##   4  WASD 仅按 yaw 水平方向（不含 pitch）、斜向归一化
 ##   5  速度=每秒世界单位、指数阻尼；30/60/120fps 位移一致（帧率无关）
-##   6  Ctrl 加速倍率 / 平滑上升 / 松开立即回落；FOV 加速与恢复
-##   7  Space 上升 / Shift 下降
+##   6  Shift 冲刺倍率（精确 2.0×）/ 平滑上升 / 松开立即回落；FOV 加速与恢复
+##   7  Space 上升 / Ctrl 下降
 ##   8  水平圆形边界 clamp + 切向滑动（不瞬移）、高度上限、地形净高与海平面下限
-##   9  鼠标视角 pitch clamp ±1.45、yaw 环绕、事件吞噬/放行
+##   9  右键按住拖动视角 pitch clamp ±1.45、yaw 环绕、事件吞噬/放行（左键放行给场景）
 ##   10 退出 smoothstep 回位（精确 home 位姿 + home FOV，active=false）
 ##   11 apply_to(cam) 写 global_transform + fov
+##   12 左键点击事件不被 flycam 消费（交给 main._click_at），右键按下/松开被消费
 
 const FlyCamScript := preload("res://scripts/isle_flycam.gd")
 const MathScript := preload("res://scripts/isle_math.gd")
@@ -41,8 +42,8 @@ const ACTIONS := {
 	"fly_left": 65,
 	"fly_right": 68,
 	"fly_up": 32,
-	"fly_down": 4194325,
-	"fly_boost": 4194326,
+	"fly_down": 4194326,
+	"fly_boost": 4194325,
 }
 
 
@@ -65,6 +66,7 @@ func _initialize() -> void:
 	_probe_bounds_ceiling()
 	_probe_terrain_floor()
 	_probe_look()
+	_probe_click_dispatch()
 	_probe_fov_and_apply_to()
 	_probe_exit_blend()
 	_release_all_actions()
@@ -188,14 +190,14 @@ func _probe_class_and_api() -> void:
 	_check(found_path == "res://scripts/isle_flycam.gd", "全局类路径正确: " + found_path)
 	var fly = FlyCamScript.new()
 	_check(fly is RefCounted, "IsleFlyCam extends RefCounted")
-	var methods := ["configure", "enter", "request_exit", "handle_event", "update", "apply_to", "help_text", "debug_state", "saved_home"]
+	var methods := ["configure", "enter", "request_exit", "handle_event", "update", "apply_to", "set_base_fov", "help_text", "debug_state", "saved_home"]
 	for m in methods:
 		_check(fly.has_method(m), "API 存在: " + m)
 	_check(fly.get("active") == false, "初始 active=false")
 	_check(fly.update(DT, _terrain) == false, "未进入时 update 返回 false")
 	var help: String = fly.help_text()
 	_check(help.length() > 8, "help_text 非空")
-	for kw in ["WASD", "Space", "Shift", "Ctrl", "F"]:
+	for kw in ["WASD", "Space", "Ctrl 下降", "Shift 冲刺", "右键", "左键", "F"]:
 		_check(help.contains(kw), "help_text 含键位说明: " + kw)
 	var d0: Dictionary = fly.debug_state()
 	for k in ["active", "exiting", "pos", "yaw", "pitch", "speed", "boost_scale", "hit_bound", "fov", "bounds", "home_pos", "home_fov"]:
@@ -307,19 +309,19 @@ func _probe_calibration() -> void:
 	var t_boost: float = D / float(fly.speed_boost)
 	print("[FLYCAM][CAL] coast_radius min=%.3f max=%.3f avg=%.3f | island mean_dia=%.3f max_dia=%.3f | formula_max_radius=32.0 -> formula_max_dia=63.6" % [rmin, rmax, _coast_avg, mean_dia, max_dia])
 	print("[FLYCAM][CAL] terrain min=%.3f max=%.3f @(%.1f,%.1f) | sea_pt=(%.1f,%.1f) ground=%.2f | safe_y=%.1f" % [tmin, tmax, _tmax_pos.x, _tmax_pos.z, _sea_pos.x, _sea_pos.z, _sea_ground, _safe_y])
-	print("[FLYCAM][CAL] R=%.2f | D=2R=%.2f | speed_regular=%.4f (D/25=%.4f, traverse=%.2fs) | speed_boost=%.4f (D/12=%.4f, traverse=%.2fs) | boost=%.4fx" % [R, D, fly.speed_regular, D / 25.0, t_reg, fly.speed_boost, D / 12.0, t_boost, fly.speed_boost / fly.speed_regular])
+	print("[FLYCAM][CAL] R=%.2f | D=2R=%.2f | speed_regular=%.4f (P7-V3=12.48, traverse=%.2fs) | speed_boost=%.4f (P7-V3=24.96, traverse=%.2fs) | boost=%.4fx" % [R, D, fly.speed_regular, t_reg, fly.speed_boost, t_boost, fly.speed_boost / fly.speed_regular])
 	print("[FLYCAM][CAL] vertical=%.2f | look_sens=%.5f | boost_fov_add=%.2f | exit_blend=%.2f | radius=%.1f | min_y=%.2f | max_y=%.2f" % [fly.vertical_speed, fly.look_sensitivity, fly.boost_fov_add, fly.exit_blend_dur, fly.radius, fly.min_y, fly.max_y])
 
-	# 任务书 §7.2 最终标定：R=130、D=2R=260、普通=D/25=10.4、加速=D/12=21.7（≈2.09x）、垂直=5.5。
+	# P7-V3 任务C 重新标定：R=130、D=2R=260 不变；普通=10.4×1.2=12.48（穿越≈20.83s）、冲刺精确 2.0×=24.96（穿越≈10.42s）、垂直=5.5×1.2=6.6。
 	_check(is_equal_approx(FlyCamScript.REF_RANGE_D, D) and absf(D - 260.0) < 1e-6, "REF_RANGE_D=%.2f = D=2×半径 %.1f = 260（§7.2 口径）" % [D, R])
 	_check(is_equal_approx(R, 130.0), "水平边界半径 R=%.2f = 130（≈2.0× 岛最大直径 63.6m）" % R)
-	_check(absf(fly.speed_regular - D / 25.0) <= (D / 25.0) * 0.01, "普通速度 %.3f ≈ D/25=%.3f（±1%%）" % [fly.speed_regular, D / 25.0])
+	_check(absf(fly.speed_regular - 12.48) < 1e-6, "普通速度 %.3f = 10.4×1.2 = 12.48（P7-V3 +20%%）" % fly.speed_regular)
 	_check(t_reg >= 20.0 and t_reg <= 30.0, "普通速度穿越 D 用时 %.2fs 落在 20–30s 验收区间" % t_reg)
 	var mult: float = fly.speed_boost / fly.speed_regular
-	_check(absf(fly.speed_boost - D / 12.0) <= (D / 12.0) * 0.01, "加速速度 %.3f ≈ D/12=%.3f（±1%%）" % [fly.speed_boost, D / 12.0])
-	_check(absf(mult - 2.0865) < 0.02 and mult > 2.0 and mult < 2.2, "加速倍率 %.4fx ≈ 21.7/10.4=2.0865（[2.0,2.2]）" % mult)
-	_check(t_boost >= 10.0 and t_boost <= 15.0, "加速穿越 D 用时 %.2fs 落在 10–15s 验收区间" % t_boost)
-	_check(absf(fly.vertical_speed - 5.5) < 1e-6, "垂直速度 5.5 m/s")
+	_check(absf(fly.speed_boost - 24.96) < 1e-6, "冲刺速度 %.3f = 12.48×2.0 = 24.96（精确 2×）" % fly.speed_boost)
+	_check(absf(mult - 2.0) < 1e-9, "冲刺倍率 %.6fx = 精确 2.0×" % mult)
+	_check(t_boost >= 10.0 and t_boost <= 15.0, "冲刺穿越 D 用时 %.2fs 落在 10–15s 验收区间" % t_boost)
+	_check(absf(fly.vertical_speed - 6.6) < 1e-6, "垂直速度 %.3f = 5.5×1.2 = 6.6（P7-V3 +20%%）" % fly.vertical_speed)
 	_check(is_equal_approx(fly.max_y, 130.0), "高度上限 max_y=%.1f = 130（≈2.0× 岛最大直径）" % fly.max_y)
 	_check(R >= 2.0 * mean_dia - 1e-6, "水平半径 %.1f ≥ 2× 岛平均直径 %.1f" % [R, mean_dia])
 	_check(R > 2.0 * _coast_max + 40.0, "水平半径 %.1f > 岸线最大直径 %.1f + 40m 安全余量" % [R, max_dia])
@@ -470,7 +472,7 @@ func _probe_framerate_independence() -> void:
 
 
 # ============================================================
-# 8. Ctrl 加速 + FOV
+# 8. Shift 冲刺 + FOV
 # ============================================================
 func _probe_boost() -> void:
 	print("[FLYCAM] --- 8 boost ---")
@@ -489,15 +491,15 @@ func _probe_boost() -> void:
 	var hs := float(d2["horizontal_speed"])
 	_check(absf(hs - float(d2["speed_boost"])) < 0.05, "加速后水平速度 %.3f ≈ speed_boost %.3f" % [hs, float(d2["speed_boost"])])
 	var measured_mult := hs / float(d2["speed_regular"])
-	_check(measured_mult > 2.0 and measured_mult < 2.2, "实测加速倍率 %.3fx" % measured_mult)
+	_check(absf(measured_mult - 2.0) < 0.001, "实测冲刺倍率 %.6fx = 精确 2.0×" % measured_mult)
 	var fov_boost := float(d2["fov"])
 	_check(absf(fov_boost - (42.0 + float(d2["boost_fov_add"]))) < 0.2, "加速时 FOV %.2f ≈ 42+%.1f" % [fov_boost, float(d2["boost_fov_add"])])
-	# 松开 Ctrl：立即回落 1x（同一帧），随后速度平滑降回普通速度
+	# 松开 Shift：立即回落 1x（同一帧），随后速度平滑降回普通速度
 	Input.action_release("fly_boost")
 	fly.update(DT, _terrain)
 	var d3: Dictionary = fly.debug_state()
-	_check(absf(float(d3["boost_scale"]) - 1.0) < 1e-9, "松开 Ctrl 当帧 boost_scale 立即回落 1.0")
-	_check(not bool(d3["boost_active"]), "松开 Ctrl 后 boost_active=false")
+	_check(absf(float(d3["boost_scale"]) - 1.0) < 1e-9, "松开 Shift 当帧 boost_scale 立即回落 1.0")
+	_check(not bool(d3["boost_active"]), "松开 Shift 后 boost_active=false")
 	_run(fly, 0.6)
 	var d4: Dictionary = fly.debug_state()
 	_check(absf(float(d4["horizontal_speed"]) - float(d4["speed_regular"])) < 0.05, "松开后 0.6s 速度回落 %.3f ≈ 普通速度 %.1f" % [float(d4["horizontal_speed"]), float(d4["speed_regular"])])
@@ -519,15 +521,15 @@ func _probe_vertical() -> void:
 	Input.action_release("fly_up")
 	var d1: Dictionary = fly.debug_state()
 	var dy := (d1["pos"] as Vector3).y - start.y
-	_check(absf(dy - _expected_disp(5.5, 1.0)) < 0.02, "Space 上升 Δy=%.3f ≈ 解析值 %.3f" % [dy, _expected_disp(5.5, 1.0)])
-	_check(absf(float(d1["vertical_speed_now"]) - 5.5) < 0.02, "上升速度 %.3f ≈ 5.5 m/s" % float(d1["vertical_speed_now"]))
+	_check(absf(dy - _expected_disp(6.6, 1.0)) < 0.02, "Space 上升 Δy=%.3f ≈ 解析值 %.3f" % [dy, _expected_disp(6.6, 1.0)])
+	_check(absf(float(d1["vertical_speed_now"]) - 6.6) < 0.02, "上升速度 %.3f ≈ 6.6 m/s" % float(d1["vertical_speed_now"]))
 	var y_top := (d1["pos"] as Vector3).y
 	Input.action_press("fly_down")
 	_run(fly, 1.5)
 	Input.action_release("fly_down")
 	var d2: Dictionary = fly.debug_state()
-	_check((d2["pos"] as Vector3).y < y_top - 2.0, "Shift 下降 Δy=%.3f" % ((d2["pos"] as Vector3).y - y_top))
-	_check(absf(float(d2["vertical_speed_now"]) + 5.5) < 0.05, "下降速度 %.3f ≈ -5.5 m/s" % float(d2["vertical_speed_now"]))
+	_check((d2["pos"] as Vector3).y < y_top - 2.0, "Ctrl 下降 Δy=%.3f" % ((d2["pos"] as Vector3).y - y_top))
+	_check(absf(float(d2["vertical_speed_now"]) + 6.6) < 0.05, "下降速度 %.3f ≈ -6.6 m/s" % float(d2["vertical_speed_now"]))
 	_check(absf((d2["pos"] as Vector3).x - start.x) < 1e-6 and absf((d2["pos"] as Vector3).z - start.z) < 1e-6, "纯垂直升降不产生水平位移")
 
 
@@ -648,13 +650,23 @@ func _probe_terrain_floor() -> void:
 # 14. 鼠标视角
 # ============================================================
 func _probe_look() -> void:
-	print("[FLYCAM] --- 14 mouse look / pitch clamp ---")
+	print("[FLYCAM] --- 14 右键拖动视角 / pitch clamp / 事件放行 ---")
 	var fly = _fly_at(0.0, 0.0, _sky())
+	# P7-V3：未按右键时鼠标移动不消费（归 main 处理 HUD/点击），也不改变视角
 	var mm := InputEventMouseMotion.new()
 	mm.relative = Vector2(100.0, 0.0)
-	_check(fly.handle_event(mm) == true, "鼠标移动被消费（返回 true）")
+	_check(fly.handle_event(mm) == false, "未按右键时鼠标移动不被消费（返回 false）")
+	var d_no: Dictionary = fly.debug_state()
+	_check(absf(float(d_no["yaw"])) < 1e-9 and absf(float(d_no["pitch"])) < 1e-9, "未按右键时鼠标移动不改变 yaw/pitch")
+	# 右键按下 → 进入拖动，移动事件被消费并转向
+	var rb_down := InputEventMouseButton.new()
+	rb_down.button_index = MOUSE_BUTTON_RIGHT
+	rb_down.pressed = true
+	_check(fly.handle_event(rb_down) == true, "右键按下被消费（返回 true）")
+	_check(bool(fly.debug_state()["look_drag"]), "右键按下后 look_drag=true")
+	_check(fly.handle_event(mm) == true, "右键按住时鼠标移动被消费（返回 true）")
 	var d: Dictionary = fly.debug_state()
-	_check(absf(float(d["yaw"]) + 100.0 * 0.0022) < 1e-5, "鼠标右移 100px → yaw=%.5f" % float(d["yaw"]))
+	_check(absf(float(d["yaw"]) + 100.0 * 0.0022) < 1e-5, "右键拖动右移 100px → yaw=%.5f" % float(d["yaw"]))
 	var mm_down := InputEventMouseMotion.new()
 	mm_down.relative = Vector2(0.0, 10000.0)
 	fly.handle_event(mm_down)
@@ -668,10 +680,24 @@ func _probe_look() -> void:
 	fly.handle_event(mm_wrap)
 	var yaw_wrap := float(fly.debug_state()["yaw"])
 	_check(yaw_wrap >= -PI - 1e-6 and yaw_wrap <= PI + 1e-6, "大鼠标位移后 yaw 环绕回 [-π,π] (%.3f)" % yaw_wrap)
+	# 右键松开 → 后续移动不再消费/转向
+	var rb_up := InputEventMouseButton.new()
+	rb_up.button_index = MOUSE_BUTTON_RIGHT
+	rb_up.pressed = false
+	_check(fly.handle_event(rb_up) == true, "右键松开被消费（返回 true）")
+	_check(not bool(fly.debug_state()["look_drag"]), "右键松开后 look_drag=false")
+	var yaw_after := float(fly.debug_state()["yaw"])
+	var mm2 := InputEventMouseMotion.new()
+	mm2.relative = Vector2(50.0, 20.0)
+	_check(fly.handle_event(mm2) == false, "右键松开后鼠标移动不再被消费")
+	_check(absf(float(fly.debug_state()["yaw"]) - yaw_after) < 1e-9, "右键松开后鼠标移动不再转向")
 	var ke := InputEventKey.new()
 	_check(fly.handle_event(ke) == false, "键盘事件不被消费（返回 false）")
 	var inactive = _new_fly()
-	_check(inactive.handle_event(mm) == false, "未进入时鼠标事件不被消费")
+	var rb_inactive := InputEventMouseButton.new()
+	rb_inactive.button_index = MOUSE_BUTTON_RIGHT
+	rb_inactive.pressed = true
+	_check(inactive.handle_event(rb_inactive) == false, "未进入时右键事件不被消费")
 	# 视角变换真实作用于相机基向量
 	var fly2 = _fly_at(0.7, 0.3, _sky())
 	var cam := Camera3D.new()
@@ -681,6 +707,47 @@ func _probe_look() -> void:
 	var want := Vector3(-sin(0.7) * cos(0.3), sin(0.3), -cos(0.7) * cos(0.3))
 	_check(fwd.normalized().dot(want.normalized()) > 0.9999, "apply_to 后相机朝向与 yaw/pitch 一致")
 	cam.queue_free()
+
+
+# ============================================================
+# 14b 左键点击分发契约（P7-V3 任务C）
+# ============================================================
+func _probe_click_dispatch() -> void:
+	print("[FLYCAM] --- 14b click dispatch contract ---")
+	var fly = _fly_at(0.0, 0.0, _sky())
+	# 左键按下/松开都不该被 flycam 消费：main._unhandled_input 据此转发 _click_at
+	for pressed in [true, false]:
+		var mb := InputEventMouseButton.new()
+		mb.button_index = MOUSE_BUTTON_LEFT
+		mb.pressed = pressed
+		mb.position = Vector2(700.0, 420.0)
+		_check(fly.handle_event(mb) == false, "左键 pressed=%s 不被 flycam 消费（返回 false）" % pressed)
+	_check(absf(float(fly.debug_state()["yaw"])) < 1e-9, "左键事件不改变 yaw")
+	# 中键/滚轮放行；右键按下/松开消费（用于拖动转向）
+	var mmb := InputEventMouseButton.new()
+	mmb.button_index = MOUSE_BUTTON_MIDDLE
+	mmb.pressed = true
+	_check(fly.handle_event(mmb) == false, "中键事件不被 flycam 消费")
+	var wheel := InputEventMouseButton.new()
+	wheel.button_index = MOUSE_BUTTON_WHEEL_UP
+	wheel.pressed = true
+	_check(fly.handle_event(wheel) == false, "滚轮事件不被 flycam 消费")
+	# 退出混合期任何鼠标事件都不消费（让 main 做退场后的交互）
+	fly.request_exit()
+	var rb := InputEventMouseButton.new()
+	rb.button_index = MOUSE_BUTTON_RIGHT
+	rb.pressed = true
+	_check(fly.handle_event(rb) == false, "退出混合期右键不被消费")
+	var mb_exit := InputEventMouseButton.new()
+	mb_exit.button_index = MOUSE_BUTTON_LEFT
+	mb_exit.pressed = true
+	_check(fly.handle_event(mb_exit) == false, "退出混合期左键不被消费")
+	# 未进入实例：任何鼠标键都不消费
+	var idle = _new_fly()
+	var rb2 := InputEventMouseButton.new()
+	rb2.button_index = MOUSE_BUTTON_RIGHT
+	rb2.pressed = true
+	_check(idle.handle_event(rb2) == false, "未进入实例右键不被消费")
 
 
 # ============================================================
@@ -708,6 +775,15 @@ func _probe_fov_and_apply_to() -> void:
 	_check(absf(float(d2["fov"]) - 42.0) < 0.1, "松开加速后 FOV 回落 %.2f ≈ 42" % float(d2["fov"]))
 	_check(absf(cam.fov - 42.0) < 0.1, "相机 FOV 同步回落")
 	Input.action_release("fly_forward")
+	# P7-V3：基础 FOV 由 main 从玩家设置传入（默认 42）；验证 set_base_fov(55) 生效
+	fly.set_base_fov(55.0)
+	_run(fly, 1.2)
+	fly.apply_to(cam)
+	var d_set: Dictionary = fly.debug_state()
+	_check(absf(float(d_set["base_fov"]) - 55.0) < 1e-6, "set_base_fov(55) 后 base_fov=55")
+	_check(absf(float(d_set["fov"]) - 55.0) < 0.2, "set_base_fov(55) 后 FOV 稳定 ≈55（实际 %.2f）" % float(d_set["fov"]))
+	_check(absf(cam.fov - 55.0) < 0.2, "set_base_fov(55) 后 apply_to 写入相机 FOV 55")
+	fly.set_base_fov(42.0)
 	# 自定义 boost_fov_add=8 生效
 	var fly2 = _new_fly({"boost_fov_add": 8.0})
 	fly2.enter(Transform3D(Basis.IDENTITY, _sky()), 42.0)

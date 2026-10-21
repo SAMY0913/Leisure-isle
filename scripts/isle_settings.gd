@@ -13,6 +13,7 @@ extends RefCounted
 ##   resolution      Vector2i 窗口/渲染尺寸
 ##   time_source     sim | real
 ##   timezone        IANA id
+##   fov             35..65 (垂直视野角度，默认 42°；P7-V3)
 
 const PATH := "user://settings.cfg"
 
@@ -58,6 +59,12 @@ const TIME_SOURCES := ["sim", "real"]
 const DEFAULT_TIME_SOURCE := "sim"
 const DEFAULT_TIMEZONE := "Asia/Shanghai"
 
+## 视野范围（FOV，垂直视角，单位度）：默认 42°；可在 35–65° 之间按 1° 步进调整。
+## P7-V3：与鼠标灵敏度无关，只改 Camera3D.fov（轨道视角与自由视角共用）。
+const FOV_DEFAULT := 42.0
+const FOV_MIN := 35.0
+const FOV_MAX := 65.0
+
 ## 音频分组：每组一条 AudioBus，界面滑块只改总线音量。
 const AUDIO_GROUPS := [
 	{"key": "volume_master", "bus": "Master", "label": "主音量", "hint": "全部游戏声音的最终音量"},
@@ -70,6 +77,7 @@ const AUDIO_GROUPS := [
 const DEFAULTS := {
 	"day_length": 600.0,
 	"sensitivity": 1.0,
+	"fov": FOV_DEFAULT,
 	"auto_orbit": true,
 	"quality": 2,
 	"quality_overrides": {},
@@ -214,6 +222,16 @@ static func day_length_seconds(value: float) -> float:
 	return sanitize_day_length(value)
 
 
+## FOV 校验：clamp 到 35–65 度、取整到 1°；缺失/非法值回落默认 42°（旧配置迁移用）。
+static func sanitize_fov(value: Variant) -> float:
+	if typeof(value) != TYPE_FLOAT and typeof(value) != TYPE_INT:
+		return FOV_DEFAULT
+	var v := float(value)
+	if not is_finite(v):
+		return FOV_DEFAULT
+	return roundf(clampf(v, FOV_MIN, FOV_MAX))
+
+
 static func sanitize_volume(value: Variant) -> float:
 	var v := float(value)
 	if not is_finite(v):
@@ -300,6 +318,8 @@ static func load_settings(path: String = PATH) -> Dictionary:
 				out[key] = sanitize_day_length(value)
 			"sensitivity":
 				out[key] = clampf(float(value), 0.2, 3.0)
+			"fov":
+				out[key] = sanitize_fov(value)
 			"quality":
 				out[key] = sanitize_quality(value)
 			"quality_overrides":
@@ -338,6 +358,7 @@ static func save_settings(values: Dictionary, path: String = PATH) -> void:
 	snapshot["time_source"] = sanitize_time_source(snapshot.get("time_source", DEFAULT_TIME_SOURCE))
 	snapshot["timezone"] = sanitize_timezone(snapshot.get("timezone", DEFAULT_TIMEZONE))
 	snapshot["day_length"] = sanitize_day_length(snapshot.get("day_length", DAY_LENGTH_DEFAULT))
+	snapshot["fov"] = sanitize_fov(snapshot.get("fov", FOV_DEFAULT))
 	snapshot["quality"] = sanitize_quality(snapshot.get("quality", DEFAULTS["quality"]))
 	var overrides: Variant = snapshot.get("quality_overrides", {})
 	snapshot["quality_overrides"] = (overrides as Dictionary).duplicate(true) if overrides is Dictionary else {}

@@ -87,6 +87,10 @@ var _press_pos := Vector2.ZERO
 var _panning := false
 var _pan_start := Vector2.ZERO
 
+# ---- P7-V3 自由视角左键点击（按下记录屏幕位置，松开位移 <7px 才触发场景拾取） ----
+var _fly_click_pos := Vector2.INF
+var _fly_click_moved := 0.0
+
 # ---- 场景对象 ----
 var _env: Environment
 var _sky_mat: ShaderMaterial
@@ -107,6 +111,7 @@ var _window_mats: Array = []
 var _window_halos: Array = []
 var _lantern_mat: ShaderMaterial
 var _lantern_halo: MeshInstance3D
+var _lantern_halos: Array = []
 var _lamp_mats: Array = []
 var _lamp_halos: Array = []
 var _light_sources: Array = []
@@ -253,6 +258,9 @@ func _ready() -> void:
 	_abs_unix = Time.get_unix_time_from_system()
 	_day_length = Settings.day_length_seconds(_settings.get("day_length", Settings.DAY_LENGTH_DEFAULT))
 	_sensitivity = clampf(float(_settings.get("sensitivity", 1.0)), 0.2, 3.0)
+	# P7-V3：FOV 在 _build_camera 之前生效（初始相机与自由视角基础值都用玩家设置）。
+	_fov = Settings.sanitize_fov(_settings.get("fov", Settings.FOV_DEFAULT))
+	_settings["fov"] = _fov
 	_auto_orbit = bool(_settings.get("auto_orbit", true))
 	_quality = Settings.sanitize_quality(_settings.get("quality", 2))
 	# --perf 可选画质覆盖：--quality N（配合 -- --perf --quality 4 跑分档性能）
@@ -439,11 +447,14 @@ func _build_world() -> void:
 	_window_halos = _cottage["window_halos"]
 	_lantern_mat = _cottage["lantern_mat"] as ShaderMaterial
 	_lantern_halo = _cottage["lantern_halo"] as MeshInstance3D
+	_lantern_halos = (_cottage.get("lantern_halos", []) as Array).duplicate()
+	if _lantern_halos.is_empty() and _lantern_halo != null:
+		_lantern_halos.append(_lantern_halo)
 	_lamp_mats = (_world.get("lamp_mats", []) as Array).duplicate()
 	_lamp_halos = (_world.get("lamp_halos", []) as Array).duplicate()
 	# 夜间光晕尺寸收敛：halo 是广告牌面片，原尺寸在近景会变成直径 1m+ 的光球
 	_scale_halos(_window_halos, 0.60)
-	_scale_halo(_lantern_halo, 0.55)
+	_scale_halos(_lantern_halos, 0.55)
 	_scale_halos(_lamp_halos, 0.50)
 	var fx_holder := Node3D.new()
 	fx_holder.name = "Fx"
@@ -492,19 +503,21 @@ func _build_camera() -> void:
 	# 轨道参数在进入时冻结、退出混合结束后原样恢复（见 _enter_flycam/_exit_flycam）。
 	_flycam = IsleFlyCam.new()
 	var fly_cfg := IsleFlyCam.default_config()
-	# P7-V2 校准（以自由视角水平观察范围 D 为基准，实测海岸线最大直径≈63.6m）：
+	# P7-V3 校准（以自由视角水平观察范围 D 为基准，实测海岸线最大直径≈63.6m）：
 	#   边界半径 R=130m（≈2.0× 岛直径）→ D=2R=260m；
-	#   普通速度=D/25≈10.4 m/s（完整穿越约 25s，20–30s 区间）；
-	#   加速=D/12≈21.7 m/s（2.08×，完整穿越约 12s，10–15s 区间）；
-	#   最高高度 130m（≈2.0× 岛直径，可俯瞰全岛与周边海域）。
+	#   普通速度 12.48 m/s（P7-V2 10.4 基础 +20%，完整穿越约 20.8s，20–30s 区间）；
+	#   冲刺速度 24.96 m/s（精确 2.0×，完整穿越约 10.4s，10–15s 区间）；
+	#   垂直速度 6.6 m/s（+20%）；最高高度 130m（≈2.0× 岛直径，可俯瞰全岛与周边海域）。
 	fly_cfg["center"] = Vector3(0.0, 0.0, 0.0)
 	fly_cfg["radius"] = 130.0
 	fly_cfg["max_y"] = 130.0
-	fly_cfg["speed_regular"] = 10.4
-	fly_cfg["speed_boost"] = 21.7
-	fly_cfg["vertical_speed"] = 5.5
+	fly_cfg["speed_regular"] = 12.48
+	fly_cfg["speed_boost"] = 24.96
+	fly_cfg["vertical_speed"] = 6.6
 	_flycam_look_base = float(fly_cfg.get("look_sensitivity", 0.0022))
 	_flycam.configure(fly_cfg)
+	# P7-V3：玩家 FOV 设置与自由视角共用同一基础值（默认 42，见 isle_settings.FOV_DEFAULT）。
+	_flycam.set_base_fov(_fov)
 
 func _menu_pose() -> Dictionary:
 	return {"target": Vector3(0, 4.2, 0), "theta": _movie_theta, "elev": 0.50, "r": 106.0, "fov": 36.0}
@@ -701,6 +714,9 @@ func _update_camera(delta: float) -> void:
 		_apply_pose(_play_pose())
 	else:
 		_apply_pose(_movie_pose())
+		# P7-V3：设置面板打开时实时预览玩家 FOV（菜单观景机位默认 36°，预览改用 _fov）。
+		if _menu != null and _menu.has_method("is_settings_open") and bool(_menu.call("is_settings_open")):
+			_cam.fov = _fov
 
 var _blending_done := Callable()
 
@@ -868,11 +884,15 @@ func _update_lighting() -> void:
 				(hm as StandardMaterial3D).albedo_color = Color(1.35 * wf, 0.86 * wf, 0.43 * wf, 1.0)
 	if _lantern_mat != null:
 		_lantern_mat.set_shader_parameter("glow", 0.06 + float(p["lanternI"]) * 1.0)
-	if _lantern_halo != null:
-		var lm: Material = _lantern_halo.material_override
-		if lm is StandardMaterial3D:
-			var lf := clampf(0.03 + pow(float(p["lanternI"]), 1.6) * 0.85, 0.0, 1.6)
-			(lm as StandardMaterial3D).albedo_color = Color(1.55 * lf, 1.02 * lf, 0.50 * lf, 1.0)
+	var lf := clampf(0.03 + pow(float(p["lanternI"]), 1.6) * 0.85, 0.0, 1.6)
+	var lantern_halos: Array = _lantern_halos
+	if lantern_halos.is_empty() and _lantern_halo != null:
+		lantern_halos = [_lantern_halo]
+	for h in lantern_halos:
+		if h is MeshInstance3D:
+			var lm: Material = (h as MeshInstance3D).material_override
+			if lm is StandardMaterial3D:
+				(lm as StandardMaterial3D).albedo_color = Color(1.55 * lf, 1.02 * lf, 0.50 * lf, 1.0)
 	# 码头灯 / 路灯 / 船头灯：与门灯同一套调光（否则白天也是一团过曝亮斑）
 	var lampf := clampf(0.02 + pow(float(p["lanternI"]), 1.6) * 0.85, 0.0, 1.5)
 	for m in _lamp_mats:
@@ -1037,6 +1057,8 @@ func _open_menu() -> void:
 	# 防御：若外部流程在飞行中要求开菜单，先安全退出自由相机，杜绝两套相机同时写变换。
 	if _flycam != null and _flycam.active:
 		_flycam.request_exit()
+		if _hud != null and _hud.has_method("set_fly_hints"):
+			_hud.set_fly_hints(false)
 	_mode = Mode.MENU
 	_menu.open(true)
 	_hud.set_hud_visible(false, true)
@@ -1061,20 +1083,38 @@ func _enter_flycam() -> void:
 		return
 	# 用户灵敏度随设置生效；进入瞬间从当前画面位姿起飞，不重置视角。
 	_flycam.configure({"look_sensitivity": _flycam_look_base * maxf(_sensitivity, 0.05)})
-	_flycam.enter(_cam.global_transform, _cam.fov)
+	# P7-V3：自由视角基础 FOV = 玩家设置 FOV（默认 42），与轨道视角 _play_pose 一致。
+	_flycam.set_base_fov(_fov)
+	_flycam.enter(_cam.global_transform, _fov)
 	_dragging = false
 	_panning = false
+	_fly_click_pos = Vector2.INF
+	_fly_click_moved = 0.0
 	Input.set_default_cursor_shape(Input.CURSOR_ARROW)
 	if _hud != null:
 		_hud.hide_hover_hint()
+		if _hud.has_method("set_fly_hints"):
+			_hud.set_fly_hints(true)
 		_hud.show_toast(_flycam.help_text())
 
 func _exit_flycam() -> void:
 	if _flycam == null or not _flycam.active:
 		return
 	_flycam.request_exit()
+	_fly_click_pos = Vector2.INF
+	_fly_click_moved = 0.0
 	if _hud != null:
+		if _hud.has_method("set_fly_hints"):
+			_hud.set_fly_hints(false)
 		_hud.show_toast("返回观景视角")
+
+## P7-V3：自由视角下 UI（菜单 / 设置面板）打开时，左键点击不透传给场景。
+func _fly_click_blocked() -> bool:
+	if _menu == null:
+		return false
+	if _menu.has_method("is_settings_open") and bool(_menu.call("is_settings_open")):
+		return true
+	return bool(_menu.get("menu_visible"))
 
 ## 探针接口：自由相机状态 + 被冻结等待恢复的轨道相机参数。
 func debug_flycam() -> Dictionary:
@@ -1166,8 +1206,9 @@ func _on_settings_changed(s: Dictionary) -> void:
 # 输入
 # ============================================================
 func _unhandled_input(event: InputEvent) -> void:
-	# P7-V2 自由飞行视角：F 进入/退出；ESC 优先退出（不打开菜单）；
-	# 飞行期间吞掉其它输入，避免 Space 暂停、点击开门/涟漪、C 自动运镜与飞行冲突。
+	# P7-V2 自由飞行视角：F 进入/退出；ESC 优先退出（不打开菜单）。
+	# P7-V3 交互：右键按住拖动转向（相对位移交给 flycam）；左键=场景点击（不改变视角）；
+	# 菜单/设置面板打开时左键不透传；其余事件飞行期间吞掉，避免 Space 暂停、C 自动运镜冲突。
 	if _flycam != null and _flycam.active and not _shots:
 		var esc_hit := event is InputEventKey and (event as InputEventKey).pressed \
 			and not (event as InputEventKey).echo and (event as InputEventKey).keycode == KEY_ESCAPE
@@ -1175,6 +1216,37 @@ func _unhandled_input(event: InputEvent) -> void:
 			_exit_flycam()
 			get_viewport().set_input_as_handled()
 			return
+		if event is InputEventMouseButton:
+			var mb := event as InputEventMouseButton
+			if mb.button_index == MOUSE_BUTTON_RIGHT:
+				# 右键按下/松开：开始/结束拖动转向（只有按住右键的 motion 才转视角）。
+				_flycam.handle_event(event)
+				get_viewport().set_input_as_handled()
+				return
+			if mb.button_index == MOUSE_BUTTON_LEFT:
+				if mb.pressed:
+					_fly_click_pos = mb.position
+					_fly_click_moved = 0.0
+				else:
+					# 位移 < 7px 视为点击；设置面板/菜单打开时交给 UI，不误触场景。
+					if _fly_click_pos != Vector2.INF and _fly_click_moved < 7.0 and not _fly_click_blocked():
+						_click_at(mb.position)
+					_fly_click_pos = Vector2.INF
+					_fly_click_moved = 0.0
+				get_viewport().set_input_as_handled()
+				return
+			# 滚轮/中键等：飞行期间不改变视角、不触发场景操作。
+			get_viewport().set_input_as_handled()
+			return
+		if event is InputEventMouseMotion:
+			var mm := event as InputEventMouseMotion
+			if _fly_click_pos != Vector2.INF:
+				_fly_click_moved += mm.relative.length()
+			# 只有右键按住时 flycam 才消费 motion（左键/无键拖动不转视角）。
+			_flycam.handle_event(event)
+			get_viewport().set_input_as_handled()
+			return
+		# 键盘等其它事件：交给 flycam（当前不消费）后吞掉，避免与飞行冲突。
 		_flycam.handle_event(event)
 		get_viewport().set_input_as_handled()
 		return
@@ -1301,7 +1373,8 @@ func _reset_camera() -> void:
 	_theta = IsleMath.CAM_START_THETA
 	_elev = 0.28
 	_radius = IsleMath.CAM_START_R
-	_fov = 42.0
+	# P7-V3：复位机位保留玩家 FOV 设置（默认 42），不覆盖用户偏好。
+	_fov = Settings.sanitize_fov(_settings.get("fov", Settings.FOV_DEFAULT))
 	_cam_target = IsleMath.CAM_TARGET
 	_hud.show_toast("视角已复位")
 
@@ -3513,6 +3586,11 @@ func _apply_user_settings(save: bool) -> void:
 	_settings["day_length"] = _day_length
 	_sensitivity = clampf(float(_settings.get("sensitivity", 1.0)), 0.2, 3.0)
 	_auto_orbit = bool(_settings.get("auto_orbit", true))
+	# P7-V3：玩家视野范围（FOV，35–65°，默认 42），轨道视角 _play_pose 与自由视角 base_fov 共用。
+	_fov = Settings.sanitize_fov(_settings.get("fov", Settings.FOV_DEFAULT))
+	_settings["fov"] = _fov
+	if _flycam != null and bool(_flycam.active):
+		_flycam.set_base_fov(_fov)
 	_time_source = String(_settings.get("time_source", "sim"))
 	if _time_source != "sim" and _time_source != "real":
 		_time_source = "sim"

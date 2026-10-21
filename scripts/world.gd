@@ -2821,6 +2821,350 @@ static func _sailboat_loft() -> Array:
     ]
     return [stations, _hull_mesh(stations, 1.0, 0.0), _hull_mesh(stations, 0.88, 0.05)]
 
+# ---- P7-V3 deck / interior / fittings ----------------------------------------
+## Named identity-transform child group. The boat hierarchy stays readable
+## (Hull/Deck/Interior/Fittings/Cabin/Rig); main.gd only ever uses the Sailboat
+## root itself, so grouping never changes the animated node reference.
+static func _boat_group(parent: Node3D, group_name: String) -> Node3D:
+    var g := Node3D.new()
+    g.name = group_name
+    parent.add_child(g)
+    return g
+
+## Interpolated hull station (z, half width, sheer y, keel y) at an arbitrary z.
+static func _boat_station_at(stations: Array, z: float) -> Vector4:
+    var first: Vector4 = stations[0]
+    if z <= first.x:
+        return first
+    for i in range(stations.size() - 1):
+        var a: Vector4 = stations[i]
+        var b: Vector4 = stations[i + 1]
+        if z <= b.x:
+            var u := clampf((z - a.x) / maxf(b.x - a.x, 0.0001), 0.0, 1.0)
+            return Vector4(lerpf(a.x, b.x, u), lerpf(a.y, b.y, u),
+                lerpf(a.z, b.z, u), lerpf(a.w, b.w, u))
+    return stations[stations.size() - 1]
+
+## Half width / sheer height of the lofted hull at an arbitrary z.
+static func _boat_section_at(stations: Array, z: float) -> Vector2:
+    var s := _boat_station_at(stations, z)
+    return Vector2(s.y, s.z)
+
+## Half width of the hull outer skin at height y for station z. Returns 0.0
+## when y is at or above the sheer, i.e. the hull has no wall that high (the
+## deck there meets the gunwale instead).
+static func _boat_hull_half_at(stations: Array, z: float, y: float) -> float:
+    var s := _boat_station_at(stations, z)
+    if y >= s.z - 0.0001:
+        return 0.0
+    var lo := 0.0
+    var hi := 1.0
+    for step_i in 24:
+        var mid := (lo + hi) * 0.5
+        var my := lerpf(s.w, s.z, mid) + sin(mid * PI) * 0.02
+        if my < y:
+            lo = mid
+        else:
+            hi = mid
+    var t := (lo + hi) * 0.5
+    return s.y * pow(t, 0.72)
+
+## Outboard half width of one deck board: (top edge at deck_y, bottom edge at
+## deck_y - thickness). Above the sheer a board stops at the gunwale inner
+## face; over the rising bow/stern sheer it follows the hull wall, so the deck
+## and inwale actually meet the hull instead of leaving a dark slit.
+static func _boat_deck_half(stations: Array, z: float, deck_y: float,
+        thickness: float) -> Vector2:
+    var s := _boat_station_at(stations, z)
+    var gunwale_inner: float = s.y - 0.05
+    var top: float = _boat_hull_half_at(stations, z, deck_y)
+    if top <= 0.0:
+        top = gunwale_inner
+    var bottom: float = _boat_hull_half_at(stations, z, deck_y - thickness)
+    if bottom <= 0.0:
+        bottom = gunwale_inner
+    return Vector2(minf(top, s.y), minf(bottom, top))
+
+## Lofted deck board / fill block: samples are Vector3(z, half_top, half_bottom)
+## so the flanks follow the hull wall; flat top at deck_y, bottom one thickness
+## lower, both ends closed.
+static func _boat_deck_mesh(samples: Array, deck_y: float, thickness: float) -> ArrayMesh:
+    var st := SurfaceTool.new()
+    st.begin(Mesh.PRIMITIVE_TRIANGLES)
+    var bot := deck_y - thickness
+    for i in range(samples.size() - 1):
+        var a: Vector3 = samples[i]
+        var b: Vector3 = samples[i + 1]
+        var ta0 := Vector3(-a.y, deck_y, a.x)
+        var ta1 := Vector3(a.y, deck_y, a.x)
+        var tb1 := Vector3(b.y, deck_y, b.x)
+        var tb0 := Vector3(-b.y, deck_y, b.x)
+        var ba0 := Vector3(-a.z, bot, a.x)
+        var ba1 := Vector3(a.z, bot, a.x)
+        var bb1 := Vector3(b.z, bot, b.x)
+        var bb0 := Vector3(-b.z, bot, b.x)
+        _add_quad2(st, ta0, ta1, tb1, tb0, Vector3.UP)
+        _add_quad2(st, ba0, ba1, bb1, bb0, Vector3.DOWN)
+        _add_quad2(st, ta0, tb0, bb0, ba0, Vector3.LEFT)
+        _add_quad2(st, ta1, tb1, bb1, ba1, Vector3.RIGHT)
+    var f: Vector3 = samples[0]
+    var l: Vector3 = samples[samples.size() - 1]
+    _add_quad2(st, Vector3(-f.y, deck_y, f.x), Vector3(-f.z, bot, f.x),
+        Vector3(f.z, bot, f.x), Vector3(f.y, deck_y, f.x), Vector3(0.0, 0.0, -1.0))
+    _add_quad2(st, Vector3(-l.y, deck_y, l.x), Vector3(-l.z, bot, l.x),
+        Vector3(l.z, bot, l.x), Vector3(l.y, deck_y, l.x), Vector3(0.0, 0.0, 1.0))
+    return st.commit()
+
+## Inner bilge floor: the bottom of the hull lofted just inside the liner,
+## lifted 0.12 and given a 0.05 board thickness with a closed outer rim.
+static func _boat_floor_mesh(stations: Array) -> ArrayMesh:
+    var st := SurfaceTool.new()
+    st.begin(Mesh.PRIMITIVE_TRIANGLES)
+    var ts: Array = [0.0, 0.14, 0.30, 0.46]
+    var shrink := 0.84
+    var low := 0.12
+    var thick := 0.05
+    for sign_i in [-1.0, 1.0]:
+        var sign := float(sign_i)
+        var t_top: float = ts[ts.size() - 1]
+        for i in range(stations.size() - 1):
+            var s0: Vector4 = stations[i]
+            var s1: Vector4 = stations[i + 1]
+            for j in range(ts.size() - 1):
+                var t0: float = ts[j]
+                var t1: float = ts[j + 1]
+                var a := _hull_pt(s0, t0, sign, shrink, low + thick)
+                var b := _hull_pt(s1, t0, sign, shrink, low + thick)
+                var c := _hull_pt(s1, t1, sign, shrink, low + thick)
+                var d := _hull_pt(s0, t1, sign, shrink, low + thick)
+                var n := (b - a).cross(d - a).normalized()
+                if n.x * a.x < 0.0:
+                    n = -n
+                _add_quad2(st, a, b, c, d, n)
+            # outer rim that closes the 5 cm board thickness
+            var p0 := _hull_pt(s0, t_top, sign, shrink, low)
+            var p1 := _hull_pt(s1, t_top, sign, shrink, low)
+            var q0 := _hull_pt(s0, t_top, sign, shrink, low + thick)
+            var q1 := _hull_pt(s1, t_top, sign, shrink, low + thick)
+            _add_quad2(st, p0, p1, q1, q0, Vector3(sign, 0.0, 0.0))
+    return st.commit()
+
+## Planked deck: seven athwartships boards, each tapered to the local hull width
+## so the deck follows the sheer; 2 cm seams, 4 mm seam stagger, alternating
+## C_WOOD_LIGHT / C_WOOD with a +-0.05 tint. The outboard ends land on an inwale
+## strip (舷缘内衬) so the deck never floats free of the hull.
+static func _boat_deck(parent: Node3D, stations: Array, deck_y: float, o: Dictionary) -> void:
+    var z_start := -2.24
+    var z_end := 2.08
+    var plank_count := 7
+    var seam := 0.02
+    var seg := (z_end - z_start) / float(plank_count)
+    for i in plank_count:
+        var za: float = z_start + seg * float(i) + seam * 0.5
+        var zb: float = z_start + seg * float(i + 1) - seam * 0.5
+        var top: float = deck_y + (0.004 if i % 2 == 1 else -0.004)
+        # sample the hull wall along the board: the deck keeps following the
+        # rising sheer up to the bow/stern instead of ending at a fixed inset
+        var samples: Array = []
+        for k in 4:
+            var sz: float = lerpf(za, zb, float(k) / 3.0)
+            var hw := _boat_deck_half(stations, sz, top, 0.06)
+            samples.append(Vector3(sz, hw.x, hw.y))
+        var base: Color = M.C_WOOD_LIGHT if i % 2 == 0 else M.C_WOOD
+        var tint := 0.05 if i % 4 < 2 else -0.05
+        var col: Color = base.lightened(tint) if tint > 0.0 else base.darkened(-tint)
+        var mi := MeshInstance3D.new()
+        mi.name = "DeckPlank%02d" % i
+        mi.mesh = _boat_deck_mesh(samples, top, 0.06)
+        mi.material_override = M.toon_material(col,
+            {"bands": 3.5, "soft": 0.5, "rim": 0.08, "outline": 0.02})
+        mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+        parent.add_child(mi)
+    # inwale: short timber strips inside the gunwale, sampled along the sheer
+    var inwale_samples := 6
+    for sign_i in [-1.0, 1.0]:
+        var sign := float(sign_i)
+        var tag := "P" if sign < 0.0 else "S"
+        for i in inwale_samples:
+            var ia := lerpf(z_start - 0.02, z_end + 0.02, float(i) / float(inwale_samples))
+            var ib := lerpf(z_start - 0.02, z_end + 0.02, float(i + 1) / float(inwale_samples))
+            var ha: float = maxf(_boat_deck_half(stations, ia, deck_y, 0.06).x - 0.02, 0.06)
+            var hb: float = maxf(_boat_deck_half(stations, ib, deck_y, 0.06).x - 0.02, 0.06)
+            var iw := _bar(parent, Vector3(sign * ha, deck_y - 0.005, ia),
+                Vector3(sign * hb, deck_y - 0.005, ib), 0.08, 0.08, M.C_WOOD_DARK,
+                {"outline": 0.014})
+            iw.name = "Inwale%s%02d" % [tag, i]
+
+## Bilge floor, four frames, two rowing thwarts with knees, and the solid
+## bow/stern fill blocks that close the un-decked triangular ends.
+static func _boat_interior(parent: Node3D, stations: Array, deck_y: float, o: Dictionary) -> void:
+    var floor_mi := MeshInstance3D.new()
+    floor_mi.name = "InnerFloor"
+    floor_mi.mesh = _boat_floor_mesh(stations)
+    floor_mi.material_override = M.toon_material(M.C_WOOD.darkened(0.18),
+        {"bands": 3.0, "soft": 0.5, "rim": 0.05, "outline": 0.012})
+    floor_mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+    parent.add_child(floor_mi)
+    # four frames following the liner, 0.8 m apart
+    for ri in 4:
+        var rz := -1.20 + 0.80 * float(ri)
+        var sv := _boat_station_at(stations, rz)
+        for sign_i in [-1.0, 1.0]:
+            var sign := float(sign_i)
+            var tag := "P" if sign < 0.0 else "S"
+            var p0 := _hull_pt(sv, 0.22, sign, 0.88, 0.05)
+            var p1 := _hull_pt(sv, 0.60, sign, 0.88, 0.05)
+            var p2 := _hull_pt(sv, 1.0, sign, 0.88, 0.05)
+            var bar0 := _bar(parent, p0, p1, 0.05, 0.05, M.C_WOOD_DARK, {"outline": 0.01})
+            bar0.name = "Rib%02d%sA" % [ri, tag]
+            var bar1 := _bar(parent, p1, p2, 0.05, 0.05, M.C_WOOD_DARK, {"outline": 0.01})
+            bar1.name = "Rib%02d%sB" % [ri, tag]
+    # bow / stern fill blocks: solid tapering infill that continues the planked
+    # deck into the triangular ends and closes the volume under it
+    var bow_samples: Array = []
+    for k in 4:
+        var bz: float = lerpf(2.07, 2.44, float(k) / 3.0)
+        var hb := _boat_deck_half(stations, bz, deck_y, 0.24)
+        bow_samples.append(Vector3(bz, hb.x, hb.y))
+    var bow := MeshInstance3D.new()
+    bow.name = "BowFill"
+    bow.mesh = _boat_deck_mesh(bow_samples, deck_y, 0.24)
+    bow.material_override = M.toon_material(M.C_WOOD.darkened(0.08),
+        {"bands": 3.0, "rim": 0.06, "outline": 0.018})
+    bow.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+    parent.add_child(bow)
+    var stern_samples: Array = []
+    for k in 4:
+        var fz: float = lerpf(-2.38, -2.23, float(k) / 3.0)
+        var hf := _boat_deck_half(stations, fz, deck_y, 0.24)
+        stern_samples.append(Vector3(fz, hf.x, hf.y))
+    var stern := MeshInstance3D.new()
+    stern.name = "SternFill"
+    stern.mesh = _boat_deck_mesh(stern_samples, deck_y, 0.24)
+    stern.material_override = M.toon_material(M.C_WOOD.darkened(0.08),
+        {"bands": 3.0, "rim": 0.06, "outline": 0.018})
+    stern.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+    parent.add_child(stern)
+    # two rowing thwarts: seat top at deck_y + 0.08 (=0.60), board 6 cm thick,
+    # width exactly the local boat width minus 6 cm
+    var thwart_z: Array = [-0.30, 1.20]
+    for si in 2:
+        var tz: float = thwart_z[si]
+        var half_w: float = _boat_section_at(stations, tz).x - 0.03
+        var seat := M.box(parent, Vector3(half_w * 2.0, 0.06, 0.30),
+            Vector3(0.0, deck_y + 0.05, tz), M.C_WOOD_LIGHT.lightened(0.03), 0.0, o)
+        seat.name = "Thwart%02d" % si
+        for sign_i in [-1.0, 1.0]:
+            var sign := float(sign_i)
+            var tag := "P" if sign < 0.0 else "S"
+            var knee := M.box(parent, Vector3(0.08, 0.05, 0.20),
+                Vector3(sign * (half_w - 0.10), deck_y + 0.025, tz),
+                M.C_WOOD_DARK, 0.0, {"outline": 0.01})
+            knee.name = "ThwartKnee%02d%s" % [si, tag]
+
+## Two stowed oars lying on the thwarts, two rowlocks on the gunwale and the
+## bow / stern mooring cleats.
+static func _boat_fittings(parent: Node3D, stations: Array, deck_y: float, o: Dictionary) -> void:
+    for sign_i in [-1.0, 1.0]:
+        var sign := float(sign_i)
+        var tag := "P" if sign < 0.0 else "S"
+        var ox: float = sign * 0.42
+        # shipped oar: 1.55 m shaft lying across the two thwarts (seat tops at
+        # 0.60), so its 0.05 radius puts the centre at 0.65 and both ends rest
+        var oar_y: float = deck_y + 0.13
+        var shaft := _seg(parent, Vector3(ox, oar_y, -0.40), Vector3(ox, oar_y, 1.15),
+            0.05, 0.045, M.C_WOOD_LIGHT, {"outline": 0.012}, 8)
+        shaft.name = "OarShaft%s" % tag
+        var blade := M.box(parent, Vector3(0.11, 0.024, 0.34),
+            Vector3(ox, oar_y, -0.24), M.C_WOOD_LIGHT.lightened(0.04), 0.0,
+            {"outline": 0.012})
+        blade.name = "OarBlade%s" % tag
+        var grip := M.box(parent, Vector3(0.045, 0.045, 0.16),
+            Vector3(ox, oar_y, 1.08), M.C_WOOD_DARK, 0.0, {"outline": 0.008})
+        grip.name = "OarGrip%s" % tag
+    # rowlocks: short post + U yoke on top of the port/starboard gunwale
+    var lock_half: float = _boat_section_at(stations, 0.10).x
+    var lock_sheer: float = _boat_section_at(stations, 0.10).y
+    var gunwale_top := lock_sheer + 0.065
+    for sign_i in [-1.0, 1.0]:
+        var sign := float(sign_i)
+        var tag := "P" if sign < 0.0 else "S"
+        var lock := Node3D.new()
+        lock.name = "Oarlock%s" % tag
+        lock.position = Vector3(sign * (lock_half - 0.07), gunwale_top, 0.10)
+        parent.add_child(lock)
+        M.cyl(lock, 0.045, 0.055, 0.13, Vector3(0.0, 0.065, 0.0), Color("3a3a38"),
+            0.0, {"outline": 0.008})
+        _bar(lock, Vector3(-0.045, 0.145, 0.0), Vector3(0.045, 0.145, 0.0),
+            0.024, 0.024, Color("3a3a38"), {"outline": 0.006})
+        _bar(lock, Vector3(-0.045, 0.145, 0.0), Vector3(-0.045, 0.215, 0.0),
+            0.024, 0.024, Color("3a3a38"), {"outline": 0.006})
+        _bar(lock, Vector3(0.045, 0.145, 0.0), Vector3(0.045, 0.215, 0.0),
+            0.024, 0.024, Color("3a3a38"), {"outline": 0.006})
+    # mooring cleats on the bow and stern fill blocks
+    var cleat_z: Array = [2.16, -2.28]
+    var cleat_names: Array = ["MooringCleatBow", "MooringCleatStern"]
+    for ci in 2:
+        var cleat := Node3D.new()
+        cleat.name = String(cleat_names[ci])
+        cleat.position = Vector3(0.0, deck_y - 0.015, float(cleat_z[ci]))
+        parent.add_child(cleat)
+        M.cyl(cleat, 0.05, 0.06, 0.16, Vector3(0.0, 0.08, 0.0), M.C_WOOD_DARK,
+            0.0, {"outline": 0.012})
+        M.box(cleat, Vector3(0.20, 0.035, 0.05), Vector3(0.0, 0.175, 0.0),
+            M.C_WOOD_DARK, 0.0, {"outline": 0.01})
+
+## Square cabin with a door panel, door window and four side portholes. The
+## box body keeps the P5 silhouette; the details are what the close shots read.
+static func _boat_cabin(parent: Node3D, deck_y: float, win_mat: ShaderMaterial, o: Dictionary) -> void:
+    var cz := -1.35
+    var body_h := 0.50
+    var body_top := deck_y + body_h
+    M.box(parent, Vector3(0.94, body_h, 1.25), Vector3(0.0, deck_y + body_h * 0.5, cz),
+        M.C_WALL.darkened(0.10), 0.0, o)
+    M.box(parent, Vector3(1.06, 0.07, 1.38), Vector3(0.0, body_top + 0.035, cz),
+        M.C_WOOD_DARK, 0.0, o)
+    for sx in [-1.0, 1.0]:
+        M.box(parent, Vector3(0.05, 0.045, 1.40),
+            Vector3(float(sx) * 0.545, body_top + 0.02, cz), M.C_WOOD_DARK, 0.0,
+            {"outline": 0.012})
+    M.box(parent, Vector3(1.10, 0.045, 0.05), Vector3(0.0, body_top + 0.02, cz - 0.705),
+        M.C_WOOD_DARK, 0.0, {"outline": 0.012})
+    M.box(parent, Vector3(1.10, 0.045, 0.05), Vector3(0.0, body_top + 0.02, cz + 0.705),
+        M.C_WOOD_DARK, 0.0, {"outline": 0.012})
+    # door on the forward (+Z) face
+    var door_z := cz + 0.625 + 0.012
+    var door_y := deck_y + 0.26
+    var door := M.box(parent, Vector3(0.30, 0.40, 0.024), Vector3(0.0, door_y, door_z),
+        M.C_WOOD, 0.0, {"outline": 0.012})
+    door.name = "CabinDoor"
+    for sx in [-1.0, 1.0]:
+        M.box(parent, Vector3(0.03, 0.44, 0.03),
+            Vector3(float(sx) * 0.165, door_y, door_z - 0.002), M.C_WOOD_DARK, 0.0,
+            {"outline": 0.008})
+    M.box(parent, Vector3(0.36, 0.03, 0.03), Vector3(0.0, door_y + 0.215, door_z - 0.002),
+        M.C_WOOD_DARK, 0.0, {"outline": 0.008})
+    M.sphere(parent, 0.021, Vector3(0.10, door_y - 0.02, door_z + 0.020),
+        Color("c8a24a"), Vector3.ONE, {"outline": 0.006})
+    var dwin := M.cyl_rot(parent, 0.055, 0.055, 0.03, Vector3(0.0, door_y + 0.09, door_z + 0.006),
+        Color.WHITE, Vector3(PI * 0.5, 0.0, 0.0), {})
+    dwin.material_override = win_mat
+    dwin.name = "CabinDoorWindow"
+    # four side portholes, two per side
+    for sx in [-1.0, 1.0]:
+        var side := "P" if float(sx) < 0.0 else "S"
+        for pi in 2:
+            var pz: float = -1.60 + 0.54 * float(pi)
+            var rim := M.cyl_rot(parent, 0.095, 0.095, 0.03,
+                Vector3(float(sx) * 0.472, 0.88, pz), M.C_WOOD_DARK,
+                Vector3(0.0, 0.0, PI * 0.5), {"outline": 0.01})
+            rim.name = "Porthole%s%d" % [side, pi]
+            var glass := M.cyl_rot(parent, 0.072, 0.072, 0.045,
+                Vector3(float(sx) * 0.470, 0.88, pz), Color.WHITE,
+                Vector3(0.0, 0.0, PI * 0.5), {})
+            glass.material_override = win_mat
+            glass.name = "PortholeGlass%s%d" % [side, pi]
+
 static func _sailboat(root: Node3D, routes: Array) -> Dictionary:
     # The big ship follows the first named out-and-back route. main.gd animates
     # it between routes; the old circular path is gone, the small rowboat is gone.
@@ -2833,6 +3177,15 @@ static func _sailboat(root: Node3D, routes: Array) -> Dictionary:
     node.rotation.y = atan2(d0.x, d0.z)
     root.add_child(node)
     var o := {"outline": 0.02}
+    # ---- P7-V3 readable hierarchy. Every fitting still descends from the
+    # Sailboat root, so it inherits the wave / pitch / roll animation; main.gd
+    # keeps referencing only the root node and the returned dictionary keys.
+    var g_hull := _boat_group(node, "Hull")
+    var g_deck := _boat_group(node, "Deck")
+    var g_int := _boat_group(node, "Interior")
+    var g_fit := _boat_group(node, "Fittings")
+    var g_cabin := _boat_group(node, "Cabin")
+    var g_rig := _boat_group(node, "Rig")
     var pair := _sailboat_loft()
     var stations: Array = pair[0]
     var hull := MeshInstance3D.new()
@@ -2840,13 +3193,14 @@ static func _sailboat(root: Node3D, routes: Array) -> Dictionary:
     hull.material_override = M.toon_material(M.C_BOAT.lightened(0.06),
         {"bands": 4.0, "soft": 0.55, "rim": 0.14, "outline": 0.022})
     hull.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-    node.add_child(hull)
+    g_hull.add_child(hull)
     var liner := MeshInstance3D.new()
     liner.mesh = pair[2]
     liner.material_override = M.toon_material(M.C_BOAT.darkened(0.30), {"bands": 3.0, "rim": 0.06})
     liner.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-    node.add_child(liner)
-    # gunwale rim
+    g_hull.add_child(liner)
+    # gunwale rim: 0.10 x 0.09 timber stitched along every station so the deck
+    # edge (deck half width = hull half width - 0.05) lands on its inner face
     for sign_i in [-1.0, 1.0]:
         var sign := float(sign_i)
         for i in range(stations.size() - 1):
@@ -2854,30 +3208,29 @@ static func _sailboat(root: Node3D, routes: Array) -> Dictionary:
             var s1: Vector4 = stations[i + 1]
             var a := Vector3(sign * s0.y, s0.z, s0.x)
             var b := Vector3(sign * s1.y, s1.z, s1.x)
-            _bar(node, a + Vector3(0.0, 0.02, 0.0), b + Vector3(0.0, 0.02, 0.0),
-                0.12, 0.08, M.C_WOOD_LIGHT, {"outline": 0.014})
-    # deck and cabin
+            var gw := _bar(g_hull, a + Vector3(0.0, 0.02, 0.0), b + Vector3(0.0, 0.02, 0.0),
+                0.10, 0.09, M.C_WOOD_LIGHT, {"outline": 0.014})
+            gw.name = "Gunwale%s%02d" % ["P" if sign < 0.0 else "S", i]
+    # deck (7 hull-hugging planks), interior (floor / frames / thwarts / fill
+    # blocks) and the detailed square cabin
     var deck_y := 0.52
-    M.box(node, Vector3(1.34, 0.08, 4.35), Vector3(0.0, deck_y, -0.05), M.C_WOOD_LIGHT, 0.0, o)
-    M.box(node, Vector3(0.94, 0.50, 1.25), Vector3(0.0, deck_y + 0.29, -1.35), M.C_WALL.darkened(0.10), 0.0, o)
-    M.box(node, Vector3(1.06, 0.07, 1.38), Vector3(0.0, deck_y + 0.57, -1.35), M.C_WOOD_DARK, 0.0, o)
     var win_mat := M.glass_material(0.06)
-    for sx in [-1.0, 1.0]:
-        var wm := M.box(node, Vector3(0.06, 0.20, 0.62), Vector3(float(sx) * 0.48, deck_y + 0.38, -1.35),
-            Color.WHITE, 0.0, {})
-        wm.material_override = win_mat
+    _boat_deck(g_deck, stations, deck_y, o)
+    _boat_interior(g_int, stations, deck_y, o)
+    _boat_fittings(g_fit, stations, deck_y, o)
+    _boat_cabin(g_cabin, deck_y, win_mat, o)
     # mast, boom, gaff and rigging
     var mast_z := 0.55
     var mast_base := Vector3(0.0, deck_y, mast_z)
     var mast_top := Vector3(0.0, deck_y + 4.25, mast_z)
-    _seg(node, mast_base, mast_top, 0.085, 0.045, M.C_WOOD, {"outline": 0.016}, 8)
-    M.cyl(node, 0.20, 0.24, 0.10, Vector3(0.0, deck_y + 0.05, mast_z), M.C_WOOD_DARK, 0.0, o)
-    _bar(node, Vector3(0.0, deck_y + 0.62, mast_z), Vector3(0.0, deck_y + 0.62, -1.35),
+    _seg(g_rig, mast_base, mast_top, 0.085, 0.045, M.C_WOOD, {"outline": 0.016}, 8)
+    M.cyl(g_rig, 0.20, 0.24, 0.10, Vector3(0.0, deck_y + 0.05, mast_z), M.C_WOOD_DARK, 0.0, o)
+    _bar(g_rig, Vector3(0.0, deck_y + 0.62, mast_z), Vector3(0.0, deck_y + 0.62, -1.35),
         0.075, 0.075, M.C_WOOD_DARK, {"outline": 0.014})
-    _bar(node, Vector3(0.0, deck_y + 3.90, mast_z), Vector3(0.0, deck_y + 3.55, -1.30),
+    _bar(g_rig, Vector3(0.0, deck_y + 3.90, mast_z), Vector3(0.0, deck_y + 3.55, -1.30),
         0.055, 0.055, M.C_WOOD, {"outline": 0.012})
-    _seg(node, mast_top, Vector3(0.0, 0.80, 2.45), 0.014, 0.012, Color("4a4a46"), {"outline": 0.0}, 4)
-    _seg(node, mast_top, Vector3(0.0, 0.75, -2.30), 0.014, 0.012, Color("4a4a46"), {"outline": 0.0}, 4)
+    _seg(g_rig, mast_top, Vector3(0.0, 0.80, 2.45), 0.014, 0.012, Color("4a4a46"), {"outline": 0.0}, 4)
+    _seg(g_rig, mast_top, Vector3(0.0, 0.75, -2.30), 0.014, 0.012, Color("4a4a46"), {"outline": 0.0}, 4)
     # main sail (cambered two-sided quad) and jib
     var sail_mesh := _sail_quad_mesh()
     # No inverted-hull outline here: a flat two-sided cloth quad would be fully
@@ -2890,7 +3243,7 @@ static func _sailboat(root: Node3D, routes: Array) -> Dictionary:
     main_sail.transform = Transform3D(main_basis.scaled(Vector3(1.62, 1.55, 1.0)),
         Vector3(0.0, deck_y + 2.28, -0.42))
     main_sail.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-    node.add_child(main_sail)
+    g_rig.add_child(main_sail)
     var jib_basis := Basis(Vector3(0.0, 0.0, 1.0), Vector3.UP, Vector3(-1.0, 0.0, 0.0))
     jib_basis = Basis(Vector3.UP, 0.22) * jib_basis
     var jib := MeshInstance3D.new()
@@ -2899,10 +3252,10 @@ static func _sailboat(root: Node3D, routes: Array) -> Dictionary:
     jib.transform = Transform3D(jib_basis.scaled(Vector3(1.30, 1.28, 0.8)),
         Vector3(0.0, deck_y + 2.35, 1.52))
     jib.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-    node.add_child(jib)
+    g_rig.add_child(jib)
     # sail battens
     for by in [-1.0, 0.0, 1.0]:
-        _bar(node, Vector3(0.0, deck_y + 2.28 + float(by) * 0.9, 0.55),
+        _bar(g_rig, Vector3(0.0, deck_y + 2.28 + float(by) * 0.9, 0.55),
             Vector3(0.0, deck_y + 2.28 + float(by) * 0.9, -1.30),
             0.035, 0.035, M.C_WOOD, {"outline": 0.01})
     # pennant, tiller and P5 running lights
@@ -2912,8 +3265,9 @@ static func _sailboat(root: Node3D, routes: Array) -> Dictionary:
     pennant.transform = Transform3D(Basis(Vector3(0.0, 0.0, 1.0), Vector3.UP, Vector3(-1.0, 0.0, 0.0))
         .scaled(Vector3(0.34, 0.17, 1.0)), Vector3(0.0, deck_y + 4.22, -0.05))
     pennant.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-    node.add_child(pennant)
-    _bar(node, Vector3(0.0, deck_y + 0.05, -2.30), Vector3(0.28, deck_y + 0.42, -2.95),
+    g_rig.add_child(pennant)
+    # tiller arrives over the stern fill block (deck top is now 0.52, not 0.56)
+    _bar(g_fit, Vector3(0.0, deck_y - 0.02, -2.30), Vector3(0.28, deck_y + 0.42, -2.95),
         0.05, 0.05, M.C_WOOD, {"outline": 0.01})
     # ---- P5 hanging lantern on a port-quarter bracket -----------------------
     # Bracket, chain and lantern are plain children of the boat node, so the
@@ -2946,7 +3300,7 @@ static func _sailboat(root: Node3D, routes: Array) -> Dictionary:
     var lens_disc := M.cyl_rot(spot_node, 0.118, 0.118, 0.028, Vector3(0.0, 0.0, 0.080),
         Color.WHITE, Vector3(PI * 0.5, 0.0, 0.0), {})
     lens_disc.material_override = M.toon_material(Color("ffe9c0"), {"self_lit": true, "glow": 1.0, "outline": 0.0})
-    _bar(node, Vector3(0.0, deck_y + 0.04, 2.34), Vector3(0.0, deck_y + 0.84, 2.34),
+    _bar(node, Vector3(0.0, deck_y - 0.02, 2.34), Vector3(0.0, deck_y + 0.84, 2.34),
         0.06, 0.06, M.C_WOOD_DARK, {"outline": 0.012})
     _bar(node, Vector3(0.0, deck_y + 0.84, 2.34), Vector3(0.0, deck_y + 0.92, 2.56),
         0.05, 0.05, M.C_WOOD_DARK, {"outline": 0.012})

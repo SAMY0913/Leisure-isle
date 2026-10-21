@@ -31,6 +31,7 @@ var _phase: Label
 var _date: Label
 var _tz_line: Label
 var _hint: VBoxContainer
+var _hint_lines: Array = []
 var _compass: Control
 var _almanac: PanelContainer
 var _almanac_toggle_hint: Label
@@ -206,6 +207,7 @@ func _build() -> void:
 		l.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 		l.custom_minimum_size = Vector2(320, 0)
 		_hint.add_child(l)
+		_hint_lines.append(l)
 	var spacer := Control.new()
 	spacer.custom_minimum_size = Vector2(0, 6)
 	_hint.add_child(spacer)
@@ -677,6 +679,24 @@ func _apply_auto_indicator() -> void:
 	if _auto_orbit_available:
 		# 常驻指示附带 C 键提示（只展示，按键监听仍在 main）。
 		_auto_label.text = ("◉ 自动运镜 · 开 · 按 C 切换" if _auto_orbit else "○ 自动运镜 · 关 · 按 C 切换")
+
+## P7-V3：自由视角下切换右上角操作提示（轨道视角↔飞行视角），避免两套操作说明互相误导演示。
+func set_fly_hints(active: bool) -> void:
+	var orbit_lines: Array = [
+		"左键拖动 · 旋转视角",
+		"右键拖动 · 平移观察点",
+		"滚轮 · 推拉镜头",
+		"点击 · 木门 / 烟囱 / 海面",
+	]
+	var fly_lines: Array = [
+		"右键按住拖动 · 转向",
+		"WASD 水平移动 · Space 上升 · Ctrl 下降",
+		"Shift · 冲刺（2× 速度）",
+		"左键点击 · 木门 / 烟囱 / 海面",
+	]
+	var lines: Array = fly_lines if active else orbit_lines
+	for i in range(mini(_hint_lines.size(), lines.size())):
+		(_hint_lines[i] as Label).text = str(lines[i])
 
 func show_toast(text: String) -> void:
 	_toast.text = text

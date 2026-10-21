@@ -24,6 +24,8 @@ extends RefCounted
 ## 尺寸：w=10.6 d=8.4 wh=5.6 rh=3.6，floor_y=fy=0.55，屋脊沿局部 +Z，山墙在 ±Z，门在 +Z 立面。
 
 const M := preload("res://scripts/isle_math.gd")
+const P := preload("res://scripts/isle_house_props.gd")
+const CAT := preload("res://scripts/isle_cat.gd")
 
 ## 世界坐标换算：运行时 root 已在场景树内时用 to_global；探针以游离节点构建时，Godot 4 的
 ## to_global 会退化为单位变换，此时用 root.transform * local 得到同样正确的世界坐标。
@@ -56,6 +58,7 @@ static func build(parent: Node3D) -> Dictionary:
 	_attic_window(root, C)
 	_chimney(root, C)
 	_porch(root, C)
+	_stairs(root, C)          # P7-V3：L 形楼梯 + 楼梯井（先结构，后家具）
 	_attic_interior(root, C)
 	_interior(root, C)
 	_cat(root, C, Vector3(2.30, C["deck_top"] + 0.05, 6.10))
@@ -77,7 +80,8 @@ static func build(parent: Node3D) -> Dictionary:
 
 	# ---- 暖光光源位置（世界坐标；main 写进 shader 的解析点光）----
 	var lantern_world: Vector3 = _world(root, C["lantern_pos"])
-	var lamp_world: Vector3 = _world(root, Vector3(0.50, fy + 2.45, 0.40))
+	var lantern_world_right: Vector3 = _world(root, C["lantern_pos_right"])
+	var lamp_world: Vector3 = _world(root, Vector3(1.15, fy + 2.45, 1.95))
 	var fire_world: Vector3 = _world(root, Vector3(C["ch_x"], fy + 0.55, -3.10))
 	var attic_lamp_world: Vector3 = C["attic_lamp_world"]
 	var attic_lamp2_world: Vector3 = _world(root, C["attic_lamp2_pos"])
@@ -85,7 +89,9 @@ static func build(parent: Node3D) -> Dictionary:
 	var light_sources: Array = []
 	light_sources.append({"pos": lamp_world, "color": Color(1.0, 0.74, 0.44), "range": 7.5, "intensity": 1.60})
 	light_sources.append({"pos": fire_world, "color": Color(1.0, 0.52, 0.22), "range": 5.4, "intensity": 1.30})
-	light_sources.append({"pos": lantern_world, "color": Color(1.0, 0.78, 0.48), "range": 6.5, "intensity": 1.35})
+	# 门廊对称吊灯：左右各一盏，亮度收敛到与路灯同级（原左灯 1.35/6.5 + halo 2.10 过亮）
+	light_sources.append({"pos": lantern_world, "color": Color(1.0, 0.78, 0.48), "range": 6.0, "intensity": 1.05})
+	light_sources.append({"pos": lantern_world_right, "color": Color(1.0, 0.78, 0.48), "range": 6.0, "intensity": 1.05})
 	# 阁楼：删除窗外 2.10m 的 ADD 光晕（夜间会糊成光球、挡住室内视线）后，用两盏室内暖灯经
 	# main._collect_lights → toon 解析点光照亮书桌/床/地板/部分内墙，位置都在室内（离外墙 ≥1.9m）。
 	light_sources.append({"pos": attic_lamp_world, "color": Color(1.0, 0.74, 0.44), "range": 6.4, "intensity": 1.50})
@@ -105,6 +111,7 @@ static func build(parent: Node3D) -> Dictionary:
 		"window_halos": C["window_halos"],
 		"lantern_mat": C["lantern_mat"],
 		"lantern_halo": C["lantern_halo"],
+		"lantern_halos": C["lantern_halos"],
 		"perches": perches,
 		"lantern_world": lantern_world,
 		"light_sources": light_sources,
@@ -118,6 +125,8 @@ static func build(parent: Node3D) -> Dictionary:
 		"attic_lamp2_world": attic_lamp2_world,
 		"attic_glass_mats": C["attic_glass_mats"],
 		"beam_occluders": beam_occluders,
+		"cat": C.get("cat", {}),
+		"stairs": C.get("stairs", {}),
 	}
 
 # ============================================================
@@ -247,6 +256,10 @@ static func _context(root: Node3D) -> Dictionary:
 	attic_inner_glass.set_shader_parameter("refract_strength", 0.0)
 	# 门廊吊灯材质：main 会持续写 "glow"，不能和别的网格共用同一缓存实例。
 	var lantern_mat: ShaderMaterial = M.toon_material(Color("ffcf9a"), {"self_lit": true, "glow": 1.0})
+	# ---- P7-V3 楼梯井（与 _stairs / _interior / _attic_interior 共用，探针可直接读）----
+	var attic_floor: float = 5.70
+	var stair_risers: float = 27.0
+	var stair_rise: float = (attic_floor - fy) / stair_risers
 	return {
 		"root": root,
 		"w": w, "d": d, "wh": wh, "rh": rh, "fy": fy,
@@ -256,8 +269,16 @@ static func _context(root: Node3D) -> Dictionary:
 		"slope_len": slope_len, "eave_x": eave_x, "eave_y": eave_y,
 		"roof_z": roof_z,
 		"deck_top": 0.42,
+		"stair_risers": stair_risers,
+		"stair_rise": stair_rise,
+		"stair_tread": 0.245,
+		"stair_flight_a": {"x0": 3.70, "x1": 4.80, "z0": 0.55, "z1": -2.88, "land_top": fy + 15.0 * stair_rise},
+		"stair_flight_b": {"x0": 3.70, "x1": 1.005, "z0": -3.80, "z1": -2.63},
+		"stair_hole_r1": Rect2(3.65, -3.83, 1.17, 3.28),
+		"stair_hole_r2": Rect2(1.005, -3.83, 2.645, 1.23),
 		"ch_x": -2.40, "ch_z": -4.05, "ch_top": 9.92,
 		"lantern_pos": Vector3(-2.80, 3.20, 6.55),
+		"lantern_pos_right": Vector3(2.80, 3.20, 6.55),
 		"attic_floor": 5.70,      # 阁楼地板顶面
 		"attic_hw": 1.60,         # 阁楼窗半宽（洞口 3.20m 宽）
 		"attic_top": 8.30,        # 阁楼窗洞顶（洞口 2.60m 高，跨前墙 0.45 + 山墙 2.15）
@@ -536,20 +557,8 @@ static func _door(root: Node3D, C: Dictionary) -> void:
 	var hd: float = C["hd"]
 	var wt: float = C["wall_t"]
 	var zf: float = hd - wt * 0.5
-	var yc: float = fy + 2.35
-	# ---- 拱券门框：13 段小 box 沿半圆排布（外凸 0.04/0.05，切向 0.30 < 弦距 0.340，相邻不重叠）----
-	for k in range(13):
-		var a: float = PI * float(k) / 12.0
-		var bx: float = cos(a) * 1.30
-		var by: float = sin(a) * 1.30
-		var bsize := Vector3(0.32, 0.30, 0.26)
-		var bz: float = zf + 0.09
-		var bcol: Color = M.C_WOOD_DARK
-		if k == 6:
-			bsize = Vector3(0.34, 0.34, 0.26)
-			bz = zf + 0.105
-			bcol = M.C_WOOD_LIGHT
-		M.box_rot(root, bsize, Vector3(bx, yc + by, bz), bcol, Vector3(0.0, 0.0, a), {"outline": 0.03})
+	# ---- 拱券门框：单片半环挤出网格（内 r=1.15 / 外 r=1.45 / 厚 0.26），替代原 13 段 box 拼接 ----
+	_door_arch_ring(root, C)
 	# 拱脚立柱（压住洞口两侧并覆盖门扇边 1cm，外凸 0.06；宽 0.40 → x 1.10..1.50，消除门扇与立柱之间的窄缝）
 	M.box(root, Vector3(0.40, 2.40, 0.36), Vector3(-1.30, fy + 1.20, zf + 0.06), M.C_WOOD_DARK, 0.0, {"outline": 0.03})
 	M.box(root, Vector3(0.40, 2.40, 0.36), Vector3(1.30, fy + 1.20, zf + 0.06), M.C_WOOD_DARK, 0.0, {"outline": 0.03})
@@ -572,14 +581,8 @@ static func _door(root: Node3D, C: Dictionary) -> void:
 	M.box(pivot, Vector3(0.10, 2.34, 0.14), Vector3(2.19, 1.17, 0.0), M.C_WOOD_DARK, 0.0, {"outline": 0.02})
 	for yy in [0.20, 1.15, 2.20]:
 		M.box(pivot, Vector3(2.26, 0.12, 0.12), Vector3(1.13, yy, 0.0), M.C_WOOD_DARK, 0.0, {"outline": 0.02})
-	var arc_cx: float = 1.13
-	var arc_cy: float = 2.35
-	M.cyl_rot(pivot, 1.10, 1.10, 0.09, Vector3(arc_cx, arc_cy, 0.0), M.C_WOOD, Vector3(PI * 0.5, 0.0, 0.0), {"outline": 0.02, "bands": 4.0})
-	for k in range(7):
-		var a2: float = PI * (float(k) + 0.5) / 7.0
-		var cpos := Vector3(arc_cx + cos(a2) * 0.62, arc_cy + sin(a2) * 0.62, 0.055)
-		var pc2: Color = M.C_WOOD_LIGHT if k % 2 == 0 else M.C_WOOD
-		M.box_rot(pivot, Vector3(0.72, 0.62, 0.05), cpos, pc2, Vector3(0.0, 0.0, a2), {"outline": 0.02})
+	# ---- 门扇上方半圆气窗：半圆盘单体网格（半径 1.10，厚 0.10，与门板同厚齐平；含凸起拱带、竖棂与弦线横档）----
+	_door_fanlight(pivot, C)
 	for zz in [-0.075, 0.075]:
 		M.box(pivot, Vector3(0.08, 2.28, 0.035), Vector3(0.56, 1.15, zz), M.C_WOOD_DARK, 0.0, {})
 		M.box(pivot, Vector3(0.08, 2.28, 0.035), Vector3(1.70, 1.15, zz), M.C_WOOD, 0.0, {})
@@ -644,6 +647,133 @@ static func _door_spandrel(root: Node3D, C: Dictionary) -> void:
 	mi.material_override = M.toon_material(M.C_WALL, {"bands": 4.0, "soft": 0.60, "rim": 0.10})
 	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	root.add_child(mi)
+
+static func _door_arch_ring(root: Node3D, C: Dictionary) -> void:
+	# 拱券门框：半环单体挤出网格。前/后环面 + 外/内弧侧壁 + 左右拱脚端面全部一次生成，
+	# 绕序与显式法线一致（Godot 默认背面剔除），不再有方块接缝、重叠描边与穿插。
+	var hd: float = C["hd"]
+	var wt: float = C["wall_t"]
+	var fy: float = C["fy"]
+	var zf: float = hd - wt * 0.5
+	var yc: float = fy + 2.35
+	var ri: float = 1.15
+	var ro: float = 1.45
+	var z_hi: float = zf + 0.22
+	var z_lo: float = zf - 0.04
+	var n: int = 24
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var of: Array[Vector3] = []
+	var ob: Array[Vector3] = []
+	var inf: Array[Vector3] = []
+	var inb: Array[Vector3] = []
+	for k in range(n + 1):
+		var a: float = PI * float(k) / float(n)
+		var ca: float = cos(a)
+		var sa: float = sin(a)
+		of.append(Vector3(ca * ro, yc + sa * ro, z_hi))
+		ob.append(Vector3(ca * ro, yc + sa * ro, z_lo))
+		inf.append(Vector3(ca * ri, yc + sa * ri, z_hi))
+		inb.append(Vector3(ca * ri, yc + sa * ri, z_lo))
+	for k in range(n):
+		var am: float = PI * (float(k) + 0.5) / float(n)
+		var out_n := Vector3(cos(am), sin(am), 0.0)
+		_st_quad_n(st, of[k], of[k + 1], inf[k + 1], inf[k], Vector3(0.0, 0.0, 1.0))
+		_st_quad_n(st, ob[k], ob[k + 1], inb[k + 1], inb[k], Vector3(0.0, 0.0, -1.0))
+		_st_quad_n(st, of[k], of[k + 1], ob[k + 1], ob[k], out_n)
+		_st_quad_n(st, inf[k], inf[k + 1], inb[k + 1], inb[k], -out_n)
+	# 左右拱脚端面（朝下）
+	_st_quad_n(st, Vector3(ri, yc, z_lo), Vector3(ro, yc, z_lo), Vector3(ro, yc, z_hi), Vector3(ri, yc, z_hi), Vector3(0.0, -1.0, 0.0))
+	_st_quad_n(st, Vector3(-ri, yc, z_lo), Vector3(-ro, yc, z_lo), Vector3(-ro, yc, z_hi), Vector3(-ri, yc, z_hi), Vector3(0.0, -1.0, 0.0))
+	var mi := MeshInstance3D.new()
+	mi.name = "DoorArch"
+	mi.mesh = st.commit()
+	mi.material_override = M.toon_material(M.C_WOOD_DARK, {"bands": 4.0, "outline": 0.03})
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	root.add_child(mi)
+	# 拱顶锁石：仅作拱顶装饰高光块，不参与半圆轮廓构成
+	M.box_rot(root, Vector3(0.34, 0.30, 0.30), Vector3(0.0, yc + 1.31, zf + 0.10), M.C_WOOD_LIGHT, Vector3.ZERO, {"outline": 0.03})
+
+static func _door_fanlight(pivot: Node3D, C: Dictionary) -> void:
+	# 门扇上方半圆气窗：半圆盘单体挤出网格（弦线落在门板上沿 y=2.30，与门板无缝隙），
+	# 正面/背面/外弧侧壁/弦线底封一次生成；另加同心凸起拱带与细竖棂、弦线横档。
+	var cx: float = 1.13
+	var cy: float = 2.35
+	var r: float = 1.10
+	var y_chord: float = 2.30
+	var hz: float = 0.05
+	var dy: float = y_chord - cy
+	var xh: float = sqrt(maxf(r * r - dy * dy, 0.0))
+	var a0: float = atan2(dy, xh)
+	var a1: float = PI - a0
+	var n: int = 24
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var front: Array[Vector3] = []
+	var back: Array[Vector3] = []
+	for k in range(n + 1):
+		var a: float = lerpf(a0, a1, float(k) / float(n))
+		var x: float = cx + cos(a) * r
+		var y: float = cy + sin(a) * r
+		front.append(Vector3(x, y, hz))
+		back.append(Vector3(x, y, -hz))
+	var c_f := Vector3(cx, y_chord, hz)
+	var c_b := Vector3(cx, y_chord, -hz)
+	for k in range(n):
+		var am: float = lerpf(a0, a1, (float(k) + 0.5) / float(n))
+		var out_n := Vector3(cos(am), sin(am), 0.0)
+		_st_tri_n(st, c_f, front[k], front[k + 1], Vector3(0.0, 0.0, 1.0))
+		_st_tri_n(st, c_b, back[k + 1], back[k], Vector3(0.0, 0.0, -1.0))
+		_st_quad_n(st, back[k], back[k + 1], front[k + 1], front[k], out_n)
+	# 弦线底封（朝下，与门板上沿贴合）
+	_st_quad_n(st, Vector3(cx + xh, y_chord, -hz), Vector3(cx - xh, y_chord, -hz), Vector3(cx - xh, y_chord, hz), Vector3(cx + xh, y_chord, hz), Vector3(0.0, -1.0, 0.0))
+	var mi := MeshInstance3D.new()
+	mi.name = "DoorFanlight"
+	mi.mesh = st.commit()
+	mi.material_override = M.toon_material(M.C_WOOD, {"bands": 4.0, "outline": 0.02})
+	pivot.add_child(mi)
+	# 前脸同心凸起拱带（r 0.84..0.98，凸出 3.5cm）
+	var bz_hi: float = 0.085
+	var bz_lo: float = 0.0505
+	var rb0: float = 0.84
+	var rb1: float = 0.98
+	var x0: float = sqrt(maxf(rb0 * rb0 - dy * dy, 0.0))
+	var x1: float = sqrt(maxf(rb1 * rb1 - dy * dy, 0.0))
+	var ab0: float = atan2(dy, x0)
+	var ab1: float = PI - ab0
+	var bst := SurfaceTool.new()
+	bst.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var bof: Array[Vector3] = []
+	var bob: Array[Vector3] = []
+	var bif: Array[Vector3] = []
+	var bib: Array[Vector3] = []
+	for k in range(n + 1):
+		var a: float = lerpf(ab0, ab1, float(k) / float(n))
+		var ca: float = cos(a)
+		var sa: float = sin(a)
+		bof.append(Vector3(cx + ca * rb1, cy + sa * rb1, bz_hi))
+		bob.append(Vector3(cx + ca * rb1, cy + sa * rb1, bz_lo))
+		bif.append(Vector3(cx + ca * rb0, cy + sa * rb0, bz_hi))
+		bib.append(Vector3(cx + ca * rb0, cy + sa * rb0, bz_lo))
+	for k in range(n):
+		var am: float = lerpf(ab0, ab1, (float(k) + 0.5) / float(n))
+		var out_n := Vector3(cos(am), sin(am), 0.0)
+		_st_quad_n(bst, bof[k], bof[k + 1], bif[k + 1], bif[k], Vector3(0.0, 0.0, 1.0))
+		_st_quad_n(bst, bob[k], bob[k + 1], bib[k + 1], bib[k], Vector3(0.0, 0.0, -1.0))
+		_st_quad_n(bst, bof[k], bof[k + 1], bob[k + 1], bob[k], out_n)
+		_st_quad_n(bst, bif[k], bif[k + 1], bib[k + 1], bib[k], -out_n)
+	_st_quad_n(bst, Vector3(cx + x1, y_chord, bz_lo), Vector3(cx + x0, y_chord, bz_lo), Vector3(cx + x0, y_chord, bz_hi), Vector3(cx + x1, y_chord, bz_hi), Vector3(0.0, -1.0, 0.0))
+	_st_quad_n(bst, Vector3(cx - x1, y_chord, bz_lo), Vector3(cx - x0, y_chord, bz_lo), Vector3(cx - x0, y_chord, bz_hi), Vector3(cx - x1, y_chord, bz_hi), Vector3(0.0, -1.0, 0.0))
+	var bmi := MeshInstance3D.new()
+	bmi.name = "DoorFanlightTrim"
+	bmi.mesh = bst.commit()
+	bmi.material_override = M.toon_material(M.C_WOOD_DARK, {"bands": 4.0, "outline": 0.02})
+	pivot.add_child(bmi)
+	# 细竖棂（不跨拱带）与弦线横档（盖住门板/气窗接缝）
+	M.box(pivot, Vector3(0.055, 0.83, 0.05), Vector3(cx, 2.715, 0.055), M.C_WOOD_DARK, 0.0, {"outline": 0.02})
+	for sx in [-0.36, 0.36]:
+		M.box(pivot, Vector3(0.055, 0.742, 0.05), Vector3(cx + sx, 2.671, 0.055), M.C_WOOD_DARK, 0.0, {"outline": 0.02})
+	M.box(pivot, Vector3(2.24, 0.10, 0.14), Vector3(cx, 2.28, 0.0), M.C_WOOD_DARK, 0.0, {"outline": 0.02})
 
 # ============================================================
 # 5) 双坡瓦屋顶 + 前山墙真实洞口 + 错缝的博风/封檐/烟囱泛水
@@ -835,6 +965,22 @@ static func _st_quad(st: SurfaceTool, a: Vector3, b: Vector3, c: Vector3, d: Vec
 	_st_tri(st, a, b, c)
 	_st_tri(st, a, c, d)
 
+static func _st_tri_n(st: SurfaceTool, a: Vector3, b: Vector3, c: Vector3, n: Vector3) -> void:
+	# 显式法线版本：Godot 以顺时针为正面，故这里让 cross(b-a,c-a) 与目标法线相反（从正面看为顺时针），
+	# 同时把外法线写入顶点，保证 cull_back 可见、toon 光照与 outline 外扩壳方向正确。
+	if (b - a).cross(c - a).dot(n) > 0.0:
+		var tmp: Vector3 = b
+		b = c
+		c = tmp
+	for p in [a, b, c]:
+		st.set_normal(n)
+		st.set_uv(Vector2(p.x * 0.5 + 0.5, p.y * 0.5))
+		st.add_vertex(p)
+
+static func _st_quad_n(st: SurfaceTool, a: Vector3, b: Vector3, c: Vector3, d: Vector3, n: Vector3) -> void:
+	_st_tri_n(st, a, b, c, n)
+	_st_tri_n(st, a, c, d, n)
+
 # ============================================================
 # 5.5) 阁楼落地玻璃窗：真实洞口（前墙 5.70..6.15 + 山墙 6.15..8.30）+ 双层玻璃 + 3x3 窗棂
 # ============================================================
@@ -1015,21 +1161,26 @@ static func _porch(root: Node3D, C: Dictionary) -> void:
 				var mm3: float = 0.90 + t3 * 0.18
 				ctile_col.append(Color(mm3 * 1.02, mm3 * 0.97, mm3 * 0.92, 1.0))
 	M.multis(root, "PorchTiles", tile_mesh, ctile_xf, ctile_col, tile_mat)
-	# ---- 吊灯（lantern_mat / lantern_halo 由 main 调光）----
-	var lpos: Vector3 = C["lantern_pos"]
+	# ---- 门廊对称吊灯（左右镜像；lantern_mat / lantern_halos 由 main 调光）----
 	var lm: ShaderMaterial = C["lantern_mat"]
-	M.cyl(root, 0.018, 0.018, 0.52, Vector3(lpos.x, lpos.y + 0.46, lpos.z), M.C_WOOD_DARK, 0.0, {})
-	var body := MeshInstance3D.new()
-	var bb := BoxMesh.new()
-	bb.size = Vector3(0.30, 0.40, 0.30)
-	body.mesh = bb
-	body.material_override = lm
-	body.position = lpos
-	body.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	root.add_child(body)
-	M.box(root, Vector3(0.38, 0.06, 0.38), Vector3(lpos.x, lpos.y + 0.24, lpos.z), M.C_WOOD_DARK, 0.0, {"outline": 0.02})
-	M.box(root, Vector3(0.36, 0.05, 0.36), Vector3(lpos.x, lpos.y - 0.23, lpos.z), M.C_WOOD_DARK, 0.0, {"outline": 0.02})
-	C["lantern_halo"] = M.halo(root, lpos, 2.10, Color(2.4, 1.6, 0.8, 1.0))
+	var lantern_halos: Array = []
+	for lpos_v in [C["lantern_pos"], C["lantern_pos_right"]]:
+		var lpos: Vector3 = lpos_v
+		M.cyl(root, 0.018, 0.018, 0.52, Vector3(lpos.x, lpos.y + 0.46, lpos.z), M.C_WOOD_DARK, 0.0, {})
+		var body := MeshInstance3D.new()
+		var bb := BoxMesh.new()
+		bb.size = Vector3(0.30, 0.40, 0.30)
+		body.mesh = bb
+		body.material_override = lm
+		body.position = lpos
+		body.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		root.add_child(body)
+		M.box(root, Vector3(0.38, 0.06, 0.38), Vector3(lpos.x, lpos.y + 0.24, lpos.z), M.C_WOOD_DARK, 0.0, {"outline": 0.02})
+		M.box(root, Vector3(0.36, 0.05, 0.36), Vector3(lpos.x, lpos.y - 0.23, lpos.z), M.C_WOOD_DARK, 0.0, {"outline": 0.02})
+		# 原 2.10 的 halo 近景会成直径 1m+ 光球；1.10 与路灯 1.18 同级
+		lantern_halos.append(M.halo(root, lpos, 1.10, Color(2.4, 1.6, 0.8, 1.0)))
+	C["lantern_halos"] = lantern_halos
+	C["lantern_halo"] = lantern_halos[0]
 	# ---- 长椅 ----
 	M.box(root, Vector3(0.52, 0.10, 1.70), Vector3(3.38, deck_top + 0.40, 5.95), M.C_WOOD, 0.0, {"outline": 0.03})
 	M.box(root, Vector3(0.10, 0.62, 1.70), Vector3(3.62, deck_top + 0.72, 5.95), M.C_WOOD, 0.0, {"outline": 0.025})
@@ -1059,6 +1210,129 @@ static func _porch(root: Node3D, C: Dictionary) -> void:
 	M.box(root, Vector3(0.34, 0.04, 0.07), Vector3(2.55, fy + 2.72, hd + 0.07), M.C_WOOD_DARK, 0.0, {})
 
 # ============================================================
+# 8b) P7-V3 楼梯：L 形（入口右侧沿右墙 15 级直梯 → 平台 → 靠后墙 12 级横梯 → 阁楼洞口）
+#     层高 5.15 = 27 级 × 0.190741；踏面 0.245；Flight A 宽 1.10 / Flight B 宽 1.17
+# ============================================================
+static func _stairs(root: Node3D, C: Dictionary) -> void:
+	var fy: float = C["fy"]
+	var attic_floor: float = C["attic_floor"]
+	var in_top: float = fy + 3.60
+	var h: float = (attic_floor - fy) / 27.0
+	var tr: float = 0.245
+	var st := Node3D.new()
+	st.name = "Staircase"
+	st.set_meta("risers", 27)
+	st.set_meta("rise", h)
+	st.set_meta("tread", tr)
+	st.set_meta("hole_r1", C["stair_hole_r1"])
+	st.set_meta("hole_r2", C["stair_hole_r2"])
+	root.add_child(st)
+	var wood: Color = M.C_WOOD
+	var wood_l: Color = M.C_WOOD_LIGHT
+	var wood_d: Color = M.C_WOOD_DARK
+	var wo := {"bands": 4.0, "soft": 0.55, "rim": 0.12, "outline": 0.02}
+	# ---------- Flight A：14 级踏面 + 第 15 级踢面（平台前缘）----------
+	var ax0: float = 3.70
+	var ax1: float = 4.80
+	var axc: float = (ax0 + ax1) * 0.5
+	var az0: float = 0.55
+	var a_run: float = 14.0 * tr
+	var a_rise: float = 14.0 * h
+	var a_ang: float = atan2(a_rise, a_run)
+	var a_len: float = sqrt(a_run * a_run + a_rise * a_rise)
+	var a_nrm := Vector3(0.0, cos(a_ang), sin(a_ang))
+	for i in range(1, 15):
+		var top: float = fy + float(i) * h
+		var zris: float = az0 - float(i - 1) * tr
+		M.box(st, Vector3(ax1 - ax0, 0.06, tr + 0.05), Vector3(axc, top - 0.03, zris - tr * 0.5 + 0.02), wood_l, 0.0, wo)
+		M.box(st, Vector3(ax1 - ax0, h, 0.035), Vector3(axc, top - h * 0.5 - 0.03, zris + 0.0175), wood_d, 0.0, {"outline": 0.0})
+	var az_end: float = az0 - a_run
+	var ply: float = fy + 15.0 * h
+	M.box(st, Vector3(ax1 - ax0, h, 0.035), Vector3(axc, ply - h * 0.5 - 0.03, az_end + 0.0175), wood_d, 0.0, {"outline": 0.0})
+	# 梯梁（两侧）+ 中部支撑柱
+	var a_mid := Vector3(0.0, fy + a_rise * 0.5, az0 - a_run * 0.5) - a_nrm * 0.17
+	for sx in [ax0 + 0.03, ax1 - 0.03]:
+		M.box_rot(st, Vector3(0.06, 0.32, a_len), Vector3(sx, a_mid.y, a_mid.z), wood_d, Vector3(a_ang, 0.0, 0.0), {"outline": 0.02})
+	var sup_z: float = -1.45
+	var sup_top: float = fy + (az0 - sup_z) / a_run * a_rise - 0.12
+	M.box(st, Vector3(0.10, sup_top - fy, 0.10), Vector3(ax0 + 0.05, (sup_top + fy) * 0.5, sup_z), wood_d, 0.0, {"outline": 0.02})
+	# 内侧扶手 + 立柱式栏杆
+	var a_rail_y: float = fy + 0.90 + a_rise * 0.5
+	M.box_rot(st, Vector3(0.075, 0.06, a_len - 0.16), Vector3(ax0 + 0.05, a_rail_y, az0 - a_run * 0.5), wood, Vector3(a_ang, 0.0, 0.0), {"outline": 0.02})
+	for i in range(1, 15):
+		var zc: float = az0 - (float(i) - 0.5) * tr
+		var ytop: float = fy + 0.90 + (az0 - zc) / a_run * a_rise - 0.03
+		var ybase: float = fy + float(i) * h
+		M.box(st, Vector3(0.035, ytop - ybase, 0.035), Vector3(ax0 + 0.05, (ytop + ybase) * 0.5, zc), wood, 0.0, {})
+	M.box(st, Vector3(0.10, 1.08, 0.10), Vector3(ax0 + 0.05, fy + 0.54, az0 + 0.09), wood_d, 0.0, {"outline": 0.02})
+	M.box(st, Vector3(0.14, 0.05, 0.14), Vector3(ax0 + 0.05, fy + 1.10, az0 + 0.09), wood_d, 0.0, {})
+	# ---------- 平台（顶 3.4111；x 3.69..4.82，z -3.83..-2.88）----------
+	var px0: float = 3.69
+	var px1: float = 4.82
+	var pz0: float = -3.83
+	var pz1: float = az_end
+	var pcx: float = (px0 + px1) * 0.5
+	M.box(st, Vector3(px1 - px0, 0.10, pz1 - pz0), Vector3(pcx, ply - 0.05, (pz0 + pz1) * 0.5), wood_l, 0.0, wo)
+	M.box(st, Vector3(px1 - px0 + 0.02, 0.14, 0.06), Vector3(pcx, ply - 0.09, pz1 - 0.03), wood_d, 0.0, {"outline": 0.02})
+	for pz in [pz0 + 0.20, pz1 - 0.20]:
+		M.box(st, Vector3(0.12, ply - 0.10 - fy, 0.12), Vector3(px0 + 0.16, (ply - 0.10 + fy) * 0.5, pz), wood_d, 0.0, {"outline": 0.02})
+	# 平台临空侧（+Z 边）不设栏杆：此处正是 Flight A 上来后的到达口（P7-V3 修正），
+	# 只在 Flight A 内侧扶手末端加一根落地 newel 柱收头（扶手顶端 z≈-2.815，柱心 z=-2.87 与之相切）。
+	var newel_z: float = -2.87
+	var newel_y0: float = ply - 0.02
+	var newel_h: float = 0.80
+	M.box(st, Vector3(0.11, newel_h, 0.11), Vector3(ax0 + 0.05, newel_y0 + newel_h * 0.5, newel_z), wood_d, 0.0, {"outline": 0.025})
+	M.box(st, Vector3(0.15, 0.06, 0.15), Vector3(ax0 + 0.05, newel_y0 + newel_h + 0.03, newel_z), wood_d, 0.0, {})
+	# ---------- Flight B：平台向 -X 上行 11 级踏面 + 第 27 级接阁楼地面 ----------
+	var bx0: float = 3.70
+	var bx_end: float = 1.005
+	var bz0: float = -3.80
+	var bz1: float = -2.63
+	var bzc: float = (bz0 + bz1) * 0.5
+	var bwd: float = bz1 - bz0
+	for j in range(16, 27):
+		var top2: float = fy + float(j) * h
+		var xris: float = bx0 - float(j - 16) * tr
+		M.box(st, Vector3(tr + 0.05, 0.06, bwd), Vector3(xris - tr * 0.5 - 0.02, top2 - 0.03, bzc), wood_l, 0.0, wo)
+		M.box(st, Vector3(0.035, h, bwd), Vector3(xris + 0.0175, top2 - h * 0.5 - 0.03, bzc), wood_d, 0.0, {"outline": 0.0})
+	M.box(st, Vector3(0.035, h, bwd), Vector3(bx_end + 0.0175, attic_floor - h * 0.5, bzc), wood_d, 0.0, {"outline": 0.0})
+	var b_run: float = bx0 - bx_end
+	var b_rise: float = attic_floor - ply
+	var b_ang: float = atan2(b_rise, b_run)
+	var b_len: float = sqrt(b_run * b_run + b_rise * b_rise)
+	var b_nrm := Vector3(sin(b_ang), cos(b_ang), 0.0)
+	var b_mid := Vector3((bx0 + bx_end) * 0.5, (ply + attic_floor) * 0.5, 0.0) - b_nrm * 0.17
+	for bz in [bz0 + 0.03, bz1 - 0.03]:
+		M.box_rot(st, Vector3(b_len, 0.32, 0.06), Vector3(b_mid.x, b_mid.y, bz), wood_d, Vector3(0.0, 0.0, -b_ang), {"outline": 0.02})
+	# 靠后墙壁装扶手 + 支架
+	M.box_rot(st, Vector3(b_len - 0.20, 0.06, 0.07), Vector3((bx0 + bx_end) * 0.5, (ply + attic_floor) * 0.5 + 0.90, bz0 + 0.02), wood, Vector3(0.0, 0.0, -b_ang), {"outline": 0.02})
+	for j in [17, 20, 23, 26]:
+		var xb: float = bx0 - float(j - 16) * tr
+		var yb: float = ply + 0.90 + (bx0 - xb) / b_run * b_rise
+		M.box(st, Vector3(0.05, 0.05, 0.09), Vector3(xb, yb - 0.10, bz0 + 0.06), wood_d, 0.0, {})
+	# ---------- 楼梯井井壁：封住天花板(4.25)与阁楼地板(5.63)之间的隐藏空腔 ----------
+	var cav_lo: float = in_top + 0.10
+	var cav_hi: float = attic_floor - 0.07
+	var cav_h: float = cav_hi - cav_lo
+	var cav_y: float = (cav_lo + cav_hi) * 0.5
+	var wcol: Color = M.C_WALL
+	var wopts := {"bands": 4.0, "soft": 0.60, "rim": 0.10}
+	M.box(st, Vector3(2.645, cav_h, 0.08), Vector3(2.3275, cav_y, -2.60), wcol, 0.0, wopts)
+	M.box(st, Vector3(0.08, cav_h, 2.05), Vector3(3.65, cav_y, -1.575), wcol, 0.0, wopts)
+	M.box(st, Vector3(1.17, cav_h, 0.08), Vector3(4.235, cav_y, -0.55), wcol, 0.0, wopts)
+	M.box(st, Vector3(0.08, cav_h, 3.28), Vector3(4.82, cav_y, -2.19), wcol, 0.0, wopts)
+	# x=1.005 侧：楼梯在此穿过，井壁只做到楼梯下皮以下，上方由踏步/收边遮挡
+	var p1_hi: float = 5.42
+	M.box(st, Vector3(0.08, p1_hi - cav_lo, 1.23), Vector3(1.005, (p1_hi + cav_lo) * 0.5, -3.215), wcol, 0.0, wopts)
+	# 井壁上下木质收边
+	for yy in [cav_lo + 0.03, cav_hi - 0.03]:
+		M.box(st, Vector3(2.645, 0.06, 0.12), Vector3(2.3275, yy, -2.60), wood_d, 0.0, {"outline": 0.02})
+		M.box(st, Vector3(0.12, 0.06, 2.05), Vector3(3.65, yy, -1.575), wood_d, 0.0, {"outline": 0.02})
+		M.box(st, Vector3(1.17, 0.06, 0.12), Vector3(4.235, yy, -0.55), wood_d, 0.0, {"outline": 0.02})
+		M.box(st, Vector3(0.12, 0.06, 3.28), Vector3(4.82, yy, -2.19), wood_d, 0.0, {"outline": 0.02})
+	M.box(st, Vector3(0.12, 0.06, 1.23), Vector3(1.005, cav_lo + 0.03, -3.215), wood_d, 0.0, {"outline": 0.02})
+
+# ============================================================
 # 8) 阁楼室内：真实地板 / 斜顶（椽条+系梁）/ 地毯 / 书桌+椅 / 床 / 衣柜 / 暖灯
 # ============================================================
 static func _attic_interior(root: Node3D, C: Dictionary) -> void:
@@ -1078,19 +1352,63 @@ static func _attic_interior(root: Node3D, C: Dictionary) -> void:
 	var ia := Node3D.new()
 	ia.name = "AtticInterior"
 	root.add_child(ia)
-	# ---- 地板结构 + 板条 ----
-	M.box(root, Vector3(fw + 0.04, 0.14, fd + 0.04), Vector3(0.0, floor_y - 0.07, 0.0), Color("5f4733"), 0.0, {"bands": 4.0})
+	# ---- 地板结构（P7-V3：按 L 形楼梯井切分 4 块；R1 x[3.65,4.82] z[-3.83,-0.55]；R2 x[1.005,3.65] z[-3.83,-2.60]）----
+	var slab_mat: Color = Color("5f4733")
+	var slab_y: float = floor_y - 0.07
+	M.box(root, Vector3(5.935, 0.14, fd), Vector3(-1.9625, slab_y, 0.0), slab_mat, 0.0, {"bands": 4.0})
+	M.box(root, Vector3(2.645, 0.14, 6.43), Vector3(2.3275, slab_y, 0.615), slab_mat, 0.0, {"bands": 4.0})
+	M.box(root, Vector3(1.17, 0.14, 4.38), Vector3(4.235, slab_y, 1.64), slab_mat, 0.0, {"bands": 4.0})
+	M.box(root, Vector3(0.11, 0.14, fd), Vector3(4.875, slab_y, 0.0), slab_mat, 0.0, {"bands": 4.0})
+	# ---- 板条：按洞口切分为多段（MultiMesh 缩放实例，保持单 draw call）----
 	var fl_mesh := BoxMesh.new()
-	fl_mesh.size = Vector3(0.42, 0.02, fd - 0.04)
+	fl_mesh.size = Vector3(1.0, 0.02, 1.0)
 	var flxf: Array = []
 	var flcol: Array = []
+	var regions: Array = [
+		[-4.93, 1.005, -3.81, 3.81],
+		[1.005, 3.65, -2.58, 3.81],
+		[3.65, 4.82, -0.53, 3.81],
+		[4.82, 4.93, -3.81, 3.81],
+	]
 	for i in range(21):
 		var xx: float = -4.47 + float(i) * 0.447
-		flxf.append(Transform3D(Basis.IDENTITY, Vector3(xx, floor_y + 0.005, 0.0)))
 		var t: float = M.noise01(float(i) * 0.83, 4.7)
 		var mm: float = 0.80 + t * 0.30
-		flcol.append(Color(mm, mm * 0.96, mm * 0.90, 1.0))
+		var col: Color = Color(mm, mm * 0.96, mm * 0.90, 1.0)
+		for rg in regions:
+			var x0: float = maxf(xx - 0.21, rg[0])
+			var x1: float = minf(xx + 0.21, rg[1])
+			if x1 - x0 <= 0.03:
+				continue
+			var zl: float = float(rg[3]) - float(rg[2])
+			flxf.append(Transform3D(Basis.from_scale(Vector3(x1 - x0, 1.0, zl)), Vector3((x0 + x1) * 0.5, floor_y + 0.006, (float(rg[2]) + float(rg[3])) * 0.5)))
+			flcol.append(col)
 	M.multis(root, "AtticFloor", fl_mesh, flxf, flcol, M.toon_material(Color("8b6a49"), {"vertex_color": true, "bands": 4.0, "soft": 0.55}))
+	# ---- 洞口木质收边（顶面齐平，遮住板边与楼梯/井壁之间的缝）----
+	M.box(root, Vector3(2.645, 0.07, 0.16), Vector3(2.3275, floor_y - 0.035, -2.60), M.C_WOOD_DARK, 0.0, {"outline": 0.02})
+	M.box(root, Vector3(0.16, 0.07, 2.05), Vector3(3.65, floor_y - 0.035, -1.575), M.C_WOOD_DARK, 0.0, {"outline": 0.02})
+	M.box(root, Vector3(1.17, 0.07, 0.16), Vector3(4.235, floor_y - 0.035, -0.55), M.C_WOOD_DARK, 0.0, {"outline": 0.02})
+	M.box(root, Vector3(0.16, 0.07, 3.28), Vector3(4.82, floor_y - 0.035, -2.19), M.C_WOOD_DARK, 0.0, {"outline": 0.02})
+	M.box(root, Vector3(0.16, 0.07, 1.23), Vector3(1.005, floor_y - 0.035, -3.215), M.C_WOOD_DARK, 0.0, {"outline": 0.02})
+	# ---- 阁楼栏杆（洞口三边；x=1.005 处为楼梯上口，留通）----
+	var rail_h: float = 0.92
+	var corners: Array = [Vector2(1.005, -2.60), Vector2(3.65, -2.60), Vector2(3.65, -0.55), Vector2(4.82, -0.55)]
+	for cnr in corners:
+		M.box(root, Vector3(0.10, rail_h + 0.14, 0.10), Vector3(cnr.x, floor_y + (rail_h + 0.14) * 0.5, cnr.y), M.C_WOOD_DARK, 0.0, {"outline": 0.02})
+		M.box(root, Vector3(0.13, 0.05, 0.13), Vector3(cnr.x, floor_y + rail_h + 0.16, cnr.y), M.C_WOOD_DARK, 0.0, {})
+	for s in range(3):
+		var a: Vector2 = corners[s]
+		var b: Vector2 = corners[s + 1]
+		var dvec := Vector3(b.x - a.x, 0.0, b.y - a.y)
+		var seg_len: float = dvec.length()
+		if seg_len < 0.05:
+			continue
+		var yaw: float = atan2(dvec.x, dvec.z)
+		M.box_rot(root, Vector3(0.09, 0.06, seg_len), Vector3((a.x + b.x) * 0.5, floor_y + rail_h, (a.y + b.y) * 0.5), M.C_WOOD, Vector3(0.0, yaw, 0.0), {"outline": 0.02})
+		var nb: int = maxi(2, int(seg_len / 0.22))
+		for k in range(1, nb):
+			var tv: float = float(k) / float(nb)
+			M.box(root, Vector3(0.035, rail_h - 0.10, 0.035), Vector3(a.x + (b.x - a.x) * tv, floor_y + (rail_h - 0.10) * 0.5, a.y + (b.y - a.y) * tv), M.C_WOOD, 0.0, {})
 	# ---- 斜顶：屋面下皮下方 0.02 的椽条（6 根）+ 2 根水平系梁 ----
 	for side in [-1.0, 1.0]:
 		var down := Vector3(side * cp, -sp, 0.0)
@@ -1101,53 +1419,33 @@ static func _attic_interior(root: Node3D, C: Dictionary) -> void:
 			M.box_rot(root, Vector3(slope_len - 1.00, 0.14, 0.14), pos, M.C_WOOD, Vector3(0.0, 0.0, -side * pitch), {"outline": 0.0})
 	for zz in [-2.20, 2.20]:
 		M.box(root, Vector3(5.90, 0.12, 0.16), Vector3(0.0, 7.35, zz), M.C_WOOD_DARK, 0.0, {"outline": 0.02})
-	# ---- 家具 ----
-	# 地毯
-	M.box(ia, Vector3(2.80, 0.03, 2.00), Vector3(0.0, floor_y + 0.025, 2.05), Color("9a6b5c"), 0.0, {"bands": 3.0})
-	M.box(ia, Vector3(2.30, 0.035, 1.60), Vector3(0.0, floor_y + 0.045, 2.05), Color("c9a78e"), 0.0, {"bands": 3.0})
-	# 书桌（面向落地窗）
-	M.box(ia, Vector3(1.70, 0.08, 0.90), Vector3(0.0, 6.42, 2.85), M.C_WOOD_LIGHT, 0.0, {"outline": 0.03})
+	# ---- P7-V3 阁楼家具：IsleHouseProps 统一库；全部避开楼梯洞口 x[1.005,4.82] z[-3.83,-2.60] ----
+	# 睡眠区（左后，-X 侧斜顶下）：床（床头朝 -X）/ 床头柜 / 衣柜（后墙）
+	P.build(ia, "bed", Vector3(-3.20, floor_y, -0.80), PI * 0.5, {"quilt": Color("c98e7f")})
+	P.build(ia, "nightstand", Vector3(-2.05, floor_y, -1.75), 0.0)
+	P.build(ia, "wardrobe", Vector3(-0.20, floor_y, -3.42), 0.0)
+	P.build(ia, "bookshelf", Vector3(-1.55, floor_y, -3.52), 0.0)
+	# 工作区（前落地窗下）：书桌（正面朝室内）/ 椅 / 桌上台灯
+	P.build(ia, "desk", Vector3(0.30, floor_y, 2.80), PI, {"color": M.C_WOOD_LIGHT})
+	P.build(ia, "chair", Vector3(0.30, floor_y, 1.90), 0.0, {"cushion": Color("8a6f5a")})
+	P.build(ia, "table_lamp", Vector3(0.85, floor_y + 0.76, 2.80), 0.0)
+	# 阅读区（右前）：阅读椅 / 边几 + 台灯 / 地毯 / 盆栽
+	P.build(ia, "reading_chair", Vector3(2.20, floor_y, 1.55), -PI * 0.5, {"cushion": Color("6f7f6a")})
+	P.build(ia, "side_table", Vector3(2.90, floor_y, 0.85), 0.0)
+	P.build(ia, "table_lamp", Vector3(2.90, floor_y + 0.55, 0.85), 0.0)
+	P.build(ia, "rug", Vector3(0.0, floor_y + 0.004, 0.65), 0.0)
+	P.build(ia, "plant_pot", Vector3(3.30, floor_y, 2.95), 0.7)
+	# 墙挂画框：原点贴着阁楼后墙内面 z=-3.84（后墙中心 -4.02、厚 0.36），yaw=PI 使其朝 +Z 室内展开
+	P.build(ia, "picture_frame", Vector3(-2.55, 7.15, -3.84), PI)
+	# 阁楼前窗两侧窗帘（计划 §12：±1.80 前窗；帘杆挂在窗顶 8.22，帘布向下 2.40 到 5.82）
 	for sx in [-1.0, 1.0]:
-		for sz in [-1.0, 1.0]:
-			M.box(ia, Vector3(0.08, 0.68, 0.08), Vector3(sx * 0.75, 6.04, 2.85 + sz * 0.36), M.C_WOOD_DARK, 0.0, {})
-	# 桌上 3 本书 + 台灯
-	var book_cols: Array = [Color("8a5a4a"), Color("5d7a6a"), Color("7a6a8a")]
-	for k in range(3):
-		M.box(ia, Vector3(0.10, 0.22, 0.16), Vector3(-0.45 + float(k) * 0.13, 6.57, 2.80), book_cols[k % 3], 0.0, {})
-	M.cyl(ia, 0.07, 0.09, 0.05, Vector3(0.55, 6.485, 2.85), M.C_WOOD_DARK, 0.0, {"outline": 0.02})
-	M.cyl(ia, 0.018, 0.018, 0.30, Vector3(0.55, 6.66, 2.85), M.C_WOOD_DARK, 0.0, {})
-	M.cyl(ia, 0.08, 0.16, 0.18, Vector3(0.55, 6.85, 2.85), M.C_WOOD_DARK, 0.0, {"outline": 0.02})
-	var shade_mat: ShaderMaterial = M.toon_material(Color("ffd79b"), {"self_lit": true, "glow": 1.15})
-	var bulb := MeshInstance3D.new()
-	var bsm := SphereMesh.new()
-	bsm.radius = 0.065
-	bsm.height = 0.13
-	bsm.radial_segments = 8
-	bsm.rings = 5
-	bulb.mesh = bsm
-	bulb.material_override = shade_mat
-	bulb.position = Vector3(0.55, 6.84, 2.85)
-	bulb.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	ia.add_child(bulb)
-	M.halo(root, Vector3(0.55, 6.84, 2.85), 1.05, Color(1.9, 1.30, 0.62, 1.0))
-	C["attic_lamp_world"] = _world(root, Vector3(0.55, 6.84, 2.85))
-	# 椅子（面向窗）
-	_chair(ia, Vector3(0.0, floor_y, 1.95), 0.0)
-	# 床（-X 侧，全部在斜顶下）
-	M.box(ia, Vector3(2.00, 0.24, 1.25), Vector3(-3.00, 6.01, -0.80), M.C_WOOD_DARK, 0.0, {"outline": 0.03})
-	for sx in [-1.0, 1.0]:
-		for sz in [-1.0, 1.0]:
-			M.box(ia, Vector3(0.10, 0.22, 0.10), Vector3(-3.00 + sx * 0.85, 5.81, -0.80 + sz * 0.50), M.C_WOOD_DARK, 0.0, {})
-	M.box(ia, Vector3(1.90, 0.18, 1.15), Vector3(-3.00, 6.22, -0.80), Color("efe4cf"), 0.0, {"bands": 4.0})
-	M.box(ia, Vector3(1.40, 0.12, 1.18), Vector3(-2.85, 6.36, -0.80), Color("c98e7f"), 0.0, {})
-	M.box(ia, Vector3(0.12, 0.85, 1.30), Vector3(-3.96, 6.28, -0.80), M.C_WOOD, 0.0, {"outline": 0.02})
-	M.box(ia, Vector3(0.50, 0.13, 0.50), Vector3(-3.55, 6.36, -0.80), Color("f6efe0"), 0.0, {})
-	# 衣柜（+X 侧靠后，顶部低于斜顶）
-	M.box(ia, Vector3(0.60, 1.75, 1.20), Vector3(2.30, 6.575, -1.60), M.C_WOOD, 0.0, {"outline": 0.03})
-	M.box(ia, Vector3(0.04, 1.55, 0.52), Vector3(1.99, 6.575, -1.90), M.C_WOOD_LIGHT, 0.0, {"outline": 0.02})
-	M.box(ia, Vector3(0.04, 1.55, 0.52), Vector3(1.99, 6.575, -1.30), M.C_WOOD_LIGHT, 0.0, {"outline": 0.02})
-	M.box(ia, Vector3(0.54, 0.06, 1.14), Vector3(2.30, 7.48, -1.60), M.C_WOOD_DARK, 0.0, {"outline": 0.02})
-	ia.set_meta("furniture_count", 7)
+		P.build(ia, "curtain", Vector3(float(sx) * 1.80, 8.22, 3.72), PI,
+				{"width": 0.72, "height": 2.40})
+	# 第二处光源锚点：跟随书桌台灯（main.gd light_sources 消费）
+	C["attic_lamp_world"] = _world(root, Vector3(0.85, 6.75, 2.80))
+	var halo2 := M.halo(root, Vector3(0.85, 6.72, 2.80), 1.05, Color(1.9, 1.30, 0.62, 1.0))
+	halo2.set_meta("attic_lamp_halo", true)
+	ia.set_meta("furniture_count", 15)
 
 # ============================================================
 # 9) 室内：木地板 / 天花梁 / 木饰 / 壁炉 / 家具 / 吊灯
@@ -1174,10 +1472,25 @@ static func _interior(root: Node3D, C: Dictionary) -> void:
 		var mm: float = 0.82 + t * 0.30
 		flcol.append(Color(mm, mm * 0.96, mm * 0.90, 1.0))
 	M.multis(root, "InteriorFloor", fl_mesh, flxf, flcol, M.toon_material(Color("8b6a49"), {"vertex_color": true, "bands": 4.0, "soft": 0.55, "glow": 0.05}))
-	# 天花板 + 横梁（梁顶埋入天花 0.01）
-	M.box(root, Vector3(fw, 0.10, fd), Vector3(0.0, in_top + 0.05, 0.0), Color("d9c7a5"), 0.0, {"bands": 4.0, "soft": 0.60, "glow": 0.04})
-	for zz in [-2.70, -0.90, 0.90, 2.70]:
+	# 天花板：P7-V3 按 L 形楼梯井切分为 4 块（R1 x[3.65,4.82] z[-3.83,-0.55]；R2 x[1.005,3.65] z[-3.83,-2.60]）
+	var ccol := Color("d9c7a5")
+	var copts := {"bands": 4.0, "soft": 0.60, "glow": 0.04}
+	M.box(root, Vector3(5.935, 0.10, fd), Vector3(-1.9625, in_top + 0.05, 0.0), ccol, 0.0, copts)
+	M.box(root, Vector3(2.645, 0.10, 6.43), Vector3(2.3275, in_top + 0.05, 0.615), ccol, 0.0, copts)
+	M.box(root, Vector3(1.17, 0.10, 4.38), Vector3(4.235, in_top + 0.05, 1.64), ccol, 0.0, copts)
+	M.box(root, Vector3(0.11, 0.10, fd), Vector3(4.875, in_top + 0.05, 0.0), ccol, 0.0, copts)
+	# 横梁：z=-0.90 / -2.70 在洞口处截断（z=0.90 / 2.70 保留）
+	M.box(root, Vector3(8.58, 0.20, 0.22), Vector3(-0.64, in_top - 0.09, -0.90), M.C_WOOD_DARK, 0.0, {"outline": 0.02})
+	M.box(root, Vector3(5.935, 0.20, 0.22), Vector3(-1.9625, in_top - 0.09, -2.70), M.C_WOOD_DARK, 0.0, {"outline": 0.02})
+	for zz in [0.90, 2.70]:
 		M.box(root, Vector3(fw, 0.20, 0.22), Vector3(0.0, in_top - 0.09, zz), M.C_WOOD_DARK, 0.0, {"outline": 0.02})
+	# 洞口四周托梁/收边（截面 0.14×0.16，低于板底 0.11，遮住板边与楼梯之间的缝）
+	var tob := {"outline": 0.02}
+	M.box(root, Vector3(1.17, 0.16, 0.14), Vector3(4.235, in_top - 0.03, -0.55), M.C_WOOD_DARK, 0.0, tob)
+	M.box(root, Vector3(0.14, 0.16, 3.28), Vector3(4.82, in_top - 0.03, -2.19), M.C_WOOD_DARK, 0.0, tob)
+	M.box(root, Vector3(0.14, 0.16, 1.23), Vector3(1.005, in_top - 0.03, -3.215), M.C_WOOD_DARK, 0.0, tob)
+	M.box(root, Vector3(2.645, 0.16, 0.14), Vector3(2.3275, in_top - 0.03, -2.60), M.C_WOOD_DARK, 0.0, tob)
+	M.box(root, Vector3(0.14, 0.16, 2.05), Vector3(3.65, in_top - 0.03, -1.575), M.C_WOOD_DARK, 0.0, tob)
 	# 室内四角木柱（内表面凸入室内 0.29，背面埋入墙 0.02）
 	for sx in [-1.0, 1.0]:
 		for sz in [-1.0, 1.0]:
@@ -1214,49 +1527,41 @@ static func _interior(root: Node3D, C: Dictionary) -> void:
 	for k in range(3):
 		M.box(root, Vector3(0.16, 0.08, 0.20), Vector3(fpx - 0.22 + float(k) * 0.22, fy + 0.19, -3.12), Color("ff7a33"), 0.0, {"self_lit": true, "glow": 1.35})
 	M.halo(root, Vector3(fpx, fy + 0.38, -3.02), 0.95, Color(2.0, 0.95, 0.35, 1.0))
-	# ---- 床 ----
-	M.box(root, Vector3(2.05, 0.28, 1.35), Vector3(-3.75, fy + 0.30, -1.80), M.C_WOOD_DARK, 0.0, {"outline": 0.03})
-	M.box(root, Vector3(0.12, 0.95, 1.45), Vector3(-4.78, fy + 0.62, -1.80), M.C_WOOD, 0.0, {"outline": 0.02})
-	M.box(root, Vector3(1.95, 0.20, 1.25), Vector3(-3.75, fy + 0.53, -1.80), Color("efe4cf"), 0.0, {"bands": 4.0})
-	M.box(root, Vector3(1.45, 0.14, 1.28), Vector3(-3.45, fy + 0.68, -1.80), Color("c98e7f"), 0.0, {})
-	for sz in [-1.0, 1.0]:
-		M.box(root, Vector3(0.50, 0.15, 0.55), Vector3(-4.52, fy + 0.68, -1.80 + sz * 0.28), Color("f6efe0"), 0.0, {})
-	# ---- 桌子 + 三把椅子 ----
-	M.box(root, Vector3(1.65, 0.10, 1.00), Vector3(1.55, fy + 0.76, 0.55), M.C_WOOD_LIGHT, 0.0, {"outline": 0.03})
-	for sx in [-1.0, 1.0]:
-		for sz in [-1.0, 1.0]:
-			M.box(root, Vector3(0.10, 0.72, 0.10), Vector3(1.55 + sx * 0.70, fy + 0.38, 0.55 + sz * 0.40), M.C_WOOD_DARK, 0.0, {})
-	_chair(root, Vector3(1.55, fy, 1.42), PI)
-	_chair(root, Vector3(1.55, fy, -0.32), 0.0)
-	_chair(root, Vector3(2.72, fy, 0.55), -PI * 0.5)
-	# ---- 靠墙橱柜 ----
-	M.box(root, Vector3(0.50, 2.10, 1.50), Vector3(4.66, fy + 1.05, 1.70), M.C_WOOD, 0.0, {"outline": 0.03})
-	for sz in [-1.0, 1.0]:
-		M.box(root, Vector3(0.04, 1.70, 0.66), Vector3(4.40, fy + 1.10, 1.70 + sz * 0.36), M.C_WOOD_LIGHT, 0.0, {"outline": 0.02})
-	M.box(root, Vector3(0.44, 0.06, 1.44), Vector3(4.62, fy + 2.12, 1.70), M.C_WOOD_DARK, 0.0, {"outline": 0.02})
-	# ---- 书架 + 书 ----
-	M.box(root, Vector3(0.38, 1.85, 1.30), Vector3(4.72, fy + 0.925, -2.40), M.C_WOOD_DARK, 0.0, {"outline": 0.03})
-	for yy in [0.55, 0.95, 1.35]:
-		M.box(root, Vector3(0.32, 0.04, 1.24), Vector3(4.67, fy + yy, -2.40), M.C_WOOD, 0.0, {})
-	var bcols: Array = [Color("8a5a4a"), Color("5d7a6a"), Color("b08a5a"), Color("7a6a8a"), Color("9a4f42")]
-	for k in range(5):
-		M.box(root, Vector3(0.22, 0.26, 0.09), Vector3(4.50, fy + 0.72, -2.92 + float(k) * 0.20), bcols[k % 5], 0.0, {})
-	for k in range(4):
-		M.box(root, Vector3(0.22, 0.24, 0.09), Vector3(4.50, fy + 1.11, -2.80 + float(k) * 0.22), bcols[(k + 2) % 5], 0.0, {})
-	# ---- 地毯 ----
-	M.box(root, Vector3(2.90, 0.03, 2.10), Vector3(1.55, fy + 0.045, 0.55), Color("9a6b5c"), 0.0, {"bands": 3.0})
-	M.box(root, Vector3(2.30, 0.035, 1.60), Vector3(1.55, fy + 0.065, 0.55), Color("c9a78e"), 0.0, {"bands": 3.0})
-	# ---- 窗边小桌 + 盆栽 ----
-	M.box(root, Vector3(0.78, 0.08, 0.56), Vector3(-3.45, fy + 0.72, 3.45), M.C_WOOD_LIGHT, 0.0, {"outline": 0.02})
-	M.box(root, Vector3(0.16, 0.70, 0.16), Vector3(-3.45, fy + 0.36, 3.45), M.C_WOOD_DARK, 0.0, {})
-	M.cyl(root, 0.14, 0.10, 0.22, Vector3(-3.45, fy + 0.87, 3.45), M.C_TERRACOTTA, 0.0, {"outline": 0.02})
-	M.sphere(root, 0.17, Vector3(-3.45, fy + 1.10, 3.45), M.C_LEAF_B, Vector3(1.0, 0.9, 1.0), {"bands": 3.0, "rim": 0.10})
-	M.sphere(root, 0.12, Vector3(-3.28, fy + 1.03, 3.38), M.C_LEAF_A, Vector3(1.0, 1.1, 1.0), {"bands": 3.0})
-	M.sphere(root, 0.11, Vector3(-3.60, fy + 1.02, 3.52), M.C_LEAF_A, Vector3(1.0, 1.1, 1.0), {"bands": 3.0})
-	# ---- 室内吊灯 ----
+	# ---- P7-V3 室内家具：统一走 IsleHouseProps 程序化库（家具原点 = 占地中心 / 落地 y=fy）----
+	# 入口区（+Z 前墙）：门垫 / 换鞋凳 / 挂衣板 / 挂钟 / 盆栽
+	P.build(root, "doormat", Vector3(0.0, fy, 3.30), 0.0)
+	P.build(root, "shoe_bench", Vector3(2.15, fy, 3.34), PI, {"cushion": Color("c98e7f")})
+	# 墙挂件原点必须贴在内墙面 z=3.84（前墙中心 4.02、厚 0.36），否则背板会埋进墙体
+	P.build(root, "coat_rack", Vector3(2.15, 2.05, 3.84), PI)
+	P.build(root, "wall_clock", Vector3(2.15, 3.05, 3.84), PI)
+	P.build(root, "plant_pot", Vector3(4.42, fy, 3.42), 0.6)
+	# 客厅区（左半）：地毯 / 沙发（面向壁炉）/ 茶几 / 扶手椅 / 落地灯
+	P.build(root, "rug", Vector3(-2.30, fy + 0.004, -1.10), 0.0)
+	P.build(root, "sofa", Vector3(-2.30, fy, -0.20), PI, {"cushion": Color("c98e7f")})
+	P.build(root, "coffee_table", Vector3(-2.30, fy, -1.45), 0.0, {"color": M.C_WOOD_LIGHT})
+	P.build(root, "armchair", Vector3(-4.10, fy, -1.95), 2.356, {"cushion": Color("6f7f6a")})
+	P.build(root, "floor_lamp", Vector3(-4.34, fy, -2.72), 0.3)
+	P.build(root, "firewood_basket", Vector3(-3.55, fy, -2.98), 0.4)
+	# 工作角（左墙）：书桌 + 椅 + 书架
+	P.build(root, "desk", Vector3(-4.44, fy, -0.30), PI * 0.5)
+	P.build(root, "chair", Vector3(-3.70, fy, -0.30), -PI * 0.5, {"cushion": Color("8a6f5a")})
+	P.build(root, "bookshelf", Vector3(-4.74, fy, 2.30), PI * 0.5)
+	# 后墙（壁炉左/右）：高柜 / 矮边柜 + 台灯
+	P.build(root, "tall_cupboard", Vector3(-4.10, fy, -3.58), 0.0)
+	P.build(root, "sideboard", Vector3(0.90, fy, -3.60), 0.0)
+	P.build(root, "table_lamp", Vector3(0.90, fy + 0.875, -3.60), 0.0)
+	# 餐区（右前）：餐桌 + 4 椅
+	P.build(root, "dining_table", Vector3(1.15, fy, 1.95), 0.0)
+	P.build(root, "chair", Vector3(1.15, fy, 2.72), PI, {"cushion": Color("8a6f5a")})
+	P.build(root, "chair", Vector3(1.15, fy, 1.18), 0.0, {"cushion": Color("8a6f5a")})
+	P.build(root, "chair", Vector3(2.18, fy, 1.95), -PI * 0.5, {"cushion": Color("8a6f5a")})
+	P.build(root, "chair", Vector3(0.12, fy, 1.95), PI * 0.5, {"cushion": Color("8a6f5a")})
+	# 壁挂画框（左墙）
+	P.build(root, "picture_frame", Vector3(-4.92, 2.70, 1.45), PI * 0.5)
+	# ---- 室内吊灯：P7-V3 移到餐桌正上方（灯光 light_sources 同步在 build() 中改到 (1.15,fy+2.45,1.95)）----
 	var lamp_mat: ShaderMaterial = M.toon_material(Color("ffd79b"), {"self_lit": true, "glow": 1.05})
-	M.cyl(root, 0.018, 0.018, 0.55, Vector3(0.50, in_top - 0.28, 0.40), M.C_WOOD_DARK, 0.0, {})
-	M.cyl(root, 0.06, 0.34, 0.28, Vector3(0.50, in_top - 0.66, 0.40), M.C_WOOD_DARK, 0.0, {"outline": 0.02})
+	M.cyl(root, 0.018, 0.018, 0.55, Vector3(1.15, in_top - 0.28, 1.95), M.C_WOOD_DARK, 0.0, {})
+	M.cyl(root, 0.06, 0.34, 0.28, Vector3(1.15, in_top - 0.66, 1.95), M.C_WOOD_DARK, 0.0, {"outline": 0.02})
 	var bulb := MeshInstance3D.new()
 	var bsm := SphereMesh.new()
 	bsm.radius = 0.11
@@ -1265,51 +1570,18 @@ static func _interior(root: Node3D, C: Dictionary) -> void:
 	bsm.rings = 5
 	bulb.mesh = bsm
 	bulb.material_override = lamp_mat
-	bulb.position = Vector3(0.50, in_top - 0.74, 0.40)
+	bulb.position = Vector3(1.15, in_top - 0.74, 1.95)
 	bulb.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	root.add_child(bulb)
-	M.halo(root, Vector3(0.50, in_top - 0.74, 0.40), 1.35, Color(1.7, 1.15, 0.62, 1.0))
-
-static func _chair(parent: Node3D, base: Vector3, rot_y: float) -> void:
-	var n := Node3D.new()
-	n.position = base
-	n.rotation.y = rot_y
-	parent.add_child(n)
-	M.box(n, Vector3(0.46, 0.07, 0.46), Vector3(0.0, 0.45, 0.0), M.C_WOOD_LIGHT, 0.0, {"outline": 0.02})
-	M.box(n, Vector3(0.46, 0.55, 0.06), Vector3(0.0, 0.76, -0.22), M.C_WOOD, 0.0, {"outline": 0.02})
-	for sx in [-1.0, 1.0]:
-		for sz in [-1.0, 1.0]:
-			M.box(n, Vector3(0.06, 0.45, 0.06), Vector3(sx * 0.18, 0.225, sz * 0.18), M.C_WOOD_DARK, 0.0, {})
+	M.halo(root, Vector3(1.15, in_top - 0.74, 1.95), 1.35, Color(1.7, 1.15, 0.62, 1.0))
 
 # ============================================================
-# 10) 门廊上的猫（保留旧版造型）
+# 10) 门廊上的猫（P7-V3：isle_cat.gd 程序化造型 + 原地随机待机，模型/动画细节见该文件）
 # ============================================================
-static func _cat(root: Node3D, C: Dictionary, pos: Vector3) -> void:
-	var cat := Node3D.new()
-	cat.name = "PorchCat"
-	cat.position = pos
-	cat.rotation.y = -0.6
-	root.add_child(cat)
-	M.sphere(cat, 0.22, Vector3(0.0, 0.20, 0.0), Color("4a4e57"), Vector3(1.0, 0.85, 1.35), {"outline": 0.02, "rim": 0.10})
-	M.sphere(cat, 0.17, Vector3(0.0, 0.38, 0.24), Color("555a64"), Vector3(1.0, 0.95, 1.0), {"outline": 0.02, "rim": 0.10})
-	for sx in [-1.0, 1.0]:
-		var ear := MeshInstance3D.new()
-		var cm := CylinderMesh.new()
-		cm.top_radius = 0.0
-		cm.bottom_radius = 0.075
-		cm.height = 0.13
-		cm.radial_segments = 4
-		ear.mesh = cm
-		ear.material_override = M.toon_material(Color("555a64"), {"outline": 0.015})
-		ear.position = Vector3(sx * 0.10, 0.51, 0.26)
-		ear.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-		cat.add_child(ear)
-	M.cyl_rot(cat, 0.045, 0.06, 0.55, Vector3(0.16, 0.18, -0.30), Color("4a4e57"), Vector3(0.9, 0.0, 0.0), {"outline": 0.02})
-	M.sphere(cat, 0.10, Vector3(0.0, 0.26, 0.28), Color("d8d2c4"), Vector3(1.0, 1.0, 1.2), {"outline": 0.0})
-	for sx in [-1.0, 1.0]:
-		for sz in [-1.0, 1.0]:
-			M.sphere(cat, 0.055, Vector3(sx * 0.11, 0.04, sz * 0.16), Color("555a64"), Vector3(1.2, 0.6, 1.0), {"outline": 0.0})
-	M.sphere(cat, 0.028, Vector3(0.0, 0.42, 0.40), Color("1e1a18"), Vector3(1.0, 1.0, 0.6), {"outline": 0.0})
+static func _cat(root: Node3D, C: Dictionary, pos: Vector3) -> Dictionary:
+	var info: Dictionary = CAT.build(root, pos, -0.6)
+	C["cat"] = info
+	return info
 
 # ============================================================
 # 11) 鸟落点：Array[Dictionary]{id,pos,facing,radius,kind}（世界坐标，真实可站）
