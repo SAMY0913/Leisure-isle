@@ -6,10 +6,14 @@ extends RefCounted
 const HOUSE_X := 0.8
 const HOUSE_Z := -0.6
 const HOUSE_YAW := 0.30
-const HOUSE_W := 10.6
-const HOUSE_D := 8.4
-const HOUSE_WALL_H := 5.6
-const HOUSE_ROOF_H := 3.6
+# P7-V3.2 比例校准后的木屋外廓（单位米，1 世界单位 = 1 m）：
+#   占地 7.6 × 6.2 m；地板面 fy = 0.55（自地形基准）；
+#   一层净高 2.42 + 阁楼楼板 0.20 → 阁楼地板 3.17；檐口/屋顶基线 3.73（= fy + 3.18）；
+#   屋面高 2.47（坡度 atan(2.47/3.8)≈33.0°）→ 屋脊 6.20 m。
+const HOUSE_W := 7.6
+const HOUSE_D := 6.2
+const HOUSE_WALL_H := 3.18
+const HOUSE_ROOF_H := 2.47
 const BIG_TREE_X := -10.9
 const BIG_TREE_Z := 4.2
 const SMALL_TREE_X := 10.4
@@ -110,11 +114,13 @@ static func house_front() -> Vector3:
 	return Vector3(sin(HOUSE_YAW), 0.0, cos(HOUSE_YAW))
 
 static func door_world() -> Vector3:
-	var d: float = HOUSE_D * 0.5 + 0.6
+	# 门前廊台/台阶处（墙面外 0.45 m），y = 室内地板面高度。
+	var d: float = HOUSE_D * 0.5 + 0.45
 	return Vector3(HOUSE_X + sin(HOUSE_YAW) * d, house_ground_y() + 0.55, HOUSE_Z + cos(HOUSE_YAW) * d)
 
 static func door_approach() -> Vector3:
-	var d: float = HOUSE_D * 0.5 + 3.1
+	# 门前道路的起点（墙面外 2.4 m），y 取地形高度。
+	var d: float = HOUSE_D * 0.5 + 2.4
 	return Vector3(HOUSE_X + sin(HOUSE_YAW) * d, house_ground_y(), HOUSE_Z + cos(HOUSE_YAW) * d)
 
 static func dock_dir() -> Vector3:
