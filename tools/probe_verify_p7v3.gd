@@ -79,12 +79,24 @@ func _find_pref(parent: Node, prefix: String) -> Array:
             out.append(n)
     return out
 
-func _box_size(n: Node) -> Vector3:
-    if n is MeshInstance3D:
-        var mi: MeshInstance3D = n
+func _box_size(v: Variant) -> Vector3:
+    # 兼容两种来源：合批前的独立 BoxMesh 节点，以及合批后的溯源清单条目
+    if v is Dictionary:
+        return (v as Dictionary).get("size", Vector3(-1.0, -1.0, -1.0))
+    if v is MeshInstance3D:
+        var mi: MeshInstance3D = v
         if mi.mesh is BoxMesh:
             return (mi.mesh as BoxMesh).size
     return Vector3(-1.0, -1.0, -1.0)
+
+## 部件位置：节点用自身局部 position，合批溯源条目用它被合并前的局部变换 origin。
+func _part_pos(v: Variant) -> Vector3:
+    if v is Dictionary:
+        var xf: Transform3D = (v as Dictionary).get("xf", Transform3D.IDENTITY)
+        return xf.origin
+    if v is Node3D:
+        return (v as Node3D).position
+    return Vector3.ZERO
 
 func _mesh_tri_count(n: Node) -> int:
     if n is MeshInstance3D:
@@ -112,10 +124,42 @@ func _box_boxes(parent: Node) -> Array:
     for n in _walk(parent):
         if n is MeshInstance3D and (n as MeshInstance3D).mesh is BoxMesh:
             out.append(n)
+    # P7-V3.1 静态合批后，部件不再是独立的 BoxMesh 节点，而是合并进少量多 surface
+    # ArrayMesh。这里用构建期写入的 batch_manifest 补齐同口径的部件记录，使"按部件
+    # 尺寸/位置断言"的检查在合批后依然逐部件生效（不是放宽，而是换成溯源口径）。
+    for e in _batch_parts(parent):
+        if String((e as Dictionary).get("kind", "")) == "Box":
+            out.append(e)
     return out
 
-func _is_axis_aligned(n: Node3D) -> bool:
-    return absf(n.rotation.x) + absf(n.rotation.y) + absf(n.rotation.z) < 0.01
+## 收集 parent 子树里所有 batch_manifest 条目（合批溯源清单）。
+## 注意：合批根节点自己也可能带清单（Cottage / Staircase 就是在自己身上合并的），
+## 而 _walk() 只遍历子节点，所以这里要先补上 parent 自身。
+func _batch_parts(parent: Node) -> Array:
+    var out: Array = []
+    var nodes: Array = [parent]
+    nodes.append_array(_walk(parent))
+    for n in nodes:
+        if not n.has_meta("batch_manifest"):
+            continue
+        var entries: Variant = n.get_meta("batch_manifest")
+        if not (entries is Array):
+            continue
+        for e in (entries as Array):
+            if e is Dictionary:
+                out.append(e)
+    return out
+
+func _is_axis_aligned(v: Variant) -> bool:
+    var rot := Vector3.ZERO
+    if v is Dictionary:
+        var xf: Transform3D = (v as Dictionary).get("xf", Transform3D.IDENTITY)
+        rot = xf.basis.get_euler()
+    elif v is Node3D:
+        rot = (v as Node3D).rotation
+    else:
+        return false
+    return absf(rot.x) + absf(rot.y) + absf(rot.z) < 0.01
 
 func _rect_overlap_area(a: Rect2, b: Rect2) -> float:
     var x0: float = maxf(a.position.x, b.position.x)
@@ -204,13 +248,22 @@ func _section_env() -> void:
         var total_h: float = float(C.get("attic_floor", 0.0)) - float(C.get("fy", 0.0))
         _ok(_near(total_h, 5.15, 0.01), "楼梯总高（一层->二层）=5.15m", "%.4f" % total_h)
         _ok(_near(float(C.get("deck_top", 0.0)), 0.42, 0.01), "门廊台面 deck_top=0.42", "%.3f" % float(C.get("deck_top", 0.0)))
+    # P7-V3.1 静态合批把"一个部件一个 MeshInstance3D"折叠成"每材质一个 surface"，
+    # 存活节点数会显著下降。因此"场景完整构建"改用**部件级总量**衡量：存活渲染节点
+    # + 合批溯源清单条目（batch_manifest 逐条记录了被合并部件的类别/尺寸/变换）。
+    # 门槛数值沿用 P7-V3 的 450 / 400（不降低），并额外断言合批确实生效。
     var node_count := _walk(root).size()
-    _ok(node_count > 450, "Cottage 节点总数 > 450（场景完整构建）", "nodes=%d" % node_count)
+    var part_total := _batch_parts(root).size()
+    _ok(node_count + part_total > 450, "Cottage 部件总数 > 450（场景完整构建）",
+        "nodes=%d parts=%d" % [node_count, part_total])
     var mesh_count := 0
     for n in _walk(root):
         if n is MeshInstance3D:
             mesh_count += 1
-    _ok(mesh_count > 400, "Cottage MeshInstance3D > 400", "mesh=%d" % mesh_count)
+    _ok(mesh_count + part_total > 400, "Cottage 网格部件总数 > 400",
+        "mesh=%d parts=%d" % [mesh_count, part_total])
+    _ok(mesh_count <= 200, "Cottage 存活 MeshInstance3D 已收敛（合批生效，<=200）",
+        "mesh=%d" % mesh_count)
     _ok(_find(get_root(), "Sailboat") != null, "Sailboat 节点存在")
     _ok(_find(root, "Staircase") != null, "Staircase 节点存在")
     _ok(_find(root, "AtticInterior") != null, "AtticInterior 节点存在")
@@ -538,7 +591,7 @@ func _section_stairs() -> void:
     var boxes := _box_boxes(past)
     var treads_a: Array = []
     var treads_b: Array = []
-    var landing: Node = null
+    var landing: Variant = null
     for n in boxes:
         var s := _box_size(n)
         if _near(s.x, 1.10, 0.02) and _near(s.y, 0.06, 0.01) and _near(s.z, 0.295, 0.01):
@@ -553,7 +606,7 @@ func _section_stairs() -> void:
     var stepped := 0
     var bad_a := 0
     for n in treads_a:
-        var top: float = (n as Node3D).position.y + 0.03
+        var top: float = _part_pos(n).y + 0.03
         var idx := int(roundf((top - fy) / h))
         if idx >= 1 and idx <= 14 and _near(top - fy, float(idx) * h, 0.004):
             stepped += 1
@@ -562,13 +615,13 @@ func _section_stairs() -> void:
     _ok(stepped == 14 and bad_a == 0, "Flight A 每级顶面高度 = fy + i*h", "ok=%d bad=%d" % [stepped, bad_a])
     var stepped_b := 0
     for n in treads_b:
-        var top2: float = (n as Node3D).position.y + 0.03
+        var top2: float = _part_pos(n).y + 0.03
         var idx2 := int(roundf((top2 - fy) / h))
         if idx2 >= 16 and idx2 <= 26 and _near(top2 - fy, float(idx2) * h, 0.004):
             stepped_b += 1
     _ok(stepped_b == 11, "Flight B 每级顶面高度 = fy + j*h (16..26)", "ok=%d" % stepped_b)
     if landing != null:
-        var land_top: float = (landing as Node3D).position.y + 0.05
+        var land_top: float = _part_pos(landing).y + 0.05
         _ok(_near(land_top, fy + 15.0 * h, 0.004), "平台顶面 = 第 15 级 (3.4111)", "%.4f" % land_top)
         _ok(_near(land_top, 3.4111, 0.005), "平台顶面实测≈3.4111", "%.4f" % land_top)
     var last_top: float = fy + 26.0 * h
@@ -593,15 +646,14 @@ func _section_stairs() -> void:
     for n in _box_boxes(root):
         var s3 := _box_size(n)
         if _near(s3.y, 0.10, 0.02) and s3.z > 3.0:
-            var nn := n as Node3D
-            if _is_axis_aligned(nn):
+            if _is_axis_aligned(n):
                 slabs.append(n)
     _ok(slabs.size() == 4, "一层天花板按 L 形洞口切成 4 块", "count=%d" % slabs.size())
     var cover := 0.0
     for n in slabs:
-        var nn2 := n as Node3D
         var s4 := _box_size(n)
-        var rect := Rect2(nn2.position.x - s4.x * 0.5, nn2.position.z - s4.z * 0.5, s4.x, s4.z)
+        var pp := _part_pos(n)
+        var rect := Rect2(pp.x - s4.x * 0.5, pp.z - s4.z * 0.5, s4.x, s4.z)
         cover += _rect_overlap_area(rect, r1) + _rect_overlap_area(rect, r2)
     _ok(cover <= 0.01, "天花板 4 块均不覆盖楼梯洞口", "overlap=%.4f m2" % cover)
     # 二层地板 MultiMesh 不得盖住洞口
@@ -645,13 +697,13 @@ func _section_attic() -> void:
     _ok(rails.size() == 3, "二层洞口栏杆 3 段扶手", "count=%d" % rails.size())
     var rail_y_ok := 0
     for n in rails:
-        if _near((n as Node3D).position.y, floor_y + 0.92, 0.02):
+        if _near(_part_pos(n).y, floor_y + 0.92, 0.02):
             rail_y_ok += 1
     _ok(rail_y_ok == 3, "扶手高度 = 二层地面 + 0.92", "ok=%d" % rail_y_ok)
     _ok(posts.size() == 4, "栏杆立柱 4 根", "count=%d" % posts.size())
     var post_top_ok := 0
     for n in posts:
-        if _near((n as Node3D).position.y + 0.53, floor_y + 1.06, 0.02):
+        if _near(_part_pos(n).y + 0.53, floor_y + 1.06, 0.02):
             post_top_ok += 1
     _ok(post_top_ok == 4, "立柱顶 = 二层地面 + 1.06", "ok=%d" % post_top_ok)
     var ia := _find(root, "AtticInterior")
@@ -698,7 +750,7 @@ func _section_interior() -> void:
         return
     var C := _ctx()
     var fy: float = float(C.get("fy", 0.55))
-    var bulb: Node = null
+    var bulb: Variant = null
     for n in root.get_children():
         if n is MeshInstance3D:
             var mi := n as MeshInstance3D
@@ -706,9 +758,18 @@ func _section_interior() -> void:
                 var sm := mi.mesh as SphereMesh
                 if _near(sm.radius, 0.11, 0.02):
                     bulb = n
+    # 合批后灯泡已并入 Cottage 的 surface；用溯源清单里的 Sphere 条目复核
+    if bulb == null:
+        for e in _batch_parts(root):
+            if String((e as Dictionary).get("kind", "")) != "Sphere":
+                continue
+            var sz: Vector3 = (e as Dictionary).get("size", Vector3.ZERO)
+            if _near(sz.x, 0.11, 0.02):
+                bulb = e
+                break
     _ok(bulb != null, "室内吊灯灯泡（SphereMesh r=0.11）存在")
     if bulb != null:
-        var bp: Vector3 = (bulb as Node3D).position
+        var bp: Vector3 = _part_pos(bulb)
         _ok(_near(bp.x, 1.15, 0.03) and _near(bp.z, 1.95, 0.03), "吊灯位于餐桌正上方 (1.15, ?, 1.95)", str(bp))
         # 吊灯 y = 天花板内顶 in_top(4.15) - 0.74 = 3.41（房屋本地坐标）
         _ok(_near(bp.y, 3.41, 0.03), "吊灯高度约 3.41（餐桌上方）", "y=%.3f" % bp.y)

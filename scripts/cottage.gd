@@ -101,6 +101,21 @@ static func build(parent: Node3D) -> Dictionary:
 	# ---- 灯塔光束遮挡盒（世界空间 yaw 对齐 AABB；main._collect_beam_occluders 写 g_occ_*）----
 	var beam_occluders: Array = _beam_occluders_world(root, C)
 
+	# ---- P7-V3.1 静态合批（房屋外壳 / 一层室内 / 阁楼三层分区，家具与楼梯各自在自己的
+	# 节点内已合批，不参与这里）----
+	# 家具库 / 楼梯 / 墙体梁柱都是"建好就不再单独运动"的静态件，但每件是一个独立
+	# MeshInstance3D（每个 = 1 surface × toon + outline 两个 pass），Forward+ 不做自动
+	# 静态合批，因此 P7-V3 的 draw call 随部件数线性翻倍。这里在构建结束时按
+	# （空间区域, 材质实例, 顶点属性签名）合并成少量多 surface ArrayMesh：
+	#   * 材质对象原样复用 → next_pass 描边、self_lit、glow 参数全部不变；
+	#   * 顶点/法线由 SurfaceTool.append_from 做局部→root 局部坐标变换，
+	#     三角形与顶点总数与合并前严格相等（tools/probe_batch_merge_p7v31.gd 断言守恒）；
+	#   * 门扇（no_batch）、猫（no_batch）、玻璃/光晕/影子斑（非 toon 材质）不参与；
+	#   * 按区域分组，因此不会出现"整栋房屋只能整体显隐"。
+	IsleBatch.merge_static(root, {
+		"split": func(mi: Node3D) -> String: return _batch_region(root, mi),
+	})
+
 	return {
 		"root": root,
 		"door_pivot": C["door_pivot"],
@@ -128,6 +143,33 @@ static func build(parent: Node3D) -> Dictionary:
 		"cat": C.get("cat", {}),
 		"stairs": C.get("stairs", {}),
 	}
+
+# ============================================================
+# P7-V3.1 静态合批辅助
+# ============================================================
+## 合批区域划分：把 root 下的静态件按"所在空间"分成三层，避免整栋房屋被合并成
+## 一个只能整体显隐的巨型网格，同时让视锥剔除粒度保持在"外壳 / 一层室内 / 阁楼"级别。
+## 判定用 root 局部坐标（房子局部 ±X 为宽、±Z 为深）：
+##   interior  一层室内  |x|<=4.95 |z|<=3.90 y<4.30
+##   attic     二层阁楼  |x|<=4.95 |z|<=3.90 y>=5.40
+##   shell     外墙/屋顶/勒脚/门廊/楼梯井壁等其余部分
+static func _batch_region(root: Node3D, mi: Node3D) -> String:
+	var p: Vector3 = root.to_local(mi.global_position)
+	if absf(p.x) <= 4.95 and absf(p.z) <= 3.90:
+		if p.y < 4.30:
+			return "interior"
+		if p.y >= 5.40:
+			return "attic"
+	return "shell"
+
+## 把 parent 的直接子节点里所有 Prop_<kind>_<seq> 家具逐件静态合批。
+## 只处理直接子节点：阁楼家具挂在 AtticInterior 下，一层家具挂 root 下，各管各的。
+static func _merge_props_of(parent: Node3D) -> void:
+	if parent == null or not is_instance_valid(parent):
+		return
+	for c in parent.get_children():
+		if c is Node3D and String(c.name).begins_with("Prop_"):
+			IsleBatch.merge_static(c)
 
 # ============================================================
 # 0) 灯塔光束遮挡盒（Phase6/T4）
@@ -571,6 +613,9 @@ static func _door(root: Node3D, C: Dictionary) -> void:
 	var pivot := Node3D.new()
 	pivot.name = "DoorPivot"
 	pivot.position = Vector3(-1.13, fy, hd - 0.06)
+	# 门扇是唯一会被逐帧旋转的房屋部件：标记 no_batch，静态合批工具不会碰它
+	# （它的子部件必须保持相对 pivot 的独立变换才能整体开门）。
+	pivot.set_meta("no_batch", true)
 	root.add_child(pivot)
 	C["door_pivot"] = pivot
 	for i in range(5):
@@ -646,6 +691,9 @@ static func _door_spandrel(root: Node3D, C: Dictionary) -> void:
 	mi.mesh = st.commit()
 	mi.material_override = M.toon_material(M.C_WALL, {"bands": 4.0, "soft": 0.60, "rim": 0.10})
 	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	# 门洞拱形补墙是单一自定义网格的关键结构件（不是重复小件），保留具名独立节点：
+	# 合批收益只有 2 个 pass，换来的可调试性更重要。
+	mi.set_meta("no_batch", true)
 	root.add_child(mi)
 
 static func _door_arch_ring(root: Node3D, C: Dictionary) -> void:
@@ -690,6 +738,8 @@ static func _door_arch_ring(root: Node3D, C: Dictionary) -> void:
 	mi.mesh = st.commit()
 	mi.material_override = M.toon_material(M.C_WOOD_DARK, {"bands": 4.0, "outline": 0.03})
 	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	# 半圆拱券是门的关键轮廓结构件（单一自定义网格），保留具名独立节点。
+	mi.set_meta("no_batch", true)
 	root.add_child(mi)
 	# 拱顶锁石：仅作拱顶装饰高光块，不参与半圆轮廓构成
 	M.box_rot(root, Vector3(0.34, 0.30, 0.30), Vector3(0.0, yc + 1.31, zf + 0.10), M.C_WOOD_LIGHT, Vector3.ZERO, {"outline": 0.03})
@@ -1331,6 +1381,10 @@ static func _stairs(root: Node3D, C: Dictionary) -> void:
 		M.box(st, Vector3(1.17, 0.06, 0.12), Vector3(4.235, yy, -0.55), wood_d, 0.0, {"outline": 0.02})
 		M.box(st, Vector3(0.12, 0.06, 3.28), Vector3(4.82, yy, -2.19), wood_d, 0.0, {"outline": 0.02})
 	M.box(st, Vector3(0.12, 0.06, 1.23), Vector3(1.005, cav_lo + 0.03, -3.215), wood_d, 0.0, {"outline": 0.02})
+	# P7-V3.1：楼梯整段静态合批。99 个部件（踏步/踢面/梯梁/扶手/立柱/井壁/收边）按
+	# （材质, 顶点属性）合并为 7 个 surface —— 材质对象与 next_pass 描边原样保留，
+	# 三角形数与合并前严格相等（tools/probe_batch_merge_p7v31.gd 断言守恒）。
+	IsleBatch.merge_static(st)
 
 # ============================================================
 # 8) 阁楼室内：真实地板 / 斜顶（椽条+系梁）/ 地毯 / 书桌+椅 / 床 / 衣柜 / 暖灯
@@ -1445,6 +1499,8 @@ static func _attic_interior(root: Node3D, C: Dictionary) -> void:
 	C["attic_lamp_world"] = _world(root, Vector3(0.85, 6.75, 2.80))
 	var halo2 := M.halo(root, Vector3(0.85, 6.72, 2.80), 1.05, Color(1.9, 1.30, 0.62, 1.0))
 	halo2.set_meta("attic_lamp_halo", true)
+	# P7-V3.1：阁楼家具逐件在自己的 Prop_<kind>_<seq> 节点内静态合批（材质/描边不变）
+	_merge_props_of(ia)
 	ia.set_meta("furniture_count", 15)
 
 # ============================================================
@@ -1574,6 +1630,8 @@ static func _interior(root: Node3D, C: Dictionary) -> void:
 	bulb.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	root.add_child(bulb)
 	M.halo(root, Vector3(1.15, in_top - 0.74, 1.95), 1.35, Color(1.7, 1.15, 0.62, 1.0))
+	# P7-V3.1：一层家具逐件在自己的 Prop_<kind>_<seq> 节点内静态合批（材质/描边不变）
+	_merge_props_of(root)
 
 # ============================================================
 # 10) 门廊上的猫（P7-V3：isle_cat.gd 程序化造型 + 原地随机待机，模型/动画细节见该文件）

@@ -456,6 +456,9 @@ static func build(parent: Node3D, pos: Vector3, yaw: float = -0.6, opts: Diction
 	root.rotation.y = yaw
 	parent.add_child(root)
 	root.set_meta("isle_cat", true)
+	# 猫是逐帧待机动画主体（呼吸/眨眼/张望/舔爪/尾巴链），任何一个部件都不能被
+	# 静态合批吞掉，否则动画会失去独立的枢轴节点。这里用 no_batch 契约显式声明。
+	root.set_meta("no_batch", true)
 
 	# ---------------- 身体（呼吸组：只 scale y，不影响腿/尾/头） ----------------
 	var body := Node3D.new()
