@@ -23,5 +23,5 @@ PROJ="D:/休闲小岛幻境/游戏工程"
 - headless：selftest 53/53、verify 177/0（warn 3 已闭环）、其余 8 个探针全过；FOV e2e 23 断言全过。
 - 官方窗口：--shots 61 张、--transition 13 张、--perf EXIT=0；专项截图 door 11/house 34/cam 9/boat 11/cat 4+11/props 10/frame 39+fov 27/porchq 10。
 - 视觉：门/门廊灯/室内四角/二层/楼梯/小船/猫咪/FOV/过渡关键项通过；备注见 REGRESSION §6.1。
-- 性能：默认画质 CPU-bound 机位 -28%~-40%、draw_calls 约 +100%，未过 §14 ±10% 门限，待 Lead 决策（REGRESSION §7）。
+- 性能：默认画质 CPU-bound 机位 -28%~-40%、draw_calls 约 +100%，未过 §14 ±10% 门限，如实记录、不标通过；判定已由 Lead 确认：接受为「已记录视觉收益换 draw call 的取舍」，优化项列后续（REGRESSION §7、报告 §12.4/§13）。
 - 门廊亮度：q4 夜间 ≥ q2（+5~7%），V3 vs V2 同机位 04_night_lights ROI +1.4%，无回退。
