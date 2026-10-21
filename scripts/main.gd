@@ -8,6 +8,7 @@ const SHOTS_DIR := "D:/休闲小岛幻境/开发产物/shots/"
 const P7_SHOTS_DIR := "D:/休闲小岛幻境/开发产物/p7/shots/"
 const P8_SHOTS_DIR := "D:/休闲小岛幻境/开发产物/p8/shots/"
 const P8_MOON_DIR := "D:/休闲小岛幻境/开发产物/p8/moon/"
+const P8_SEASON_DIR := "D:/休闲小岛幻境/开发产物/p8/seasons/"
 const VIGNETTE_SHADER := "res://shaders/vignette.gdshader"
 const SKY_SHADER := "res://shaders/sky.gdshader"
 const SEA_SHADER := "res://shaders/sea.gdshader"
@@ -18,6 +19,8 @@ const ScaleOverlay := preload("res://tools/scale_debug_overlay.gd")
 const ISLE_VILLAGER := preload("res://scripts/isle_villager.gd")
 # P8：公历日历/季节投影（纯函数）。权威时间仍只有本文件的 _sim_seconds，日历只是它的只读投影。
 const ISLE_CALENDAR := preload("res://scripts/isle_calendar.gd")
+# P8 阶段 4：季节视觉参数表（纯函数；只把日历季节权重换成颜色/稀疏度/落叶量，不新建环境系统）。
+const ISLE_SEASON := preload("res://scripts/isle_season.gd")
 
 # ---- 灯塔旋转 / 光束参数（真实旋转透镜参考：Kīlauea Point 约 20 秒一圈，用作基础周期配置项） ----
 const LIGHTHOUSE_ROTATION_PERIOD := 20.0   # 秒/圈（1× 时间流速下的基础周期）
@@ -45,6 +48,7 @@ var _selftest := false
 var _p7shots := false
 var _p8shots := false
 var _p8moon := false      # --p8moon：八相月球专项截图（固定日期样本，不依赖现实时间）
+var _p8seasons := false   # --p8seasons：四季视觉专项截图（固定日期样本）
 var _p8_moon_clear := false   # 月相诊断截图：临时清空云层，避免云遮住月盘判相
 
 # ---- 时间 ----
@@ -53,6 +57,18 @@ var _day_length := 480.0
 var _realtime := false
 var _events: Dictionary = {}
 var _events_timer := 0.0
+
+# ---- 季节（P8 阶段 4：日历季节权重的视觉投影，不新增权威时钟） ----
+const SEASON_APPLY_INTERVAL := 0.25   # 季节视觉写入节流（权重变化很慢，无需每帧写材质/实例）
+var _season_weights: Array = [0.25, 0.25, 0.25, 0.25]
+var _season_visuals: Dictionary = {}
+var _season_label := "春季"
+var _season_timer := 0.0
+var _season_nodes: Array = []       # 树冠/叶卡/背景树冠/灌木/花的季节条目（复制材质 + 稀疏化缓存）
+var _grass_season_mats: Array = []  # 草材质 + 原始 tint（与画质草密度互不覆盖）
+var _season_apply_count := 0
+var _winter_plum: MultiMeshInstance3D = null   # 冬季树梢花簇（红梅意象；只在冬季权重高时出现）
+var _winter_plum_anchors: Array = []          # {pos: Vector3, rot: float, scale: float}
 
 # ---- 天文 / 主题 ----
 var _astro: Dictionary = {}
@@ -259,7 +275,8 @@ func _ready() -> void:
 	_p7shots = "--p7shots" in OS.get_cmdline_args() or "--p7shots" in OS.get_cmdline_user_args()
 	_p8shots = "--p8shots" in OS.get_cmdline_args() or "--p8shots" in OS.get_cmdline_user_args()
 	_p8moon = "--p8moon" in OS.get_cmdline_args() or "--p8moon" in OS.get_cmdline_user_args()
-	_shots = "--shots" in OS.get_cmdline_args() or "--shots" in OS.get_cmdline_user_args() or _p7shots or _p8shots or _p8moon
+	_p8seasons = "--p8seasons" in OS.get_cmdline_args() or "--p8seasons" in OS.get_cmdline_user_args()
+	_shots = "--shots" in OS.get_cmdline_args() or "--shots" in OS.get_cmdline_user_args() or _p7shots or _p8shots or _p8moon or _p8seasons
 	_transition = "--transition" in OS.get_cmdline_args() or "--transition" in OS.get_cmdline_user_args()
 	_selftest = "--selftest" in OS.get_cmdline_args() or "--selftest" in OS.get_cmdline_user_args()
 	_perf = "--perf" in OS.get_cmdline_args() or "--perf" in OS.get_cmdline_user_args()
@@ -272,7 +289,7 @@ func _ready() -> void:
 		DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
 	# 读取用户设置：菜单、时钟、画质、音量、窗口模式共用同一份数据。
 	# 自动化运行（截图/性能/自测/转场）使用默认设置，保证结果可复现且不受玩家配置影响。
-	var automation := _shots or _perf or _selftest or _transition or _p7shots or _p8shots or _p8moon
+	var automation := _shots or _perf or _selftest or _transition or _p7shots or _p8shots or _p8moon or _p8seasons
 	_settings = Settings.defaults() if automation else Settings.load_settings()
 	_setup_time_api()
 	_time_source = String(_settings.get("time_source", "sim"))
@@ -320,6 +337,8 @@ func _ready() -> void:
 		_run_p8shots()
 	elif _p8moon:
 		_run_p8moonshots()
+	elif _p8seasons:
+		_run_p8seasonshots()
 	elif _p7shots:
 		_run_p7shots()
 	elif _shots:
@@ -518,6 +537,8 @@ func _build_world() -> void:
 	_fx["smoke"] = IsleFx.smoke(fx_holder, (_cottage["chimney_top"] as Node3D).global_position + Vector3(0, 0.4, 0))
 	_fx["fireflies"] = IsleFx.fireflies(fx_holder, Vector3(-3.0, 2.0, 3.5))
 	_fx["petals"] = IsleFx.petals(fx_holder, Vector3(IsleMath.BIG_TREE_X, 5.0, IsleMath.BIG_TREE_Z))
+	# P8 四季：秋叶（同一树冠附近缓慢飘落；由季节权重控制开关/密度，不为每片叶建节点）。
+	_fx["leaves"] = IsleFx.leaves(fx_holder, Vector3(IsleMath.BIG_TREE_X, 6.4, IsleMath.BIG_TREE_Z))
 	_ripples = IsleFx.Ripples.new()
 	_ripples.name = "Ripples"
 	fx_holder.add_child(_ripples)
@@ -544,6 +565,8 @@ func _build_world() -> void:
 	# P7-V4：岛民与场景同父（World），复用小区块合批与光照收集；只创建一次，运行期不重建。
 	if not _no_villager:
 		_villager = ISLE_VILLAGER.build(holder, _cottage)
+	# P8 四季：建立季节视觉条目（复制材质，避免污染 isle_math 的全局材质缓存）。
+	_setup_season_visuals()
 
 # ============================================================
 # 相机
@@ -716,6 +739,249 @@ func _now_sim_seconds() -> float:
 	return IsleAstro.now_local_seconds()
 
 # ============================================================
+# P8 阶段 4：四季视觉（日历 → 材质/实例/粒子的只读投影）
+# ============================================================
+## 建立季节视觉条目：草材质基准 tint、树冠/叶卡/背景树冠/灌木的复制材质与实例缓存、
+## 花按物种分组的实例缓存。只做一次；运行期不重建任何几何/材质。
+func _setup_season_visuals() -> void:
+	_season_nodes.clear()
+	_grass_season_mats.clear()
+	# 草：缓存原始 tint。画质只改 visible_instance_count，季节只改 tint，两者互不覆盖。
+	for nm in ["GrassNear", "GrassFar"]:
+		var gm := _find_grass_node(String(nm))
+		if gm == null or not (gm.material_override is ShaderMaterial):
+			continue
+		var gmat := gm.material_override as ShaderMaterial
+		var gbase: Variant = gmat.get_shader_parameter("tint")
+		if gbase is Color:
+			_grass_season_mats.append({"mat": gmat, "base": gbase as Color})
+	# 树冠 / 叶卡 / 背景树冠 / 灌木：复制材质，避免 isle_math 的全局材质缓存被季节参数污染。
+	for spec in [["Canopy", "canopy"], ["LeafCards", "cards"], ["BgTreeCanopy", "canopy"], ["Bushes", "bush"]]:
+		_season_add_entry(_season_find_mesh(String(spec[0])), String(spec[1]), "")
+	# 花：节点名 FlowerStems_<Species> / FlowerHeads_<Species>_<variant>；材质共享，不复制。
+	var root = _world.get("root", null)
+	if root != null:
+		for child in (root as Node).find_children("Flower*", "", true, false):
+			if not (child is MultiMeshInstance3D):
+				continue
+			var parts := String(child.name).split("_")
+			if parts.size() < 2:
+				continue
+			_season_add_entry(child, "flower", String(parts[1]))
+	_setup_winter_plum()
+
+## 冬季树梢花簇：取叶卡实例（叶卡贴在树冠表面）作为锚点，生成一个小球状花簇 MultiMesh。
+## 只在冬天权重 >0.25 时逐渐显现，因此裸枝上会出现零星粉红梅簇；不创建逐帧节点、不重建几何。
+func _setup_winter_plum() -> void:
+	_winter_plum = null
+	_winter_plum_anchors.clear()
+	var canopy_mi := _season_find_mesh("Canopy") as MultiMeshInstance3D
+	if canopy_mi == null:
+		return
+	# 锚点贴着大树枝梢：主枝末端、横枝末端、树冠顶部的次生枝附近（world.gd _big_tree 的固定几何，
+	# 不随随机种子变化）。每处 2-3 簇小花，冬季裸枝上就有零星红梅，而不是漂浮在空中的红点。
+	var tips: Array = [
+		Vector3(3.32, 5.70, 1.00), Vector3(-2.88, 6.60, 0.60),
+		Vector3(1.22, 7.40, 3.20), Vector3(-1.18, 7.80, 3.10),
+		Vector3(5.20, 6.70, 0.80), Vector3(4.30, 6.80, -1.10),
+		Vector3(3.75, 5.82, 0.00),
+	]
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 20261022
+	for tip_v in tips:
+		var tip: Vector3 = tip_v
+		var clusters := 2 + rng.randi_range(0, 1)
+		for c in range(clusters):
+			var jitter := Vector3(rng.randf_range(-0.32, 0.32),
+				rng.randf_range(-0.22, 0.32), rng.randf_range(-0.32, 0.32))
+			_winter_plum_anchors.append({
+				"pos": tip + jitter,
+				"rot": rng.randf() * TAU,
+				"scale": 0.65 + rng.randf() * 0.35,
+			})
+	if _winter_plum_anchors.is_empty():
+		return
+	var mesh := SphereMesh.new()
+	mesh.radius = 0.14
+	mesh.height = 0.22
+	mesh.radial_segments = 6
+	mesh.rings = 3
+	var mat := IsleMath.toon_material(Color("c94f5c"), {"bands": 3, "soft": 0.7, "rim": 0.0, "outline": 0.0})
+	var plum := MultiMeshInstance3D.new()
+	plum.name = "WinterPlum"
+	plum.material_override = mat
+	plum.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	var mm := MultiMesh.new()
+	mm.transform_format = MultiMesh.TRANSFORM_3D
+	mm.mesh = mesh
+	mm.instance_count = _winter_plum_anchors.size()
+	mm.visible_instance_count = 0
+	plum.multimesh = mm
+	plum.visible = false
+	canopy_mi.get_parent().add_child(plum)
+	_winter_plum = plum
+
+func _season_find_mesh(node_name: String) -> Node:
+	var root = _world.get("root", null)
+	if root == null:
+		return null
+	return (root as Node).find_child(node_name, true, false)
+
+## 为一个 MultiMesh 节点建立季节条目；树/灌木把材质复制一份以写入 foliage_tint。
+func _season_add_entry(mi: Node, kind: String, species: String) -> void:
+	if not (mi is MultiMeshInstance3D):
+		return
+	var mm := (mi as MultiMeshInstance3D).multimesh
+	if mm == null or mm.instance_count <= 0:
+		return
+	var sm: ShaderMaterial = null
+	if kind == "canopy" or kind == "cards" or kind == "bush":
+		var mat: Material = (mi as GeometryInstance3D).material_override
+		if mat is ShaderMaterial:
+			sm = (mat as ShaderMaterial).duplicate() as ShaderMaterial
+			(mi as GeometryInstance3D).material_override = sm
+	var n := mm.instance_count
+	var base: Array = []
+	for i in range(n):
+		base.append(mm.get_instance_transform(i))
+	var order: Array = []
+	for i in range(n):
+		order.append(i)
+	# 确定性洗牌：同一节点的隐藏顺序在每次运行都一致（截图/回归可复现）。
+	var rng := RandomNumberGenerator.new()
+	rng.seed = absi((String((mi as Node).name) + "|" + kind).hash()) + 7919
+	for i in range(n - 1, 0, -1):
+		var j := rng.randi_range(0, i)
+		var tmp: Variant = order[i]
+		order[i] = order[j]
+		order[j] = tmp
+	if kind == "flower":
+		# 花床里的整齐行列在 world.gd 里是最后追加的实例；花量减少时优先保留它们，
+		# 这样秋冬"只剩几株红梅"会留在花床里，而不是随机散在草地深处。
+		order = []
+		for i in range(n - 1, -1, -1):
+			order.append(i)
+	_season_nodes.append({
+		"node": mi,
+		"kind": kind,
+		"species": species,
+		"mat": sm,
+		"count": n,
+		"base": base,
+		"order": order,
+		"kept": -1,
+		"tint_key": "",
+	})
+
+## 每帧调用：只有季节权重真的变化（或 force）才写材质/实例，写入频率 ≈ 4 Hz 上限。
+func _update_season(delta: float, force: bool = false) -> void:
+	_season_timer -= delta
+	var parts: Dictionary = ISLE_CALENDAR.parts(_sim_seconds)
+	var weights: Array = parts.get("season_weights", [0.25, 0.25, 0.25, 0.25])
+	if not force and not _season_visuals.is_empty():
+		if ISLE_SEASON.weight_delta(_season_weights, weights) < 0.002:
+			return
+		if _season_timer > 0.0:
+			return
+	_season_timer = SEASON_APPLY_INTERVAL
+	_season_weights = (weights as Array).duplicate()
+	_season_label = String(parts.get("season_label", "春季"))
+	_season_visuals = ISLE_SEASON.visuals(weights)
+	_apply_season_visuals()
+
+## 把当前季节参数写入现有材质/实例/粒子。纯参数写入，不创建/删除节点，不重建几何。
+func _apply_season_visuals() -> void:
+	if _season_visuals.is_empty():
+		return
+	var v := _season_visuals
+	var grass_tint: Color = v.get("grass_tint", Color.WHITE)
+	for item in _grass_season_mats:
+		(item["mat"] as ShaderMaterial).set_shader_parameter("tint", (item["base"] as Color) * grass_tint)
+	var foliage_tint: Color = v.get("foliage_tint", Color.WHITE)
+	var bush_tint: Color = v.get("bush_tint", Color.WHITE)
+	for raw in _season_nodes:
+		var e: Dictionary = raw
+		var kind := String(e["kind"])
+		var keep := 1.0
+		match kind:
+			"canopy":
+				keep = float(v.get("canopy_keep", 1.0))
+			"cards":
+				keep = float(v.get("leafcard_keep", 1.0))
+			"bush":
+				keep = 1.0
+			"flower":
+				keep = ISLE_SEASON.flower_keep_for(v, String(e["species"]))
+		var target := int(round(float(e["count"]) * clampf(keep, 0.0, 1.0)))
+		if target != int(e["kept"]):
+			e["kept"] = target
+			_apply_season_keep(e, target)
+		var sm := e.get("mat", null) as ShaderMaterial
+		if sm != null:
+			var tint := foliage_tint
+			if kind == "bush":
+				tint = bush_tint
+			var key := "%d" % tint.to_rgba32()
+			if String(e.get("tint_key", "")) != key:
+				e["tint_key"] = key
+				sm.set_shader_parameter("foliage_tint", tint)
+	# 秋叶：随季节权重开关与密度；颜色取 drift_color（枯黄→暖橙→冬白）。
+	var leaf_fall := clampf(float(v.get("leaf_fall", 0.0)), 0.0, 1.0)
+	var leaf_entry: Dictionary = _fx.get("leaves", {})
+	var leaves := leaf_entry.get("node", null) as GPUParticles3D
+	if leaves != null:
+		leaves.emitting = leaf_fall > 0.03
+		leaves.amount_ratio = clampf(0.15 + leaf_fall * 0.85, 0.0, 1.0) if leaf_fall > 0.03 else 0.0
+		var lmat := leaf_entry.get("mat", null) as StandardMaterial3D
+		if lmat != null:
+			var dc: Color = v.get("drift_color", Color(0.95, 0.52, 0.18))
+			lmat.albedo_color = Color(dc.r, dc.g, dc.b, 0.92)
+	# 花瓣只在春季飘（其余季节淡出/停发），避免与秋叶、冬雪同时出现。
+	var petal_entry: Dictionary = _fx.get("petals", {})
+	var petals := petal_entry.get("node", null) as GPUParticles3D
+	if petals != null:
+		var spring_w := float(_season_weights[0])
+		petals.emitting = spring_w > 0.05
+		var pmat := petal_entry.get("mat", null) as StandardMaterial3D
+		if pmat != null:
+			var pc: Color = pmat.albedo_color
+			pmat.albedo_color = Color(pc.r, pc.g, pc.b, 0.85 * clampf(spring_w * 1.2, 0.0, 1.0))
+	# 冬季红梅：树梢花簇随冬季权重 0.25→0.80 渐显；春夏秋完全隐藏。
+	var winter_w := float(_season_weights[3]) if _season_weights.size() > 3 else 0.0
+	var bloom := clampf((winter_w - 0.25) / 0.55, 0.0, 1.0)
+	if _winter_plum != null:
+		_winter_plum.visible = bloom > 0.03
+		if _winter_plum.visible:
+			var pmm := _winter_plum.multimesh
+			for i in range(_winter_plum_anchors.size()):
+				var a: Dictionary = _winter_plum_anchors[i]
+				var s: float = clampf(float(a["scale"]) * bloom, 0.001, 1.5)
+				var xf := Transform3D(
+					Basis(Vector3.UP, float(a["rot"])).scaled(Vector3(s, s * 0.82, s)),
+					a["pos"] as Vector3)
+				pmm.set_instance_transform(i, xf)
+			pmm.visible_instance_count = -1
+	_season_apply_count += 1
+
+## 按“保留数量”隐藏实例：从确定性洗牌后的尾部收起（即 spatially 均匀稀疏），
+## 把隐藏实例的 basis 缩到 1e-4；恢复时从缓存的原 Transform 写回。
+func _apply_season_keep(e: Dictionary, target: int) -> void:
+	var mm: MultiMesh = (e["node"] as MultiMeshInstance3D).multimesh
+	var n := int(e["count"])
+	var base: Array = e["base"]
+	var order: Array = e["order"]
+	var hide := {}
+	for i in range(target, n):
+		hide[int(order[i])] = true
+	e["hidden"] = n - target
+	var tiny := Vector3(0.0001, 0.0001, 0.0001)
+	for i in range(n):
+		var xf: Transform3D = base[i]
+		if hide.has(i):
+			xf.basis = Basis.IDENTITY.scaled(tiny)
+		mm.set_instance_transform(i, xf)
+
+# ============================================================
 # 每帧
 # ============================================================
 func _process(delta: float) -> void:
@@ -741,6 +1007,8 @@ func _tick(delta: float) -> void:
 	_update_camera(delta)
 	_update_camera_light_dirs()
 	_update_lighting()
+	# P8 阶段 4：季节是日历（_sim_seconds）的只读投影；视觉属性和权威时间同一帧刷新。
+	_update_season(delta)
 	# P7-V4：岛民 tick 放在光照之后（当帧 _astro/_sun_alt/_events 已刷新），用真实帧 delta；
 	# 世界时间/暂停/时间来源全部由 ctx 注入，角色自身不建时钟。
 	if _villager != null:
@@ -2758,6 +3026,46 @@ func _run_selftest() -> void:
 	_jump_datetime(2026, 12, 9, 18, 0, 0)
 	var vis_new := _moon_visibility(float(_astro["moon_alt"]))
 	results.append(["P8 月球可见性由真实高度决定", vis_full > 0.5 and vis_new <= 0.0001 and _moon_visibility(-90.0) <= 0.0001 and _moon_visibility(45.0) >= 0.9999])
+	# --- P8 阶段 4：四季（日历权重 → 视觉参数；固定日期样本，不依赖现实时间） ---
+	_jump_datetime(2026, 4, 15, 10, 0, 0)
+	var spring_v: Dictionary = _season_visuals.duplicate()
+	_jump_datetime(2026, 10, 20, 16, 30, 0)
+	var autumn_v: Dictionary = _season_visuals.duplicate()
+	var leaf_node := _fx.get("leaves", {}).get("node", null) as GPUParticles3D
+	var autumn_ok := String(_season_label) == "秋季" \
+		and float(autumn_v.get("leaf_fall", 0.0)) > 0.95 \
+		and float(autumn_v.get("canopy_keep", 1.0)) < 1.0 \
+		and leaf_node != null and leaf_node.emitting
+	_jump_datetime(2027, 1, 15, 10, 0, 0)
+	var winter_v: Dictionary = _season_visuals.duplicate()
+	var winter_flowers: Array = winter_v.get("flower_keep", [0.0, 0.0, 0.0, 0.0])
+	var winter_flowers_zero := float(winter_flowers[0]) <= 0.02 and float(winter_flowers[1]) <= 0.02 \
+		and float(winter_flowers[2]) <= 0.02 and float(winter_flowers[3]) <= 0.02
+	var winter_ok := String(_season_label) == "冬季" \
+		and float(winter_v.get("canopy_keep", 1.0)) <= 0.25 \
+		and winter_flowers_zero \
+		and leaf_node != null and not leaf_node.emitting \
+		and _winter_plum != null and _winter_plum.visible
+	var tint_ok := (autumn_v.get("grass_tint", Color.WHITE) as Color).r > 1.1 \
+		and (spring_v.get("grass_tint", Color.WHITE) as Color).g > 1.0
+	results.append(["P8 四季视觉参数与日历联动", autumn_ok and winter_ok and tint_ok])
+	# 冬季树冠实例确实按比例收起（不是只改参数不生效）
+	var canopy_entry: Dictionary = {}
+	for raw in _season_nodes:
+		var e: Dictionary = raw
+		if String(e["kind"]) == "canopy" and String((e["node"] as Node).name) == "Canopy":
+			canopy_entry = e
+			break
+	# 说明：--headless 的 dummy Renderer 不回读 MultiMesh 实例 Transform（读回恒为单位阵），
+	# 因此这里断言"收起数量"这一纯逻辑结果；实际像素效果由 --p8seasons 窗口截图验收。
+	var canopy_hidden_ok := false
+	if not canopy_entry.is_empty():
+		canopy_hidden_ok = int(canopy_entry.get("hidden", 0)) >= int(float(canopy_entry.get("count", 0)) * 0.5)
+	results.append(["P8 冬季树冠实例按比例收起", canopy_hidden_ok])
+	# 冬季红梅只在冬季出现：跳到盛夏应完全隐藏（同一权威时钟投影，不依赖现实时间）。
+	_jump_datetime(2026, 7, 15, 10, 0, 0)
+	var plum_summer_hidden := _winter_plum != null and not _winter_plum.visible
+	results.append(["P8 冬季红梅花簇只出现在冬季", plum_summer_hidden])
 	_time_source = old_source
 	_update_lighting()
 	# 汇总
@@ -3055,6 +3363,8 @@ func _jump_datetime(year: int, month: int, day: int, hour: int, minute: int, sec
 	_sim_delta = 0.0
 	_sync_boat_clock()
 	_update_lighting()
+	# 跳转后立即进入合法季节状态（不补演中间季节的视觉过渡）。
+	_update_season(0.0, true)
 	_hud.show_toast("已跳至 %s %02d:%02d" % [str(c["year"]) + "年" + str(c["month"]) + "月" + str(c["day"]) + "日", int(c["hour"]), int(c["minute"])])
 
 # ============================================================
@@ -4132,7 +4442,7 @@ func _apply_quality(q: int) -> void:
 		_grass_visible_count += int(mi.multimesh.visible_instance_count)
 	# 粒子预算（烟 / 花瓣 / 萤火）
 	var pratio := clampf(float(p.get("particle_density", 1.0)), 0.1, 1.5)
-	for key in ["smoke", "petals", "fireflies"]:
+	for key in ["smoke", "petals", "fireflies", "leaves"]:
 		var entry: Dictionary = _fx.get(key, {})
 		var node = entry.get("node", null)
 		if node is GPUParticles3D:
@@ -4394,6 +4704,72 @@ func _p8_camera_island() -> void:
 	_radius = 82.0
 	_fov = 42.0
 	_apply_pose(_play_pose())
+
+## P8 阶段 4 四季视觉截图（--p8seasons）：固定日期 + 三个机位（全岛 / 大树近景 / 花园近景）。
+## 每张图都从同一权威时钟（_sim_seconds）跳转，季节由 IsleCalendar 投影，不依赖现实日期。
+func _run_p8seasonshots() -> void:
+	_mode = Mode.PLAYING
+	_started = true
+	_paused = true            # 固定时刻：模拟时钟不走，季节不会在截图期间漂移
+	_menu.instant_finish()
+	_blending = ""
+	_hud.set_hud_visible(false, false)
+	_auto_orbit = false
+	_shot_beam_lock = false
+	_time_source = "sim"
+	await get_tree().create_timer(0.9).timeout
+	var seasons: Array = [
+		["spring", 2026, 4, 15, 10, 0],
+		["summer", 2026, 7, 15, 10, 0],
+		["autumn", 2026, 10, 20, 16, 30],
+		["winter", 2027, 1, 15, 10, 0],
+	]
+	for spec in seasons:
+		var tag := String(spec[0])
+		_jump_datetime(int(spec[1]), int(spec[2]), int(spec[3]), int(spec[4]), int(spec[5]))
+		_p8_camera_island()
+		await get_tree().create_timer(0.9).timeout
+		await _save_shot("p8_season_%s_wide" % tag, P8_SEASON_DIR)
+		var cal: Dictionary = ISLE_CALENDAR.parts(_sim_seconds)
+		var v: Dictionary = _season_visuals
+		print("[P8SEASONS] wide ", tag, " ", str(cal.get("date_label", "")), " ", _season_label,
+			" weights=", str(cal.get("season_weights", [])),
+			" canopy=", "%.2f" % float(v.get("canopy_keep", 1.0)),
+			" cards=", "%.2f" % float(v.get("leafcard_keep", 1.0)),
+			" flowers=", str(v.get("flower_keep", [])),
+			" leaf_fall=", "%.2f" % float(v.get("leaf_fall", 0.0)))
+		# 近景 1：大树冠与叶卡（季节变色/稀疏最直观）
+		_p8_camera_tree()
+		await get_tree().create_timer(0.8).timeout
+		await _save_shot("p8_season_%s_tree" % tag, P8_SEASON_DIR)
+		# 近景 2：花园与花（四季花量与冬季红梅）
+		_p8_camera_garden()
+		await get_tree().create_timer(0.8).timeout
+		await _save_shot("p8_season_%s_garden" % tag, P8_SEASON_DIR)
+		# 冬季补一张树梢花簇特写：证明"裸枝上只留零星红梅"确实可见。
+		if tag == "winter":
+			_p8_camera_winter_plum()
+			await get_tree().create_timer(0.8).timeout
+			await _save_shot("p8_season_winter_plum", P8_SEASON_DIR)
+	print("[P8SEASONS] done")
+	get_tree().quit()
+
+func _p8_camera_tree() -> void:
+	# 大树基座地形高约 7.87 m，树冠中心约在 base+9.4 m；机位对准冠层中部而不是地面，
+	# 否则画面下半全是草丛、树冠被顶出画外。
+	var target := Vector3(IsleMath.BIG_TREE_X + 0.25, 14.5, IsleMath.BIG_TREE_Z)
+	_pose_look(target + Vector3(13.8, 1.2, 12.0), target, 40.0)
+
+func _p8_camera_garden() -> void:
+	# 四块高花床（顶面约 9.9-10.3 m）位于花园 x -9.4..-6.25 / z -9.1..-3.3；
+	# 从南门外 3/4 俯角看两张床，保证花朵在画面里而不是钻进地形/棚架内部。
+	var target := Vector3(-7.82, 10.2, -6.20)
+	_pose_look(target + Vector3(-3.9, 2.7, 5.4), target, 40.0)
+
+func _p8_camera_winter_plum() -> void:
+	# 冬季树梢花簇特写：花簇锚点取自 80 张叶卡（贴在树冠表面），因此机位对准大树冠。
+	var target := Vector3(IsleMath.BIG_TREE_X + 0.28, 17.2, IsleMath.BIG_TREE_Z - 0.05)
+	_pose_look(target + Vector3(13.5, 2.5, 11.5), target, 46.0)
 
 ## P8 阶段 3.2 月球专项截图（--p8moon）：八相固定日期 + 海上生明月/不见月两组实景。
 ## 相时刻取自 HKO 2026 四相表（北京时），不依赖现实时间；每相在相邻主相窗口内挑选

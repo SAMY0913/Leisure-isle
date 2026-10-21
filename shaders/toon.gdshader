@@ -79,6 +79,9 @@ uniform float glow = 0.0;
 uniform float self_lit = 0.0;
 uniform float light_wrap = 0.42;
 uniform float ambient_amount = 1.0;
+// 季节染色（P8）：树冠/灌木等顶点色植被统一乘色；默认白色=不改任何网格。
+// 由 main.gd 在季节变化时写入被复制出来的那几份材质，避免污染 isle_math 的共享材质缓存。
+uniform vec3 foliage_tint = vec3(1.0);
 // 远海淡出：<1 时按屏幕抖动剔除像素（船体/帆/索具统一淡出，不产生透明排序问题）
 uniform float fade_alpha = 1.0;
 
@@ -189,6 +192,7 @@ void fragment() {
 	if (use_vertex_color > 0.5) {
 		base *= v_lcol;
 	}
+	base *= foliage_tint;
 	vec3 V = normalize(CAMERA_POSITION_WORLD - v_world);
 	vec3 col;
 	if (self_lit > 0.5) {

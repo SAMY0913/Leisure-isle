@@ -873,6 +873,66 @@ static func petals(parent: Node3D, pos: Vector3) -> Dictionary:
 	parent.add_child(p)
 	return {"node": p, "mat": mat}
 
+## P8 四季：秋叶慢速飘落。与花瓣同一套粒子思路（单个 GPUParticles3D，不为每片叶建节点），
+## 叶片用程序化贴图 + 广告牌四边形；颜色/密度/开关由 main.gd 按季节权重写入。
+static func leaves(parent: Node3D, pos: Vector3) -> Dictionary:
+	var p := GPUParticles3D.new()
+	p.name = "Leaves"
+	p.amount = 64
+	p.lifetime = 10.0
+	p.preprocess = 8.0
+	p.emitting = false
+	p.position = pos
+	p.visibility_aabb = AABB(Vector3(-14, -14, -14), Vector3(28, 18, 28))
+	var pm := ParticleProcessMaterial.new()
+	pm.direction = Vector3(0.12, 1.0, 0.06)
+	pm.spread = 70.0
+	pm.initial_velocity_min = 0.05
+	pm.initial_velocity_max = 0.32
+	pm.gravity = Vector3(0.10, -0.18, 0.05)
+	pm.scale_min = 0.6
+	pm.scale_max = 1.25
+	pm.angular_velocity_min = -160.0
+	pm.angular_velocity_max = 160.0
+	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_SPHERE
+	pm.emission_sphere_radius = 4.4
+	var grad := Gradient.new()
+	grad.offsets = PackedFloat32Array([0.0, 0.12, 0.82, 1.0])
+	grad.colors = PackedColorArray([Color(1, 1, 1, 0.0), Color(1, 1, 1, 0.95), Color(1, 1, 1, 0.85), Color(1, 1, 1, 0.0)])
+	var gt := GradientTexture1D.new()
+	gt.gradient = grad
+	pm.color_ramp = gt
+	p.process_material = pm
+	var quad := QuadMesh.new()
+	quad.size = Vector2(0.30, 0.20)
+	var mat := StandardMaterial3D.new()
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+	mat.albedo_texture = leaf_texture()
+	mat.vertex_color_use_as_albedo = true
+	mat.albedo_color = Color(0.95, 0.52, 0.18, 0.92)
+	mat.depth_draw_mode = BaseMaterial3D.DEPTH_DRAW_DISABLED
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	quad.material = mat
+	p.draw_pass_1 = quad
+	parent.add_child(p)
+	return {"node": p, "mat": mat}
+
+## 32×32 程序化叶片贴图：两头尖、主脉略暗；不引入任何外部贴图资产。
+static func leaf_texture() -> ImageTexture:
+	var size := 32
+	var img := Image.create(size, size, false, Image.FORMAT_RGBA8)
+	for y in range(size):
+		for x in range(size):
+			var nx := (float(x) + 0.5) / float(size) * 2.0 - 1.0
+			var ny := (float(y) + 0.5) / float(size) * 2.0 - 1.0
+			var wdt := maxf(0.0, 1.0 - absf(ny) * 1.15)
+			var a := 1.0 if absf(nx) <= wdt else 0.0
+			var shade := 0.82 + 0.18 * (1.0 - absf(nx) / maxf(wdt, 0.001))
+			img.set_pixel(x, y, Color(shade, shade, shade, a))
+	return ImageTexture.create_from_image(img)
+
 # ============================================================
 # 立体水花（池化，点击 / 鱼跃 / 船尾共用）
 # ============================================================
