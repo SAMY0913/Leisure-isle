@@ -1,15 +1,21 @@
 extends SceneTree
-## P7-V3 全场景结构验收探针（headless，不占 GPU 锁）
-## 用途：对 Lead/cam-dev/boat-dev/cat-dev/prop-dev 的集成结果做客观结构断言，覆盖 P7_V3_PLAN.md
-##       §14 测试矩阵中可 headless 判定的项：门扇半圆网格顶点/包围盒、门动画 Tween 目标、
-##       门廊对称两灯与 light_sources 条目、楼梯踏步数量/每级高差一致/总高 5.15/二层洞口尺寸、
-##       家具数量与摆放、猫咪部件与待机、小船甲板分段、相机 FOV 设置读写。
+## P7-V3.2 全场景结构验收探针（headless，不占 GPU 锁）
+## 用途：对 Lead/cam-dev/boat-dev/cat-dev/prop-dev 的集成结果做客观结构断言。P7-V3.2 起
+##       尺寸期望全部改为从 IsleMath / IsleScaleSpec 常量与 Cottage root meta（cottage_ctx /
+##       door_clear / stairs）派生，不再硬编码 V3 时代快照（房屋 10.6×8.4、27 级楼梯、
+##       5 板门扇、甲板 7 段等）。功能断言（门轴开合、灯光、船状态、猫待机、FOV）全部保留。
+##       覆盖：门扇 5 块 1.40 高门板 + 半圆气窗/拱券 AABB、门动画 Tween 目标、门廊对称两灯与
+##       light_sources 条目、16 级 L 形楼梯（rise 0.16375 / tread 0.26 / 总高 2.62）与洞口、
+##       家具数量与摆放、猫咪部件与待机、小船开放式座舱（3 块甲板 / 6 段舷缘内衬 / sole 0.20）、
+##       相机 FOV 设置读写。
 ## 运行：
 ##   "D:/休闲小岛幻境/引擎/Godot_v4.7.2-stable_win64_console.exe" --headless --path <PROJ> --script res://tools/probe_verify_p7v3.gd
 ## 输出：每行 [V3] PASS/FAIL/SKIP/WARN，末尾 [VERIFY] RESULT pass=N fail=M skip=K warn=W；fail>0 时 quit(1)。
 ## 说明：只读断言，不修改 scripts/ 与场景；FOV 持久化测试使用 user:// 临时文件并在结束时删除。
 
 const S := preload("res://scripts/isle_settings.gd")
+const M := preload("res://scripts/isle_math.gd")
+const Spec := preload("res://scripts/isle_scale_spec.gd")
 
 var _pass: int = 0
 var _fail: int = 0
@@ -241,13 +247,25 @@ func _section_env() -> void:
     var C := _ctx()
     _ok(C.size() > 0, "Cottage 根节点 meta cottage_ctx 存在", "keys=%d" % C.size())
     if C.size() > 0:
-        _ok(_near(float(C.get("w", 0.0)), 10.6, 0.01), "房屋宽 w=10.6", "w=%.3f" % float(C.get("w", 0.0)))
-        _ok(_near(float(C.get("d", 0.0)), 8.4, 0.01), "房屋深 d=8.4", "d=%.3f" % float(C.get("d", 0.0)))
-        _ok(_near(float(C.get("fy", 0.0)), 0.55, 0.01), "一层地面 fy=0.55", "fy=%.3f" % float(C.get("fy", 0.0)))
-        _ok(_near(float(C.get("attic_floor", 0.0)), 5.70, 0.01), "二层地面 attic_floor=5.70", "%.3f" % float(C.get("attic_floor", 0.0)))
+        # P7-V3.2：尺寸期望从 IsleMath / IsleScaleSpec 派生（与 scripts 单源一致）
+        _ok(_near(float(C.get("w", 0.0)), M.HOUSE_W, 0.01), "房屋宽 w=%.2f (IsleMath.HOUSE_W)" % M.HOUSE_W,
+            "w=%.3f" % float(C.get("w", 0.0)))
+        _ok(_near(float(C.get("d", 0.0)), M.HOUSE_D, 0.01), "房屋深 d=%.2f (IsleMath.HOUSE_D)" % M.HOUSE_D,
+            "d=%.3f" % float(C.get("d", 0.0)))
+        _ok(_near(float(C.get("fy", 0.0)), M.HOUSE_FY, 0.01), "一层地面 fy=%.2f (IsleMath.HOUSE_FY)" % M.HOUSE_FY,
+            "fy=%.3f" % float(C.get("fy", 0.0)))
+        _ok(_near(float(C.get("attic_floor", 0.0)), M.HOUSE_ATTIC_FLOOR_Y, 0.01),
+            "二层地面 attic_floor=%.2f (IsleMath.HOUSE_ATTIC_FLOOR_Y)" % M.HOUSE_ATTIC_FLOOR_Y,
+            "%.3f" % float(C.get("attic_floor", 0.0)))
+        _ok(_near(float(C.get("in_top", 0.0)), M.HOUSE_FY + M.HOUSE_ROOM_CLEAR_H, 0.01),
+            "一层室内净高 in_top=fy+2.42", "in_top=%.3f" % float(C.get("in_top", 0.0)))
         var total_h: float = float(C.get("attic_floor", 0.0)) - float(C.get("fy", 0.0))
-        _ok(_near(total_h, 5.15, 0.01), "楼梯总高（一层->二层）=5.15m", "%.4f" % total_h)
-        _ok(_near(float(C.get("deck_top", 0.0)), 0.42, 0.01), "门廊台面 deck_top=0.42", "%.3f" % float(C.get("deck_top", 0.0)))
+        var want_h: float = M.HOUSE_ROOM_CLEAR_H + M.HOUSE_SLAB_T
+        _ok(_near(total_h, want_h, 0.01), "楼梯总高（一层->二层）=净高2.42+楼板0.20=%.2f" % want_h,
+            "%.4f" % total_h)
+        _ok(_near(float(C.get("deck_top", 0.0)), Spec.PORCH_DECK_Y, 0.01),
+            "门廊台面 deck_top=%.2f (IsleScaleSpec.PORCH_DECK_Y)" % Spec.PORCH_DECK_Y,
+            "%.3f" % float(C.get("deck_top", 0.0)))
     # P7-V3.1 静态合批把"一个部件一个 MeshInstance3D"折叠成"每材质一个 surface"，
     # 存活节点数会显著下降。因此"场景完整构建"改用**部件级总量**衡量：存活渲染节点
     # + 合批溯源清单条目（batch_manifest 逐条记录了被合并部件的类别/尺寸/变换）。
@@ -329,11 +347,14 @@ func _section_furniture() -> void:
     var r2: Rect2 = C.get("stair_hole_r2", Rect2())
     var in_hole := 0
     for p in attic_props:
+        # 墙挂件（画框/窗帘杆等）本来就在洞口上方的墙面/天花上，不构成地面障碍
+        if bool(p.get_meta("prop_wall_mounted", false)):
+            continue
         var loc: Vector3 = (p as Node3D).position
         if r1.has_point(Vector2(loc.x, loc.z)) or r2.has_point(Vector2(loc.x, loc.z)):
             in_hole += 1
             print("[V3]   阁楼家具压在洞口: ", p.name, " @ ", loc)
-    _ok(in_hole == 0, "二层家具不落在楼梯洞口内", "hit=%d" % in_hole)
+    _ok(in_hole == 0, "二层落地家具不落在楼梯洞口内（墙挂件免检）", "hit=%d" % in_hole)
     # 一层家具只在楼梯占地内做 WARN（人为摆位可能允许，交由视觉复核）
     var stair_a := Rect2(3.60, -2.95, 1.30, 3.60)
     var stair_b := Rect2(0.95, -3.90, 2.80, 1.35)
@@ -362,13 +383,34 @@ func _section_door_mesh() -> void:
         return
     _ok(_near(absf(pivot.rotation.y), 0.0, 0.01), "DoorPivot 初始 rotation.y=0", "%.4f" % pivot.rotation.y)
     _ok(_cottage.get("door_hit", null) != null, "门点击命中体 door_hit 存在")
-    # 门板 5 块 box(0.43,2.30,0.10)
+    # P7-V3.2 门扇：5 块 0.20x1.40x0.09 门板（净高 1.94 = 1.40 门板 + 0.50 气窗 + 拱脚 1.42）
     var planks := 0
     for n in _box_boxes(pivot):
         var s := _box_size(n)
-        if _near(s.x, 0.43, 0.02) and _near(s.y, 2.30, 0.03):
+        if _near(s.x, 0.20, 0.02) and _near(s.y, 1.40, 0.02) and _near(s.z, 0.09, 0.02):
             planks += 1
-    _ok(planks == 5, "门扇 5 块竖板", "planks=%d" % planks)
+    _ok(planks == 5, "门扇 5 块 0.20x1.40 竖板", "planks=%d" % planks)
+    var door_clear: Dictionary = root.get_meta("door_clear", {})
+    var door_open: Variant = root.get_meta("door_opening", null)
+    _ok(door_clear.size() > 0, "Cottage meta door_clear 存在（设计单源）", "keys=%d" % door_clear.size())
+    if door_clear.size() > 0:
+        _ok(_near(float(door_clear.get("w", 0.0)), 1.14, 0.001), "门洞净宽 1.14",
+            "%.3f" % float(door_clear.get("w", 0.0)))
+        _ok(_near(float(door_clear.get("h", 0.0)), 1.94, 0.001), "门洞中心净高 1.94",
+            "%.3f" % float(door_clear.get("h", 0.0)))
+        _ok(_near(float(door_clear.get("spring_y", 0.0)), 1.97, 0.001), "拱脚高 1.42 + fy = 1.97",
+            "%.3f" % float(door_clear.get("spring_y", 0.0)))
+        _ok(_near(float(door_clear.get("leaf_w", 0.0)), 1.00, 0.001), "门扇宽 1.00（5x0.20）",
+            "%.3f" % float(door_clear.get("leaf_w", 0.0)))
+        _ok(_near(float(door_clear.get("leaf_h", 0.0)), 1.40, 0.001), "门扇高 1.40",
+            "%.3f" % float(door_clear.get("leaf_h", 0.0)))
+        _ok(_near(float(door_clear.get("fanlight_r", 0.0)), 0.50, 0.001), "气窗半径 0.50（净高 1.40+0.50=1.90 + 拱）",
+            "%.3f" % float(door_clear.get("fanlight_r", 0.0)))
+        _ok(_near(float(door_clear.get("handle_h", 0.0)), 0.95, 0.001), "把手高 0.95",
+            "%.3f" % float(door_clear.get("handle_h", 0.0)))
+    _ok(door_open != null and door_open is Vector3 and _near((door_open as Vector3).x, 1.14, 0.001)
+        and _near((door_open as Vector3).y, 1.94, 0.001),
+        "Cottage meta door_opening = (1.14,1.94,墙厚)", str(door_open))
     var pivot_mesh := 0
     for n in _walk(pivot):
         if n is MeshInstance3D:
@@ -388,21 +430,22 @@ func _section_door_mesh() -> void:
     if fan != null:
         var mi := fan as MeshInstance3D
         _ok(mi.mesh is ArrayMesh, "DoorFanlight 为自定义 ArrayMesh（非整圆盘 PrimitiveMesh）")
+        # P7-V3.2：半圆气窗 cx=0.50 cy=1.40 r=0.50，位于门扇 1.00x1.40 之上
         var tris := _mesh_tri_count(fan)
-        _ok(tris >= 80 and tris <= 130, "DoorFanlight 三角面数 ~98", "tris=%d" % tris)
+        _ok(tris == 58, "DoorFanlight 三角面数 58（14 弧段半圆双面+边）", "tris=%d" % tris)
         var a := _mesh_aabb(fan)
-        _ok(_near(a.position.x, 0.031, 0.03), "DoorFanlight AABB min.x≈0.031", "%.4f" % a.position.x)
-        _ok(_near(a.end.x, 2.229, 0.03), "DoorFanlight AABB max.x≈2.229", "%.4f" % a.end.x)
-        _ok(_near(a.position.y, 2.30, 0.03), "DoorFanlight AABB min.y≈2.30（弦线高度）", "%.4f" % a.position.y)
-        _ok(_near(a.end.y, 3.45, 0.04), "DoorFanlight AABB max.y≈3.45（半圆顶）", "%.4f" % a.end.y)
+        _ok(_near(a.position.x, 0.0, 0.02), "DoorFanlight AABB min.x≈0.0（左脚）", "%.4f" % a.position.x)
+        _ok(_near(a.end.x, 1.00, 0.02), "DoorFanlight AABB max.x≈1.00（右脚）", "%.4f" % a.end.x)
+        _ok(_near(a.position.y, 1.40, 0.02), "DoorFanlight AABB min.y≈1.40（弦线高度=门扇顶）", "%.4f" % a.position.y)
+        _ok(_near(a.end.y, 1.90, 0.02), "DoorFanlight AABB max.y≈1.90（半圆顶）", "%.4f" % a.end.y)
         _ok(_near(a.size.z, 0.10, 0.03), "DoorFanlight 厚度≈0.10", "%.4f" % a.size.z)
     var trim := _find(pivot, "DoorFanlightTrim")
     _ok(trim != null, "DoorFanlightTrim（同心拱带）存在")
     if trim != null:
         var tt := _mesh_tri_count(trim)
-        _ok(tt >= 160 and tt <= 240, "DoorFanlightTrim 三角面数 ~196", "tris=%d" % tt)
+        _ok(tt == 116, "DoorFanlightTrim 三角面数 116（rb 0.38..0.45 同心拱带）", "tris=%d" % tt)
         var ta := _mesh_aabb(trim)
-        _ok(_near(ta.end.y, 3.33, 0.06), "DoorFanlightTrim AABB max.y≈3.33", "%.4f" % ta.end.y)
+        _ok(_near(ta.end.y, 1.85, 0.03), "DoorFanlightTrim AABB max.y≈1.85", "%.4f" % ta.end.y)
         _ok(_near(ta.position.z, 0.0505, 0.02), "DoorFanlightTrim 贴门板外侧 z≈0.0505", "%.4f" % ta.position.z)
     # 拱券（root 子节点，无变换）
     var arch := _find(root, "DoorArch")
@@ -411,10 +454,10 @@ func _section_door_mesh() -> void:
         var at := _mesh_tri_count(arch)
         _ok(at >= 160 and at <= 240, "DoorArch 三角面数 ~196", "tris=%d" % at)
         var aa := _mesh_aabb(arch)
-        _ok(_near(aa.size.x, 2.90, 0.03), "DoorArch 宽度 2.90", "%.4f" % aa.size.x)
-        _ok(_near(aa.position.y, 2.90, 0.03), "DoorArch 起拱高 2.90", "%.4f" % aa.position.y)
-        _ok(_near(aa.end.y, 4.35, 0.03), "DoorArch 拱顶 4.35", "%.4f" % aa.end.y)
-        _ok(_near(aa.size.z, 0.26, 0.03), "DoorArch 厚度 0.26", "%.4f" % aa.size.z)
+        _ok(_near(aa.size.x, 2.0 * 0.66, 0.03), "DoorArch 宽度 2xro=1.32", "%.4f" % aa.size.x)
+        _ok(_near(aa.position.y, 1.97, 0.03), "DoorArch 起拱高 fy+1.42=1.97", "%.4f" % aa.position.y)
+        _ok(_near(aa.end.y, 2.63, 0.03), "DoorArch 拱顶 yc+ro=2.63", "%.4f" % aa.end.y)
+        _ok(_near(aa.size.z, 0.23, 0.02), "DoorArch 厚度 0.23", "%.4f" % aa.size.z)
     var span := _find(root, "DoorSpandrel")
     _ok(span != null, "DoorSpandrel 拱肩板存在")
     if span != null:
@@ -459,8 +502,9 @@ func _section_lanterns() -> void:
     var C := _ctx()
     var lp: Vector3 = C.get("lantern_pos", Vector3.ZERO)
     var rp: Vector3 = C.get("lantern_pos_right", Vector3.ZERO)
-    _ok(_near(lp.x, -2.80, 0.01) and _near(rp.x, 2.80, 0.01), "左右灯座 x=±2.80",
+    _ok(_near(lp.x, -1.95, 0.01) and _near(rp.x, 1.95, 0.01), "左右灯座 x=±1.95（V3.2 门廊宽 7.6）",
         "L=%s R=%s" % [str(lp), str(rp)])
+    _ok(_near(lp.y, 2.05, 0.01) and _near(lp.z, 4.55, 0.01), "灯座高 2.05 / 挑出 z=4.55", str(lp))
     _ok(_near(lp.y, rp.y, 0.01) and _near(lp.z, rp.z, 0.01) and _near(lp.x, -rp.x, 0.01), "左右灯座严格对称")
     var halos: Array = _cottage.get("lantern_halos", [])
     _ok(halos.size() == 2, "lantern_halos 数量 2", "count=%d" % halos.size())
@@ -483,8 +527,8 @@ func _section_lanterns() -> void:
     _ok(_near_vec(lw_export, lw, 0.02), "左灯 world 导出坐标 == 房屋变换换算", str(lw_export))
     var mid_w: Vector3 = (lw + rw) * 0.5
     var center_w: Vector3 = root.to_global(Vector3(0.0, lp.y, lp.z))
-    _ok(_near_vec(mid_w, center_w, 0.02) and _near(lw.distance_to(rw), 5.60, 0.03),
-        "左右灯世界坐标关于门中线对称（间距 5.60）", "L=%s R=%s mid=%s d=%.3f" % [str(lw), str(rw), str(mid_w), lw.distance_to(rw)])
+    _ok(_near_vec(mid_w, center_w, 0.02) and _near(lw.distance_to(rw), 3.90, 0.03),
+        "左右灯世界坐标关于门中线对称（间距 3.90）", "L=%s R=%s mid=%s d=%.3f" % [str(lw), str(rw), str(mid_w), lw.distance_to(rw)])
     var sources: Array = _cottage.get("light_sources", [])
     var left_src := 0
     var right_src := 0
@@ -500,12 +544,12 @@ func _section_lanterns() -> void:
         var col: Color = d.get("color", Color.BLACK)
         if pos.distance_to(lw) < 0.05:
             left_src += 1
-            left_ok = _near(inten, 1.05, 0.02) and _near(rng, 6.0, 0.05) and near_color(col, Color(1.0, 0.78, 0.48))
+            left_ok = _near(inten, 1.00, 0.02) and _near(rng, 4.4, 0.05) and near_color(col, Color(1.0, 0.78, 0.48))
         if pos.distance_to(rw) < 0.05:
             right_src += 1
-            right_ok = _near(inten, 1.05, 0.02) and _near(rng, 6.0, 0.05) and near_color(col, Color(1.0, 0.78, 0.48))
-    _ok(left_src == 1 and left_ok, "light_sources 含左门廊灯（1.05/6.0/暖色）", "count=%d" % left_src)
-    _ok(right_src == 1 and right_ok, "light_sources 含右门廊灯（1.05/6.0/暖色）", "count=%d" % right_src)
+            right_ok = _near(inten, 1.00, 0.02) and _near(rng, 4.4, 0.05) and near_color(col, Color(1.0, 0.78, 0.48))
+    _ok(left_src == 1 and left_ok, "light_sources 含左门廊灯（1.00/4.4/暖色）", "count=%d" % left_src)
+    _ok(right_src == 1 and right_ok, "light_sources 含右门廊灯（1.00/4.4/暖色）", "count=%d" % right_src)
     var win_lights: Array = C.get("win_lights", [])
     var expect_total: int = 6 + win_lights.size()
     _ok(sources.size() == expect_total, "light_sources 条数 = 6 核心 + %d 窗灯" % win_lights.size(),
@@ -519,7 +563,7 @@ func _section_lanterns() -> void:
         var d2: Dictionary = src
         var pos2: Vector3 = d2.get("pos", Vector3.ZERO)
         var inten2 := float(d2.get("intensity", d2.get("energy", 0.0)))
-        if _near(inten2, 1.60, 0.02) and pos2.distance_to(lamp_world) < 0.05:
+        if _near(inten2, 1.55, 0.02) and pos2.distance_to(lamp_world) < 0.05:
             lamp_hit = true
     _ok(lamp_hit, "室内吊灯光源位于餐桌上方（interior_lamp_world）", str(lamp_world))
     # 灯光预算：12 盏，前 6 为路灯，双门廊灯在列；窗灯是否被挤出记 WARN
@@ -574,96 +618,148 @@ func _section_stairs() -> void:
     _ok(past != null, "Staircase 节点存在")
     if past == null:
         return
-    var fy: float = float(C.get("fy", 0.55))
-    var attic_floor: float = float(C.get("attic_floor", 5.70))
-    var h: float = (attic_floor - fy) / 27.0
-    _ok(int(past.get_meta("risers", 0)) == 27, "meta risers=27", str(past.get_meta("risers", 0)))
-    _ok(_near(float(past.get_meta("rise", 0.0)), h, 0.0005), "meta rise=总高/27",
-        "meta=%.6f calc=%.6f" % [float(past.get_meta("rise", 0.0)), h])
-    _ok(_near(float(past.get_meta("tread", 0.0)), 0.245, 0.0005), "meta tread=0.245",
-        "%.4f" % float(past.get_meta("tread", 0.0)))
+    var fy: float = float(C.get("fy", M.HOUSE_FY))
+    var attic_floor: float = float(C.get("attic_floor", M.HOUSE_ATTIC_FLOOR_Y))
+    var rise: float = (attic_floor - fy) / float(Spec.STAIR_COUNT)
+    var land_top: float = fy + 8.0 * rise
+    _ok(int(past.get_meta("risers", 0)) == Spec.STAIR_COUNT, "meta risers=16 (Spec.STAIR_COUNT)",
+        str(past.get_meta("risers", 0)))
+    _ok(_near(float(past.get_meta("rise", 0.0)), rise, 0.0005),
+        "meta rise=(3.17-0.55)/16=0.16375",
+        "meta=%.6f calc=%.6f" % [float(past.get_meta("rise", 0.0)), rise])
+    _ok(_near(float(past.get_meta("tread", 0.0)), Spec.STAIR_TREAD, 0.0005),
+        "meta tread=0.26 (Spec.STAIR_TREAD)", "%.4f" % float(past.get_meta("tread", 0.0)))
+    _ok(_near(float(past.get_meta("width", 0.0)), Spec.STAIR_WIDTH, 0.001),
+        "meta width=0.85 (Spec.STAIR_WIDTH)", "%.4f" % float(past.get_meta("width", 0.0)))
+    var stair_meta: Dictionary = past.get_meta("stair_data", {})
+    _ok(stair_meta.size() > 0, "Staircase meta stair_data 存在（root meta stairs 同源）",
+        "keys=%d" % stair_meta.size())
+    if stair_meta.size() > 0:
+        _ok(_near(float(stair_meta.get("handrail_h", 0.0)), Spec.STAIR_HANDRAIL_H, 0.001),
+            "扶手高 0.85 (Spec.STAIR_HANDRAIL_H)", "%.3f" % float(stair_meta.get("handrail_h", 0.0)))
+        _ok(float(stair_meta.get("headroom_min", 0.0)) >= Spec.STAIR_HEADROOM,
+            "楼梯上方最小净空 >= 1.95 (Spec.STAIR_HEADROOM)",
+            "headroom_min=%.3f" % float(stair_meta.get("headroom_min", 0.0)))
+        var a_len: float = sqrt(1.82 * 1.82 + (land_top - fy) * (land_top - fy))
+        _ok(_near(float(stair_meta.get("flight_a_len", 0.0)), a_len, 0.01),
+            "Flight A 斜长 = sqrt(1.82^2+1.31^2)=%.4f" % a_len,
+            "%.4f" % float(stair_meta.get("flight_a_len", 0.0)))
+        var b_len: float = sqrt(1.82 * 1.82 + (attic_floor - land_top) * (attic_floor - land_top))
+        _ok(_near(float(stair_meta.get("flight_b_len", 0.0)), b_len, 0.01),
+            "Flight B 斜长 = sqrt(1.82^2+1.31^2)=%.4f" % b_len,
+            "%.4f" % float(stair_meta.get("flight_b_len", 0.0)))
     var r1: Rect2 = past.get_meta("hole_r1", Rect2())
     var r2: Rect2 = past.get_meta("hole_r2", Rect2())
-    _ok(_near(r1.position.x, 3.65, 0.001) and _near(r1.position.y, -3.83, 0.001) and _near(r1.size.x, 1.17, 0.001) and _near(r1.size.y, 3.28, 0.001),
-        "洞口 R1 = x[3.65,4.82] z[-3.83,-0.55]", str(r1))
-    _ok(_near(r2.position.x, 1.005, 0.001) and _near(r2.position.y, -3.83, 0.001) and _near(r2.size.x, 2.645, 0.001) and _near(r2.size.y, 1.23, 0.001),
-        "洞口 R2 = x[1.005,3.65] z[-3.83,-2.60]", str(r2))
+    _ok(_near(r1.position.x, 2.64, 0.001) and _near(r1.position.y, -2.79, 0.001)
+        and _near(r1.size.x, 0.85, 0.001) and _near(r1.size.y, 2.67, 0.001),
+        "洞口 R1 = x[2.64,3.49] z[-2.79,-0.12]（Flight B 上方）", str(r1))
+    _ok(_near(r2.position.x, 0.82, 0.001) and _near(r2.position.y, -2.79, 0.001)
+        and _near(r2.size.x, 1.82, 0.001) and _near(r2.size.y, 0.85, 0.001),
+        "洞口 R2 = x[0.82,2.64] z[-2.79,-1.94]（平台/阁楼入口）", str(r2))
+    var ctx_r1: Rect2 = C.get("stair_hole_r1", Rect2())
+    var ctx_r2: Rect2 = C.get("stair_hole_r2", Rect2())
+    _ok(r1 == ctx_r1 and r2 == ctx_r2, "Staircase 洞口 meta 与 cottage_ctx 单源一致")
     var boxes := _box_boxes(past)
     var treads_a: Array = []
     var treads_b: Array = []
     var landing: Variant = null
+    var riser16: Variant = null
+    var rail_a: Variant = null
+    var rail_b: Variant = null
     for n in boxes:
-        var s := _box_size(n)
-        if _near(s.x, 1.10, 0.02) and _near(s.y, 0.06, 0.01) and _near(s.z, 0.295, 0.01):
+        var nm := ""
+        if n is Dictionary:
+            nm = String((n as Dictionary).get("name", ""))
+        elif n is Node:
+            nm = String((n as Node).name)
+        if nm.begins_with("StairTreadA"):
             treads_a.append(n)
-        elif _near(s.x, 0.295, 0.01) and _near(s.y, 0.06, 0.01) and _near(s.z, 1.17, 0.01):
+        elif nm.begins_with("StairTreadB"):
             treads_b.append(n)
-        elif _near(s.x, 1.13, 0.02) and _near(s.y, 0.10, 0.01) and _near(s.z, 0.95, 0.02):
+        elif nm == "StairLanding":
             landing = n
-    _ok(treads_a.size() == 14, "Flight A 踏面 14 级", "count=%d" % treads_a.size())
-    _ok(treads_b.size() == 11, "Flight B 踏面 11 级", "count=%d" % treads_b.size())
-    _ok(landing != null, "中间平台存在（1.13x0.10x0.95）")
-    var stepped := 0
-    var bad_a := 0
+        elif nm == "StairRiserB_16":
+            riser16 = n
+        elif nm == "StairHandrailA":
+            rail_a = n
+        elif nm == "StairHandrailB":
+            rail_b = n
+    _ok(treads_a.size() == 7, "Flight A 踏面 7 级（合批清单 level 1..7）", "count=%d" % treads_a.size())
+    _ok(treads_b.size() == 7, "Flight B 踏面 7 级（合批清单 level 9..15）", "count=%d" % treads_b.size())
+    var levels_a: Dictionary = {}
+    var levels_b: Dictionary = {}
+    var size_ok := 0
     for n in treads_a:
-        var top: float = _part_pos(n).y + 0.03
-        var idx := int(roundf((top - fy) / h))
-        if idx >= 1 and idx <= 14 and _near(top - fy, float(idx) * h, 0.004):
-            stepped += 1
-        else:
-            bad_a += 1
-    _ok(stepped == 14 and bad_a == 0, "Flight A 每级顶面高度 = fy + i*h", "ok=%d bad=%d" % [stepped, bad_a])
-    var stepped_b := 0
+        var s := _box_size(n)
+        if _near(s.x, 0.85, 0.005) and _near(s.y, 0.06, 0.005) and _near(s.z, 0.31, 0.005):
+            size_ok += 1
+        var lvl := roundi((_part_pos(n).y + 0.03 - fy) / rise)
+        if lvl >= 1 and lvl <= 7 and _near(_part_pos(n).y + 0.03, fy + float(lvl) * rise, 0.004):
+            levels_a[lvl] = true
     for n in treads_b:
-        var top2: float = _part_pos(n).y + 0.03
-        var idx2 := int(roundf((top2 - fy) / h))
-        if idx2 >= 16 and idx2 <= 26 and _near(top2 - fy, float(idx2) * h, 0.004):
-            stepped_b += 1
-    _ok(stepped_b == 11, "Flight B 每级顶面高度 = fy + j*h (16..26)", "ok=%d" % stepped_b)
-    if landing != null:
-        var land_top: float = _part_pos(landing).y + 0.05
-        _ok(_near(land_top, fy + 15.0 * h, 0.004), "平台顶面 = 第 15 级 (3.4111)", "%.4f" % land_top)
-        _ok(_near(land_top, 3.4111, 0.005), "平台顶面实测≈3.4111", "%.4f" % land_top)
-    var last_top: float = fy + 26.0 * h
-    _ok(_near(attic_floor - last_top, h, 0.005), "第 27 级高差与其余级一致（接二层地面）",
-        "final_rise=%.4f h=%.4f" % [attic_floor - last_top, h])
-    # 楼梯井井壁：cav_lo = in_top+0.10 = fy+3.70 = 4.25，cav_hi = attic_floor-0.07 = 5.63
-    var cav_lo: float = fy + 3.60 + 0.10
-    var cav_hi: float = attic_floor - 0.07
-    var cav_h: float = cav_hi - cav_lo
-    var wall_full := 0
-    var wall_short := 0
-    for n in boxes:
         var s2 := _box_size(n)
-        if _near(s2.y, cav_h, 0.01):
-            wall_full += 1
-        if _near(s2.y, 5.42 - cav_lo, 0.01):
-            wall_short += 1
-    _ok(wall_full == 4, "楼梯井井壁 4 面（4.35->5.63）", "count=%d" % wall_full)
-    _ok(wall_short == 1, "x=1.005 侧井壁仅做到楼梯下皮 5.42", "count=%d" % wall_short)
-    # 一层天花板 4 块必须避开洞口（R1/R2）
+        if _near(s2.x, 0.31, 0.005) and _near(s2.y, 0.06, 0.005) and _near(s2.z, 0.85, 0.005):
+            size_ok += 1
+        var lvl2 := roundi((_part_pos(n).y + 0.03 - fy) / rise)
+        if lvl2 >= 9 and lvl2 <= 15 and _near(_part_pos(n).y + 0.03, fy + float(lvl2) * rise, 0.004):
+            levels_b[lvl2] = true
+    _ok(size_ok == 14, "A/B 踏面尺寸 0.85x0.06x0.31 / 0.31x0.06x0.85", "ok=%d" % size_ok)
+    _ok(levels_a.size() == 7, "Flight A 踏面顶面 = fy+i*rise（i=1..7 唯一）", "levels=%d" % levels_a.size())
+    _ok(levels_b.size() == 7, "Flight B 踏面顶面 = fy+level*rise（level 9..15 唯一）", "levels=%d" % levels_b.size())
+    _ok(landing != null, "中间平台 StairLanding 存在（合批清单）")
+    if landing != null:
+        var ls := _box_size(landing)
+        _ok(_near(ls.x, 0.85, 0.005) and _near(ls.y, 0.10, 0.005) and _near(ls.z, 0.85, 0.005),
+            "平台尺寸 0.85x0.10x0.85", str(ls))
+        var land_top_meas: float = _part_pos(landing).y + 0.05
+        _ok(_near(land_top_meas, land_top, 0.004), "平台顶面 = fy+8*rise = %.4f（第 8 级）" % land_top,
+            "%.4f" % land_top_meas)
+    _ok(riser16 != null, "第 16 级踢面 StairRiserB_16 存在（合批清单）")
+    if riser16 != null:
+        var s16 := _box_size(riser16)
+        _ok(_near(s16.x, 0.035, 0.004) and _near(s16.y, rise, 0.004) and _near(s16.z, 0.85, 0.004),
+            "第 16 级踢面 size(0.035, rise, 0.85)", str(s16))
+    var last_top: float = fy + 15.0 * rise
+    _ok(_near(attic_floor - last_top, rise, 0.001), "第 16 级高差与其余级一致（接二层地面）",
+        "final_rise=%.5f rise=%.5f" % [attic_floor - last_top, rise])
+    var la_len: float = sqrt(1.82 * 1.82 + (land_top - fy) * (land_top - fy))
+    var lb_len: float = sqrt(1.82 * 1.82 + (attic_floor - land_top) * (attic_floor - land_top))
+    _ok(rail_a != null and rail_b != null, "两跑内侧扶手 StairHandrailA/B 存在（合批清单）")
+    if rail_a != null and rail_b != null:
+        var ra := _box_size(rail_a)
+        var rb := _box_size(rail_b)
+        # A 跑沿局部 Z 斜置（长 a_len-0.06），B 跑沿局部 X 斜置（长 b_len-0.10）
+        _ok(_near(ra.z, la_len - 0.06, 0.03), "Flight A 扶手长 = 斜长-0.06 = %.4f" % (la_len - 0.06),
+            "%.4f" % ra.z)
+        _ok(_near(ra.y, 0.06, 0.004), "Flight A 扶手截面高 0.06", "%.4f" % ra.y)
+        _ok(_near(rb.x, lb_len - 0.10, 0.03), "Flight B 扶手长 = 斜长-0.10 = %.4f" % (lb_len - 0.10),
+            "%.4f" % rb.x)
+    var treads_meta: Array = stair_meta.get("treads", [])
+    _ok(treads_meta.size() == 15, "stair_data.treads 15 条（level 1..7,9..15,16）", "count=%d" % treads_meta.size())
+    # 一层天花板：L 形洞口外 3 块（板厚 0.025，V3.2），必须避开 R1/R2
+    var in_top: float = float(C.get("in_top", M.HOUSE_FY + M.HOUSE_ROOM_CLEAR_H))
     var slabs: Array = []
     for n in _box_boxes(root):
         var s3 := _box_size(n)
-        if _near(s3.y, 0.10, 0.02) and s3.z > 3.0:
-            if _is_axis_aligned(n):
+        if _near(s3.y, 0.025, 0.004) and s3.z > 2.5 and _is_axis_aligned(n):
+            if _near(_part_pos(n).y, in_top + 0.0125, 0.01):
                 slabs.append(n)
-    _ok(slabs.size() == 4, "一层天花板按 L 形洞口切成 4 块", "count=%d" % slabs.size())
+    _ok(slabs.size() == 3, "一层天花板按 L 形洞口切成 3 块（板厚 0.025）", "count=%d" % slabs.size())
     var cover := 0.0
     for n in slabs:
         var s4 := _box_size(n)
         var pp := _part_pos(n)
         var rect := Rect2(pp.x - s4.x * 0.5, pp.z - s4.z * 0.5, s4.x, s4.z)
         cover += _rect_overlap_area(rect, r1) + _rect_overlap_area(rect, r2)
-    _ok(cover <= 0.01, "天花板 4 块均不覆盖楼梯洞口", "overlap=%.4f m2" % cover)
+    _ok(cover <= 0.01, "天花板 3 块均不覆盖楼梯洞口", "overlap=%.4f m2" % cover)
     # 二层地板 MultiMesh 不得盖住洞口
     var af := _find(root, "AtticFloor")
     _ok(af != null and af is MultiMeshInstance3D, "AtticFloor MultiMesh 存在")
     if af is MultiMeshInstance3D:
         var mmi: MultiMeshInstance3D = af
         var mm: MultiMesh = mmi.multimesh
-        # 21 条板条在 4 个 region 间切分，x 跨界处拆成 2 实例（实测 23 实例）
-        _ok(mm != null and mm.instance_count >= 21 and mm.instance_count <= 26, "二层地板板条 21 条（跨区拆分后 ~23 实例）",
+        # 17 条板条（x = -3.37 + i*0.45, i=0..16），全部落在 3 个分区内，无跨区拆分
+        _ok(mm != null and mm.instance_count == 17, "二层地板板条 17 条（无跨区拆分）",
             "count=%d" % (mm.instance_count if mm != null else -1))
         var board_cover := 0.0
         if mm != null:
@@ -690,22 +786,31 @@ func _section_attic() -> void:
     var posts: Array = []
     for n in _box_boxes(root):
         var s := _box_size(n)
-        if _near(s.x, 0.09, 0.01) and _near(s.y, 0.06, 0.01):
+        var py: float = _part_pos(n).y
+        if _near(s.y, 0.06, 0.01) and maxf(s.x, s.z) >= 0.80 and _near(py, floor_y + 0.90, 0.02):
             rails.append(n)
-        elif _near(s.x, 0.10, 0.01) and _near(s.y, 1.06, 0.01) and _near(s.z, 0.10, 0.01):
+        elif _near(s.x, 0.09, 0.01) and _near(s.y, 1.02, 0.01) and _near(s.z, 0.09, 0.01) \
+                and _near(py, floor_y + 0.51, 0.02):
             posts.append(n)
     _ok(rails.size() == 3, "二层洞口栏杆 3 段扶手", "count=%d" % rails.size())
     var rail_y_ok := 0
     for n in rails:
-        if _near(_part_pos(n).y, floor_y + 0.92, 0.02):
+        if _near(_part_pos(n).y, floor_y + 0.90, 0.02):
             rail_y_ok += 1
-    _ok(rail_y_ok == 3, "扶手高度 = 二层地面 + 0.92", "ok=%d" % rail_y_ok)
-    _ok(posts.size() == 4, "栏杆立柱 4 根", "count=%d" % posts.size())
+    _ok(rail_y_ok == 3, "扶手高度 = 二层地面 + 0.90", "ok=%d" % rail_y_ok)
+    _ok(posts.size() == 4, "栏杆立柱 4 根（0.09x1.02x0.09）", "count=%d" % posts.size())
     var post_top_ok := 0
     for n in posts:
-        if _near(_part_pos(n).y + 0.53, floor_y + 1.06, 0.02):
+        if _near(_part_pos(n).y + 0.51, floor_y + 1.02, 0.02):
             post_top_ok += 1
-    _ok(post_top_ok == 4, "立柱顶 = 二层地面 + 1.06", "ok=%d" % post_top_ok)
+    _ok(post_top_ok == 4, "立柱顶 = 二层地面 + 1.02", "ok=%d" % post_top_ok)
+    var caps := 0
+    for n in _box_boxes(root):
+        var cs := _box_size(n)
+        if _near(cs.x, 0.13, 0.01) and _near(cs.y, 0.05, 0.01) and _near(cs.z, 0.13, 0.01) \
+                and _near(_part_pos(n).y, floor_y + 1.045, 0.02):
+            caps += 1
+    _ok(caps == 4, "立柱顶帽 4 个（0.13x0.05x0.13）", "count=%d" % caps)
     var ia := _find(root, "AtticInterior")
     var prop_kinds := {}
     var bad_pos := 0
@@ -731,14 +836,15 @@ func _section_attic() -> void:
     _ok(lamp2 != Vector3.ZERO, "attic_lamp2_world 存在", str(lamp2))
     var halo_meta := 0
     for n in _walk(root):
-        if bool(n.get_meta("attic_lamp_halo", false)):
+        var hv: Variant = n.get_meta("attic_lamp_halo", null)
+        if hv is MeshInstance3D:
             halo_meta += 1
     _ok(halo_meta == 1, "二层书桌暖灯光晕存在", "count=%d" % halo_meta)
-    var has_142 := false
+    var has_attic2 := false
     for src in (_cottage.get("light_sources", []) as Array):
-        if src is Dictionary and _near(float((src as Dictionary).get("intensity", 0.0)), 1.42, 0.02):
-            has_142 = true
-    _ok(has_142, "light_sources 含二层第二暖灯（1.42）")
+        if src is Dictionary and _near(float((src as Dictionary).get("intensity", 0.0)), 1.35, 0.02):
+            has_attic2 = true
+    _ok(has_attic2, "light_sources 含二层第二暖灯（1.35）")
 
 # ============================================================
 # 7) 一层室内：吊灯位置 / 壁炉
@@ -750,35 +856,37 @@ func _section_interior() -> void:
         return
     var C := _ctx()
     var fy: float = float(C.get("fy", 0.55))
+    var in_top: float = float(C.get("in_top", fy + M.HOUSE_ROOM_CLEAR_H))
     var bulb: Variant = null
-    for n in root.get_children():
-        if n is MeshInstance3D:
-            var mi := n as MeshInstance3D
-            if mi.mesh is SphereMesh:
-                var sm := mi.mesh as SphereMesh
-                if _near(sm.radius, 0.11, 0.02):
-                    bulb = n
-    # 合批后灯泡已并入 Cottage 的 surface；用溯源清单里的 Sphere 条目复核
-    if bulb == null:
-        for e in _batch_parts(root):
-            if String((e as Dictionary).get("kind", "")) != "Sphere":
-                continue
-            var sz: Vector3 = (e as Dictionary).get("size", Vector3.ZERO)
-            if _near(sz.x, 0.11, 0.02):
-                bulb = e
-                break
-    _ok(bulb != null, "室内吊灯灯泡（SphereMesh r=0.11）存在")
+    for e in _batch_parts(root):
+        var d: Dictionary = e
+        if String(d.get("kind", "")) != "Sphere":
+            continue
+        var sz: Vector3 = d.get("size", Vector3.ZERO)
+        var ep: Vector3 = _part_pos(e)
+        if _near(sz.x, 0.09, 0.01) and _near(sz.y, 0.18, 0.01) and _near(ep.x, 1.45, 0.03) \
+                and _near(ep.z, 0.80, 0.03) and _near(ep.y, in_top - 0.62, 0.03):
+            bulb = e
+            break
+    _ok(bulb != null, "室内吊灯灯泡（SphereMesh r=0.09）存在")
     if bulb != null:
         var bp: Vector3 = _part_pos(bulb)
-        _ok(_near(bp.x, 1.15, 0.03) and _near(bp.z, 1.95, 0.03), "吊灯位于餐桌正上方 (1.15, ?, 1.95)", str(bp))
-        # 吊灯 y = 天花板内顶 in_top(4.15) - 0.74 = 3.41（房屋本地坐标）
-        _ok(_near(bp.y, 3.41, 0.03), "吊灯高度约 3.41（餐桌上方）", "y=%.3f" % bp.y)
+        _ok(_near(bp.x, 1.45, 0.03) and _near(bp.z, 0.80, 0.03), "吊灯位于餐桌正上方 (1.45, ?, 0.80)", str(bp))
+        # 吊灯 y = 一层净高顶 in_top(2.97) - 0.62 = 2.35（房屋本地坐标）
+        _ok(_near(bp.y, in_top - 0.62, 0.03), "吊灯高度 in_top-0.62", "y=%.3f" % bp.y)
     var fp := 0
+    var hearth := 0
     for n in _box_boxes(root):
         var s := _box_size(n)
-        if _near(s.x, 1.70, 0.02) and _near(s.y, 3.30, 0.03) and _near(s.z, 0.56, 0.02):
+        var pp: Vector3 = _part_pos(n)
+        if _near(s.x, 1.36, 0.02) and _near(s.y, 1.62, 0.03) and _near(s.z, 0.26, 0.02) \
+                and _near(pp.y, fy + 0.81, 0.03):
             fp += 1
-    _ok(fp == 1, "壁炉石体（1.70x3.30x0.56）存在", "count=%d" % fp)
+        if _near(s.x, 1.70, 0.02) and _near(s.y, 0.10, 0.03) and _near(s.z, 0.60, 0.02) \
+                and _near(pp.y, fy + 0.05, 0.03):
+            hearth += 1
+    _ok(fp == 1, "壁炉石体（1.36x1.62x0.26）存在", "count=%d" % fp)
+    _ok(hearth == 1, "壁炉炉底石（1.70x0.10x0.60）存在", "count=%d" % hearth)
     # 一层桌椅/沙发等家具数量在 [2] 已覆盖；此处核对二层家具不压栏杆线（视觉项另记）
 
 # ============================================================
@@ -796,11 +904,11 @@ func _section_cat() -> void:
     var integrated: bool = bool(cat.get_meta("isle_cat", false)) or _find(cat, "CatIdleDriver") != null
     if not integrated:
         _skip("猫咪部件/待机断言", "待机未接入（PorchCat 仍是旧拼装实现，isle_cat.gd 未挂接）")
-        _ok(_near((cat as Node3D).position.x, 2.30, 0.01) and _near((cat as Node3D).position.z, 6.10, 0.01),
-            "旧猫咪仍位于门廊 (2.30, ?, 6.10)", str((cat as Node3D).position))
+        _ok(_near((cat as Node3D).position.x, 1.70, 0.01) and _near((cat as Node3D).position.z, 3.80, 0.01),
+            "旧猫咪仍位于门廊 (1.70, ?, 3.80)", str((cat as Node3D).position))
         return
     var cn := cat as Node3D
-    _ok(_near(cn.position.x, 2.30, 0.05) and _near(cn.position.z, 6.10, 0.05), "PorchCat 位于门廊 (2.30,?,6.10)", str(cn.position))
+    _ok(_near(cn.position.x, 1.70, 0.05) and _near(cn.position.z, 3.80, 0.05), "PorchCat 位于门廊 (1.70,?,3.80)", str(cn.position))
     _ok(_near(cn.rotation.y, -0.6, 0.05), "PorchCat 朝向 yaw≈-0.6", "%.3f" % cn.rotation.y)
     for part in ["Body", "Head", "HeadCore", "Tail", "Legs"]:
         _ok(_find(cat, part) != null, "猫咪部件 " + part + " 存在")
@@ -859,7 +967,7 @@ func _section_boat() -> void:
     _ok(deck != null, "Deck 分组存在")
     if deck != null:
         var planks := _find_pref(deck, "DeckPlank")
-        _ok(planks.size() == 7, "甲板 7 段横铺板", "count=%d" % planks.size())
+        _ok(planks.size() == 3, "甲板 3 段横铺板（座舱前后两段）", "count=%d" % planks.size())
         var aabbs: Array = []
         for p in planks:
             var a := _mesh_aabb(p)
@@ -870,9 +978,10 @@ func _section_boat() -> void:
         var gap_ok := 0
         var first_z := 99.0
         var last_z := -99.0
+        var want_len: Array = [0.74, 0.74, 0.62]  # 座舱前 [-2.24,-0.72]x2 + 后 [1.44,2.08]x1，缝 0.02
         for i in range(aabbs.size()):
             var a2: AABB = aabbs[i]
-            if _near(a2.size.z, 0.5971, 0.01):
+            if i < want_len.size() and _near(a2.size.z, float(want_len[i]), 0.01):
                 len_ok += 1
             if _near(a2.size.y, 0.06, 0.006):
                 thick_ok += 1
@@ -882,11 +991,9 @@ func _section_boat() -> void:
                 var prev: AABB = aabbs[i - 1]
                 if _near(a2.position.z - prev.end.z, 0.02, 0.006):
                     gap_ok += 1
-                if not _near(a2.end.y, prev.end.y, 0.012) and i % 2 == 1:
-                    pass
-        _ok(len_ok == 7, "每段甲板长≈0.597", "ok=%d" % len_ok)
-        _ok(thick_ok == 7, "甲板厚 0.06", "ok=%d" % thick_ok)
-        _ok(gap_ok == 6, "相邻甲板缝 0.02", "ok=%d" % gap_ok)
+        _ok(len_ok == 3, "甲板段长 0.74/0.74/0.62", "ok=%d" % len_ok)
+        _ok(thick_ok == 3, "甲板厚 0.06", "ok=%d" % thick_ok)
+        _ok(gap_ok == 1, "前段两板缝 0.02（座舱为开口）", "ok=%d" % gap_ok)
         _ok(_near(first_z, -2.23, 0.01) and _near(last_z, 2.07, 0.01), "甲板覆盖 z -2.23..2.07",
             "z=%.3f..%.3f" % [first_z, last_z])
         var top_ok := 0
@@ -894,9 +1001,14 @@ func _section_boat() -> void:
             var ay: float = (a3 as AABB).end.y
             if _near(absf(ay - 0.52), 0.004, 0.003):
                 top_ok += 1
-        _ok(top_ok == 7, "甲板面高 0.52±0.004（交替 4mm 错缝）", "ok=%d" % top_ok)
+        _ok(top_ok == 3, "甲板面高 0.52±0.004（交替 4mm 错缝）", "ok=%d" % top_ok)
         var inwales := _find_pref(deck, "Inwale")
-        _ok(inwales.size() == 12, "舷缘内衬 12 段", "count=%d" % inwales.size())
+        _ok(inwales.size() == 6, "舷缘内衬 6 段（两舷x3）", "count=%d" % inwales.size())
+        var sole := _find(bn, "Sole")
+        _ok(sole != null, "座舱舱底 Sole 存在（面高 0.20）")
+        if sole != null:
+            var sa := _mesh_aabb(sole)
+            _ok(_near(sa.end.y, 0.20, 0.01), "Sole 面高 0.20", "%.3f" % sa.end.y)
     var inner := _find(bn, "InnerFloor")
     _ok(inner != null, "舱底 InnerFloor 存在")
     if inner != null:

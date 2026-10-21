@@ -240,16 +240,6 @@ func _section_attic_day() -> void:
 	_look(Vector3(-2.90, _attic_floor + 0.75, 2.40), Vector3(-0.20, _attic_floor + 0.28, 0.70), 64.0)
 	await _settle(4)
 	await _shot("attic_overview_day", "二层阁楼总览：床、书桌、阅读角、栏杆")
-	# T2-TEMP 候选机位（选型用，最终交付删除）
-	_look(Vector3(-2.60, 3.65, 2.40), Vector3(-2.10, 3.45, -1.60), 74.0)
-	await _settle(3)
-	await _shot("tmp_attic_A", "候选A：前左角沿 -Z，吊灯完全出画")
-	_look(Vector3(-2.50, 3.75, 2.20), Vector3(0.40, 3.50, -1.20), 70.0)
-	await _settle(3)
-	await _shot("tmp_attic_E", "候选E：前左角斜向室内中央，吊灯仅顶部小弧")
-	_look(Vector3(-2.60, 3.80, 2.40), Vector3(-0.20, 3.50, -1.50), 72.0)
-	await _settle(3)
-	await _shot("tmp_attic_F", "候选F：前左角对角线，吊灯顶部小弧")
 	# 2) 楼梯口/栏杆/洞口（从阁楼内看洞口）
 	_look(Vector3(0.55, _attic_floor + 1.30, -1.55), Vector3(3.20, _attic_floor + 0.35, -2.60), 66.0)
 	await _settle(4)

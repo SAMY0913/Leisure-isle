@@ -1,18 +1,18 @@
 # 《休闲小岛幻境》世界尺度规范（WORLD_SCALE_SPEC）
 
-> **版本**：P7-V3.2 · v1.3（按 Lead m00438 口径修订 + 标尺运行时自检，2026-10-21）
-> **适用工程**：Godot 4.7.2 stable · Forward+ · 工程 `D:/休闲小岛幻境/游戏工程`（分支 `p7-v3.2`，基线 `eaf1559` = V3.1）
+> **版本**：P7-V3.2 · v1.4 终局冻结版（code freeze `e6a4c3f`；终局 audit 2026-10-21）
+> **适用工程**：Godot 4.7.2 stable (official) · Forward+ · 工程 `D:/休闲小岛幻境/游戏工程`（分支 `p7-v3.2`，基线 `eaf1559` = V3.1，终局冻结 commit `e6a4c3f`）
 > **作者**：T1 尺度工具与审计（scale-tools）· 主责文件：`scripts/isle_scale_spec.gd`、`scripts/isle_scale_figure.gd`、`tools/probe_scale_world.gd`、`tools/scale_debug_overlay.gd`、本文档
 > **实测来源（全部真实运行，无手工编造）**：
 > - 基线原始尺寸：`开发产物/p7v32/scale/inventory_baseline.json` / `.md`（wt_baseline，detached `eaf1559`，headless inventory 模式，102 项）
 > - 当前主树：`开发产物/p7v32/scale/inventory.json` / `.md`（headless audit 模式，对照本规范判定，107 项）
-> - 日志：`开发产物/p7v32/logs/scale_audit_main.log`、`开发产物/p7v32/logs/scale_inventory_baseline.log`、标尺自检 `开发产物/p7v32/logs/scale_overlay_selftest.log`
+> - 日志：`开发产物/p7v32/logs/scale_audit_main_final.log`、`开发产物/p7v32/logs/scale_inventory_baseline_final.log`、标尺自检 `开发产物/p7v32/logs/scale_overlay_selftest.log`
 > **复现命令**（`ENG=D:/休闲小岛幻境/引擎/Godot_v4.7.2-stable_win64_console.exe`）：
 > ```powershell
 > # 当前主树审计（有 FAIL 退出码 1，可进 CI）
-> & $ENG --headless --path D:/休闲小岛幻境/游戏工程 --script res://tools/probe_scale_world.gd -- --mode audit --tag scale_audit_main
+> & $ENG --headless --path D:/休闲小岛幻境/游戏工程 --script res://tools/probe_scale_world.gd -- --mode audit --tag scale_audit_final
 > # 基线清单（wt_baseline 内 untracked 探针，只记录不判分）
-> & $ENG --headless --path D:/休闲小岛幻境/开发产物/p7v32/wt_baseline --script res://tools/probe_scale_world.gd -- --mode inventory --tag scale_inventory_baseline
+> & $ENG --headless --path D:/休闲小岛幻境/开发产物/p7v32/wt_baseline --script res://tools/probe_scale_world.gd -- --mode inventory --tag scale_inventory_final_baseline
 > # 开发标尺运行时自检（headless 真实实例化，11 项断言）
 > & $ENG --headless --path D:/休闲小岛幻境/游戏工程 --script res://tools/probe_scale_world.gd -- --mode overlay --tag scale_overlay_selftest
 > # 规范文档表格同步（从 inventory*.json 重建，幂等）
@@ -21,8 +21,8 @@
 
 ## 0. 当前审计结果摘要
 
-- 当前主树：`[SCALE] RESULT pass=90 warn=0 fail=0 info=17 mode=audit tag=scale_audit_main`（PASS 90 / WARN 0 / FAIL 0 / INFO 17）
-- 基线：`[SCALE] RESULT pass=0 warn=0 fail=0 info=102 mode=inventory tag=scale_inventory_baseline`（inventory 只记录实测值，不判分）
+- 终局主树（code freeze `e6a4c3f`，Godot 4.7.2-stable）：`[SCALE] RESULT pass=90 warn=0 fail=0 info=17 mode=audit tag=scale_audit_final`（PASS 90 / WARN 0 / FAIL 0 / INFO 17）
+- 终局基线：`[SCALE] RESULT pass=0 warn=0 fail=0 info=102 mode=inventory tag=scale_inventory_final_baseline`（inventory 只记录实测值，不判分）
 - 本轮 m00438 四项口径修订结果：烟囱顶读真实几何 AABB **+0.350 m PASS**；屋脊/屋顶结构线（root meta `ridge_y=6.20`、`roof_base=3.73`）**2.470 m PASS**；`camera_fov` 区间改 **[32,75]**（默认 42° 保留）**PASS**；`boat_freeboard` 区间改 **[0.25,0.78]**、midship/max sheer 双口径登记 **PASS**（midship 实测 0.535 m，最高舷弧 0.724 m；T4 的 0.660 为四分之一站位口径，站位定义差异已在 §5 说明）。
 - 无 FAIL / 无 WARN；INFO = reference_keep 7 项（§7）+ 双口径/世界量法/仅登记 10 项（不作为评分）。
 - 开发标尺运行时自检（`probe_scale_world.gd --mode overlay`，headless 真实实例化）：`[SCALE] RESULT pass=11 warn=0 fail=0 info=0 mode=overlay tag=scale_overlay_selftest`（exit 0）；详见 §11。
@@ -180,9 +180,9 @@ static func world_height(node: Node3D) -> float
 | boat_hull_len | 5.011 m | [3.00 – 6.00] m | 5.011 m | 符合 | world.gd _sailboat · Hull 组（船体 ArrayMesh） | boat_hull_len 实测 5.011 m / 区间 [3.000, 6.000] PASS → PASS；船体局部 z 向 AABB（船长） |
 | boat_hull_beam | 1.620 m | [1.20 – 2.00] m | 1.620 m | 符合 | world.gd _sailboat · Hull 组 | boat_hull_beam 实测 1.620 m / 区间 [1.200, 2.000] PASS → PASS；船体局部 x 向 AABB（船宽） |
 | boat_freeboard | 0.535 m | [0.25 – 0.78] m | 0.535 m | 符合 | world.gd _sailboat · Gunwale 舷缘（midship 局部设计水线） | boat_freeboard 实测 0.535 m / 区间 [0.250, 0.780] PASS → PASS；midship 局部舷缘顶 y（局部设计水线量法，T4 口径 0.660；max sheer 0.724 另记 RAW） |
-| boat_freeboard_max_sheer | 0.724 m | —（保留/仅记录） | 0.724 m | 保留·仅记录 | world.gd _sailboat · Gunwale 最高舷弧点 | boat_freeboard_max_sheer 0.72449469566345（仅登记·不评分）；max sheer 局部舷缘顶（最高舷弧点，仅登记；两口径并列） |
-| boat_freeboard_world | 1.008 m | —（保留/仅记录） | 1.008 m | 保留·仅记录 | world.gd _sailboat · 舷缘世界 Y − 海面 0（max sheer） | boat_freeboard_world 1.00818181037903（仅登记·不评分）；世界量法 max sheer：舷缘顶世界 Y − 海面 0 |
-| boat_freeboard_midship_world | 0.818 m | —（保留/仅记录） | 0.819 m | 保留·仅记录 | world.gd _sailboat · 舷缘世界 Y − 海面 0（midship） | boat_freeboard_midship_world 0.81868380308151（仅登记·不评分）；世界量法 midship：舷缘顶世界 Y − 海面 0 |
+| boat_freeboard_max_sheer | 0.724 m | —（保留/仅记录） | 0.724 m | 保留·仅记录 | world.gd _sailboat · Gunwale 最高舷弧点 | boat_freeboard_max_sheer 0.7244947552681（仅登记·不评分）；max sheer 局部舷缘顶（最高舷弧点，仅登记；两口径并列） |
+| boat_freeboard_world | 1.009 m | —（保留/仅记录） | 1.008 m | 保留·仅记录 | world.gd _sailboat · 舷缘世界 Y − 海面 0（max sheer） | boat_freeboard_world 1.00821352005005（仅登记·不评分）；世界量法 max sheer：舷缘顶世界 Y − 海面 0 |
+| boat_freeboard_midship_world | 0.820 m | —（保留/仅记录） | 0.819 m | 保留·仅记录 | world.gd _sailboat · 舷缘世界 Y − 海面 0（midship） | boat_freeboard_midship_world 0.8187153339386（仅登记·不评分）；世界量法 midship：舷缘顶世界 Y − 海面 0 |
 | boat_deck_top | 0.555 m | —（保留/仅记录） | 0.605 m | 保留·仅记录 | world.gd _sailboat · Deck 组 | boat_deck_top 0.60500007867813（仅登记·不评分）；甲板顶局部 y（船局部 y=0 为水面） |
 | boat_behavior | 0.000 m | —（保留/仅记录） | 0.000 m | 保留·仅记录 | world.gd Sailboat 状态机（保留） | boat_behavior（保留·不评分）实测 0.000 / hint 0.000，偏差 0.000；航线/回港/夜景状态机保留（未改），仅船体几何审计 |
 | dock_deck_world_y | 0.720 m | —（保留/仅记录） | 0.720 m | 保留·仅记录 | world.gd _dock · 栏杆扶手几何反推甲板顶 | dock_deck_world_y 0.72000002861023（仅登记·不评分）；码头甲板世界高（统一口径 = DECK_WORLD_Y 0.720 m；数据来源 railing-geometry）。历史值 1.907 的来源：早期版本直接读 DockP… |
@@ -198,7 +198,7 @@ static func world_height(node: Node3D) -> float
 | street_lamp_h | 2.350 m | [2.70 – 3.05] m | 2.885 m | 符合 | world.gd _street_lamps/_lamp · PathLamp1-3/GardenLamp1-3 | street_lamp_h 实测 2.885 m / 区间 [2.700, 3.050] PASS → PASS；6 盏路灯总高（基座底→杆/灯帽顶）中位数；节点 PathLamp1,PathLamp2,PathLamp3,GardenLamp1,Garden… |
 | street_lamp_center | 1.980 m | [2.45 – 2.65] m | 2.550 m | 符合 | world.gd _lamp · self_lit 灯箱中心 | street_lamp_center 实测 2.550 m / 区间 [2.450, 2.650] PASS → PASS；灯具/光心离地中位数（自发光灯箱网格中心） |
 | big_tree_h | 10.353 m | —（保留/仅记录） | 10.353 m | 保留·仅记录 | world.gd _big_tree · BigTree AABB | big_tree_h（保留·不评分）实测 10.353 / hint 12.000，偏差 1.647；大树是取景框/秋千挂点，保留树高 |
-| cat_shoulder_h | 0.503 m | [0.25 – 0.35] m | 0.295 m | 符合 | scripts/isle_cat.gd PorchCat · Body 组 AABB | cat_shoulder_h 实测 0.295 m / 区间 [0.250, 0.350] PASS → PASS；PorchCat Body 组 AABB 顶（坐姿肩/背高；T4 修后 0.297） |
+| cat_shoulder_h | 0.496 m | [0.25 – 0.35] m | 0.293 m | 符合 | scripts/isle_cat.gd PorchCat · Body 组 AABB | cat_shoulder_h 实测 0.293 m / 区间 [0.250, 0.350] PASS → PASS；PorchCat Body 组 AABB 顶（坐姿肩/背高；T4 修后 0.297） |
 | cat_body_len | 0.853 m | [0.40 – 0.60] m | 0.512 m | 符合 | PorchCat · Body+Head AABB 深 | cat_body_len 实测 0.512 m / 区间 [0.400, 0.600] PASS → PASS；Body+Head 合并 AABB 深（体长，不含尾） |
 | gull_body_len | 0.672 m | [0.40 – 0.70] m | 0.672 m | 符合 | scripts/fx.gd BirdFlock · Bird0 躯干+头+喙+尾 | gull_body_len 实测 0.672 m / 区间 [0.400, 0.700] PASS → PASS；海鸥躯干+头+喙+尾网格合并 AABB 深（不含翼/腿） |
 | gull_wingspan | 1.219 m | [1.10 – 1.50] m | 1.219 m | 符合 | fx.gd Bird0 · 翼节点旋转归零后 x 跨度 | gull_wingspan 实测 1.219 m / 区间 [1.100, 1.500] PASS → PASS；双翼旋转归零后翼网格 x 向跨度（设计翼展） |
@@ -255,6 +255,7 @@ static func world_height(node: Node3D) -> float
 8. **舷弧（sheer）**：舷缘沿船长是曲线，"干舷"必须标明站位——midship 与 max sheer 差可达 0.19 m（本船 0.535 vs 0.724）。探针两口径都输出，判定用 midship。
 9. **家具尺寸朝向**：AABB 按 x=宽 / y=高 / z=深 归一化比较。
 10. **合并网格**：房屋/楼梯/家具被 `IsleBatch.merge_static` 合并后原 MeshInstance 被释放，测量走 `batch_manifest`（部件级 size+xf）；未合并子树（门扇/玻璃/猫/鸟/船/灯）直接读真实 MeshInstance。
+11. **动画相位微差**：猫（CatIdle 呼吸）肩高逐次运行可有 ±0.005 m 浮动、船体世界量法因浮动相位 ±0.001 m；判定只用区间与局部量法（局部设计水线 / 局部肩高），不要把 mm 级相位差当回归；文档表格以最近一次终局 inventory 为准（`update_spec_tables.mjs` 重建，dry-run 幂等）。
 
 ## 10. 变更原因与测试结果（本轮 T1 交付）
 
@@ -262,10 +263,18 @@ static func world_height(node: Node3D) -> float
 | --- | --- | --- |
 | 尺度规范注册表 | `scripts/isle_scale_spec.gd` | 新增资产区间/reference_keep/measurement_of/灯塔石阶/猫海鸥区间；fov 区间 [32,75]（默认 42）、boat_freeboard [0.25,0.78]；check/check_range/check_custom 自测通过 |
 | 1.50 m 人形参照 | `scripts/isle_scale_figure.gd` | 世界 AABB 1.500 m、脚底局部 y=0、12 MeshInstance、父节点 scale=2 自检测得 3.000 m（抓整节点缩放漂移） |
-| 世界实测探针 | `tools/probe_scale_world.gd` | headless 可重复；audit 当前树 `[SCALE] RESULT pass=90 warn=0 fail=0 info=17 mode=audit tag=scale_audit_main`；基线 `info=102`；产物 `inventory*.json/md` |
-| 开发标尺 overlay | `tools/scale_debug_overlay.gd` | 语法通过；CLI `--scale-debug` 才构建、构建一次合批、无 `_process`；API 见 §11 |
+| 世界实测探针 | `tools/probe_scale_world.gd` | headless 可重复；终局 audit（冻结 `e6a4c3f`）`[SCALE] RESULT pass=90 warn=0 fail=0 info=17 mode=audit tag=scale_audit_final`；基线 `[SCALE] RESULT pass=0 warn=0 fail=0 info=102 mode=inventory tag=scale_inventory_final_baseline`；产物 `inventory*.json/md`，日志 `开发产物/p7v32/logs/scale_audit_main_final.log` / `scale_inventory_baseline_final.log` |
+| 开发标尺 overlay | `tools/scale_debug_overlay.gd` | 运行时自检 `[SCALE] RESULT pass=11 warn=0 fail=0 info=0 mode=overlay tag=scale_overlay_selftest`（exit 0，headless 真实实例化）；CLI `--scale-debug` 才构建、构建一次合批、无 `_process`；门洞标注口径已修（净宽 1.14 / 中心净高 1.94 / 拱脚 1.42）；API 见 §11 |
 | 基线原始尺寸 | `开发产物/p7v32/scale/inventory_baseline.{json,md}` | wt_baseline（eaf1559）真实运行，102 项原始实测 |
-| 本文档 | `docs/WORLD_SCALE_SPEC.md` | 表格数据由探针 JSON 直接生成，非手工 |
+| 本文档 | `docs/WORLD_SCALE_SPEC.md` | 表格数据由探针 JSON 直接生成，非手工；终局表格由 `update_spec_tables.mjs` 从 final inventory 重建（dry-run changed=0） |
+| **本轮变更**（freeze `e6a4c3f`） | `scripts/isle_math.gd` · `make_prism_mesh` 绕序修复 | Godot 前向面按**顺时针（CW）**绕序：修复前门廊山墙（prism）背面朝外呈**深藏青**色块；同源修复影响 `picture_frame` 山峦观感。纯渲染朝向修复，**不改尺寸/比例**；终局 audit 仍 `pass=90 warn=0 fail=0 info=17` |
+| 终局冻结记录 | 分支 `p7-v3.2` · commit `e6a4c3f` · Godot 4.7.2-stable (official, Forward+) | 终局 audit `pass=90 / warn=0 / fail=0 / info=17`（107 项）；基线 inventory `info=102`；overlay 自检 `pass=11`；探针与表格更新器已在冻结版复跑；spec 表格 dry-run `changed=0` |
+
+**本轮变更（code freeze `e6a4c3f`）**
+
+- `scripts/isle_math.gd` · `make_prism_mesh` **绕序修复**：Godot 前向面按**顺时针（CW）**绕序。修复前门廊山墙 prism 背面朝外、显示为**深藏青色块**；同源修复改善 `picture_frame` 山峦观感。纯渲染朝向修复，**不改尺寸/比例**（终局 audit 保持全绿）。
+- 终局审计（commit `e6a4c3f`，引擎 Godot 4.7.2-stable official Forward+）：`pass=90 warn=0 fail=0 info=17`（合计 107 项）；基线 inventory `info=102`；开发标尺自检 `pass=11`。
+- 文档表格已由 `update_spec_tables.mjs` 从终局 `inventory*.json` 重建，dry-run `changed=0`（幂等）。
 
 ## 11. 开发模式标尺（`tools/scale_debug_overlay.gd`）
 

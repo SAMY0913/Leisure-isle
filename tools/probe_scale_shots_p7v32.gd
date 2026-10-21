@@ -11,6 +11,7 @@ extends SceneTree
 ##       -- --scale-debug --out="D:/休闲小岛幻境/开发产物/p7v32/shots/"
 ## 参数：--out=<dir> --only=s01,s03 --stage=house|interior|world|all --time=740 --quality=2 --list
 ## 产物：<out>/s01_house_front.png … s16_overlay_ruler.png、<out>/manifest.md、<out>/scale_shots_manifest.json
+## 清单含 commit/生成时间/引擎/GPU/画质/seed 与人形回读（_git_commit 动态读取，失败记 unknown）。
 ## 日志：stdout（由调用方重定向到 开发产物/p7v32/logs/accept_shots.log）
 
 const Figure := preload("res://scripts/isle_scale_figure.gd")
@@ -527,6 +528,9 @@ func _write_manifest() -> void:
 	# JSON（全量）
 	var meta := {
 		"probe": "tools/probe_scale_shots_p7v32.gd",
+		"commit": _git_commit(),
+		"generated_at": Time.get_datetime_string_from_system(false, true),
+		"engine": Engine.get_version_info().get("string", "?"),
 		"resolution": [SHOT_W, SHOT_H],
 		"seed": SEED_VAL,
 		"time_min": _time_used,
@@ -545,6 +549,9 @@ func _write_manifest() -> void:
 	# manifest.md（人读）
 	var md := "# P7-V3.2 T5 验收截图清单（16 张）\n\n"
 	md += "- 生成：tools/probe_scale_shots_p7v32.gd\n"
+	md += "- 代码冻结 commit：%s\n" % _git_commit()
+	md += "- 生成时间：%s\n" % Time.get_datetime_string_from_system(false, true)
+	md += "- 引擎：%s\n" % Engine.get_version_info().get("string", "?")
 	md += "- 分辨率：%dx%d（窗口模式 %s）\n" % [SHOT_W, SHOT_H, DisplayServer.get_name()]
 	md += "- 固定：seed=%d，时间=%.0f 分钟（12:20），画质档=%d，_paused=true\n" % [SEED_VAL, _time_used, _quality_used]
 	md += "- 引擎：%s\n" % OS.get_executable_path()
@@ -575,6 +582,16 @@ func _write_manifest() -> void:
 		mf.store_string(md)
 		mf.close()
 	print("[P7V32S] manifest 写入 ", _out + "manifest.md 与 scale_shots_manifest.json")
+
+func _git_commit() -> String:
+	var out: Array = []
+	var proj := ProjectSettings.globalize_path("res://")
+	var code := OS.execute("git", ["-C", proj, "rev-parse", "--short", "HEAD"], out, true)
+	if code == 0 and out.size() > 0:
+		var s := String(out[0]).strip_edges()
+		if s != "":
+			return s
+	return "unknown"
 
 func _print_shot_table() -> void:
 	print("P7-V3.2 T5 验收截图清单（tools/probe_scale_shots_p7v32.gd）")
