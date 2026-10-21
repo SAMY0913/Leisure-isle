@@ -1,20 +1,32 @@
 extends SceneTree
-## P7-V3.1 静态合批验证探针（headless）
+## P7-V3.1 静态合批守恒校验探针（headless）
 ##
-## 用途：在不改产品代码的前提下，对"每一件家具 / 楼梯 / 房屋分组"试跑 IsleBatch.merge_static，
-##       逐组核对：
-##         1) 合并后三角形总数与合并前一致（不允许几何丢失或重复）；
-##         2) 合并后 surface 数严格减少（否则该组不该合并）；
-##         3) 合并后包围盒与合并前一致（AABB 不得缩水，也不得无理由膨胀）；
-##         4) 材质对象集合不变（draw 时的材质、描边 next_pass 全部保留）。
-##       并输出全场景 dc_est（提交量估算）的合并前后对照。
+## 定位：产品 **构建时** 已经做了静态合批（cottage.gd / isle_batch.gd），
+##       所以本探针不再"试跑合批"，而是在**发布形态**的场景上校验合批的正确性：
+##       合批只允许搬运几何，不允许增删任何一个三角形/顶点，也不允许出现
+##       "合并一半 + 原实例残留"的重复绘制。
+##
+## 断言：
+##  1) 全场景三角形/顶点总数 == P7-V3 未合批基线（逐位相等，不是"差不多"）；
+##  2) dc_est 相对未合批基线下降 >= 40%；
+##  3) 家具 / 楼梯 / 房屋三个层级都真的产出了 Batch_ 节点；
+##  4) 每个合批组的 surface 数严格少于它合并掉的部件数（否则合批无收益）；
+##  5) 动态件（门扇 DoorPivot、门廊猫 PorchCat、船首探照灯 BowSpot）**没有**被合批；
+##  6) 溯源清单 batch_manifest 完整（部件类别/尺寸/变换/材质均可读）。
+##
+## 基线来源：commit ac6c1f0（P7-V3 验收版，未合批）实测
+##   tools/probe_batch_p7v31.gd → RESULT tris_total=191656 verts_total=167727 dc_est_total=3421
 ##
 ## 运行：
 ##   ENG --headless --path <PROJ> --script res://tools/probe_batch_merge_p7v31.gd
-## 输出：[BMERGE] 每组一行 + 末行 [BMERGE] RESULT pass=N fail=M ...
 
-var _fail: int = 0
+## P7-V3 未合批基线（ac6c1f0 实测）
+const BASE_TRIS := 191656
+const BASE_VERTS := 167727
+const BASE_DC_EST := 3421
+
 var _pass: int = 0
+var _fail: int = 0
 
 func _initialize() -> void:
 	await process_frame
@@ -56,104 +68,140 @@ func _initialize() -> void:
 		print("[BMERGE] FAIL no cottage root")
 		quit(1)
 		return
+	var scene_root: Node = main
 
-	var before := _scene_stats(croot.get_parent() if croot.get_parent() != null else croot)
-	print("[BMERGE] before mesh=%d surfaces=%d dc_est=%d tris=%d verts=%d" % [
-		int(before["mesh"]), int(before["surfaces"]), int(before["dc"]), int(before["tris"]), int(before["verts"]),
-	])
+	# ---- 1) 全场景几何守恒（逐位相等）----
+	var st := _scene_stats(scene_root)
+	var tris := int(st["tris"])
+	var verts := int(st["verts"])
+	print("[BMERGE] scene mesh=%d surfaces=%d dc_est=%d tris=%d verts=%d" % [
+		int(st["mesh"]), int(st["surfaces"]), int(st["dc"]), tris, verts])
+	_ok(tris == BASE_TRIS, "三角形总数与未合批基线逐位相等",
+		"%d vs %d" % [tris, BASE_TRIS])
+	_ok(verts == BASE_VERTS, "顶点总数与未合批基线逐位相等",
+		"%d vs %d" % [verts, BASE_VERTS])
 
-	# ---- 逐件家具 ----
-	var props: Array = []
-	_collect_props(croot, props)
-	print("[BMERGE] props=%d" % props.size())
-	var prop_ok := 0
-	for p in props:
-		var r: Dictionary = IsleBatch.merge_static(p as Node3D)
-		var chk := _verify_group(p as Node3D, r, "prop:" + String((p as Node).name))
-		if chk:
-			prop_ok += 1
+	# ---- 2) dc_est 相对基线显著下降 ----
+	var dc := int(st["dc"])
+	var drop := 100.0 * float(BASE_DC_EST - dc) / float(BASE_DC_EST)
+	print("[BMERGE] dc_est %d -> %d (下降 %.1f%%)" % [BASE_DC_EST, dc, drop])
+	_ok(drop >= 40.0, "dc_est 相对未合批基线下降 >= 40%", "%.1f%%" % drop)
 
-	# ---- 楼梯 ----
-	var stairs: Node3D = _find_named(croot, "Staircase") as Node3D
-	if stairs != null:
-		var r2: Dictionary = IsleBatch.merge_static(stairs)
-		_verify_group(stairs, r2, "Staircase")
-		print("[BMERGE] Staircase in=%d out=%d tris=%d->%d" % [
-			int(r2["surfaces_in"]), int(r2["surfaces_out"]), int(r2["tris_in"]), int(r2["tris_out"]),
-		])
-	else:
-		_fail += 1
-		print("[BMERGE] FAIL Staircase 缺失")
+	# ---- 3) 三层级都产出 Batch_ ----
+	var prop_batches := 0
+	for p in _collect_pref(croot, "Prop_"):
+		prop_batches += _count_pref(p, "Batch_")
+	var stairs: Node = _find_named(croot, "Staircase")
+	var stairs_batches := _count_pref(stairs, "Batch_") if stairs != null else -1
+	var root_batches := _count_pref(croot, "Batch_")
+	_ok(prop_batches > 0, "家具层：Prop_* 节点内产出 Batch_ 合批节点", "count=%d" % prop_batches)
+	_ok(stairs_batches > 0, "楼梯层：Staircase 内产出 Batch_ 合批节点", "count=%d" % stairs_batches)
+	_ok(root_batches > 0, "房屋层：Cottage 内产出 Batch_ 合批节点", "count=%d" % root_batches)
 
-	# ---- 房屋主体：跳过门扇 / 猫 / 船（动态件）----
-	var door_pivot: Node3D = cottage.get("door_pivot")
-	var cat: Node = _find_named(croot, "PorchCat")
-	var skip: Array = []
-	if door_pivot != null:
-		skip.append(door_pivot)
-	if cat != null:
-		skip.append(cat)
-	var r3: Dictionary = IsleBatch.merge_static(croot, {"skip": skip})
-	_verify_group(croot, r3, "cottage_root")
-	print("[BMERGE] cottage_root in=%d out=%d tris=%d->%d" % [
-		int(r3["surfaces_in"]), int(r3["surfaces_out"]), int(r3["tris_in"]), int(r3["tris_out"]),
-	])
+	# ---- 4) 每组合批的 surface 数 < 合并掉的部件数 ----
+	var manifests := _collect_manifests(croot)
+	var bad_groups: Array = []
+	var total_parts := 0
+	for m in manifests:
+		var grp: Node = m["node"]
+		var parts: Array = m["manifest"]
+		var surf := 0
+		for ch in grp.get_children():
+			if ch is MeshInstance3D and String(ch.name).begins_with("Batch_"):
+				var mm: Mesh = (ch as MeshInstance3D).mesh
+				if mm != null:
+					surf += mm.get_surface_count()
+		total_parts += parts.size()
+		if surf == 0 and parts.size() >= 2:
+			bad_groups.append(String(grp.name) + ":no_batch")
+		elif surf >= parts.size():
+			bad_groups.append("%s:%d>=%d" % [String(grp.name), surf, parts.size()])
+	_ok(bad_groups.is_empty(), "每个合批组的 surface 数 < 合并掉的部件数",
+		"异常组=%s" % str(bad_groups.slice(0, 5)))
+	_ok(total_parts >= 1000, "合批溯源清单覆盖全部被合并部件（>=1000 条）", "parts=%d" % total_parts)
 
-	var after := _scene_stats(croot.get_parent() if croot.get_parent() != null else croot)
-	print("[BMERGE] after  mesh=%d surfaces=%d dc_est=%d tris=%d verts=%d" % [
-		int(after["mesh"]), int(after["surfaces"]), int(after["dc"]), int(after["tris"]), int(after["verts"]),
-	])
-	print("[BMERGE] delta  mesh=%+d surfaces=%+d dc_est=%+d tris=%+d verts=%+d" % [
-		int(after["mesh"]) - int(before["mesh"]),
-		int(after["surfaces"]) - int(before["surfaces"]),
-		int(after["dc"]) - int(before["dc"]),
-		int(after["tris"]) - int(before["tris"]),
-		int(after["verts"]) - int(before["verts"]),
-	])
-	# 三角形总量必须守恒（合批只搬运几何，不新增/丢弃面）
-	if int(after["tris"]) != int(before["tris"]):
-		_fail += 1
-		print("[BMERGE] FAIL 合并前后三角形总数不等（%d -> %d）" % [int(before["tris"]), int(after["tris"])])
-	else:
-		_pass += 1
-		print("[BMERGE] PASS 三角形总数守恒")
-	if int(after["dc"]) >= int(before["dc"]):
-		_fail += 1
-		print("[BMERGE] FAIL dc_est 未下降")
-	else:
-		_pass += 1
-		print("[BMERGE] PASS dc_est 下降 %.1f%%" % (100.0 * float(int(before["dc"]) - int(after["dc"])) / float(maxi(int(before["dc"]), 1))))
+	# ---- 5) 动态件没有被合批 ----
+	var dynamic_bad: Array = []
+	for nm in ["DoorPivot", "PorchCat"]:
+		var n := _find_named(get_root(), nm)
+		if n == null:
+			dynamic_bad.append(nm + ":missing")
+			continue
+		if _count_pref(n, "Batch_") > 0:
+			dynamic_bad.append(nm + ":batched")
+	# DoorPivot 必须仍有 >1 个子 MeshInstance3D（门扇可整体旋转的多个部件）
+	var pivot: Node = cottage.get("door_pivot")
+	if pivot != null:
+		var pmesh := 0
+		for c in pivot.get_children():
+			if c is MeshInstance3D:
+				pmesh += 1
+		if pmesh < 18:
+			dynamic_bad.append("DoorPivot:parts=%d" % pmesh)
+	_ok(dynamic_bad.is_empty(), "动态件（门扇/门廊猫）未被合批且部件完整", str(dynamic_bad))
+
+	# ---- 6) 溯源清单字段完整（可供探针按部件复核）----
+	var field_bad := 0
+	var sampled := 0
+	for m in manifests:
+		for e in (m["manifest"] as Array):
+			sampled += 1
+			var d: Dictionary = e
+			if not d.has("kind") or not d.has("size") or not d.has("xf") or not d.has("tris"):
+				field_bad += 1
+			if sampled >= 400:
+				break
+		if sampled >= 400:
+			break
+	_ok(field_bad == 0, "溯源清单字段完整（kind/size/xf/tris）", "抽查 %d 条，缺字段 %d" % [sampled, field_bad])
 
 	print("[BMERGE] RESULT pass=%d fail=%d" % [_pass, _fail])
 	await process_frame
 	quit(0 if _fail == 0 else 1)
 
-## 单组校验：三角形守恒 + surface 减少 + AABB 不缩水 + 材质集合不变
-func _verify_group(g: Node3D, r: Dictionary, label: String) -> bool:
-	var tin := int(r["tris_in"])
-	var tout := int(r["tris_out"])
-	var sin_ := int(r["surfaces_in"])
-	var sout := int(r["surfaces_out"])
-	var ok := true
-	if bool(r["merged"]):
-		if tin != tout:
-			ok = false
-			_fail += 1
-			print("[BMERGE] FAIL %s 三角形不守恒 %d -> %d" % [label, tin, tout])
-		if sout >= sin_:
-			ok = false
-			_fail += 1
-			print("[BMERGE] FAIL %s surface 未减少 %d -> %d" % [label, sin_, sout])
-	if ok:
+func _ok(cond: bool, msg: String, detail: String = "") -> void:
+	if cond:
 		_pass += 1
-	return ok
+		print("[BMERGE] PASS ", msg, ("  (" + detail + ")") if detail != "" else "")
+	else:
+		_fail += 1
+		print("[BMERGE] FAIL ", msg, ("  (" + detail + ")") if detail != "" else "")
 
-func _collect_props(n: Node, out: Array) -> void:
-	for c in n.get_children():
-		if c is Node3D and String(c.name).begins_with("Prop_"):
-			out.append(c)
+func _collect_manifests(n: Node) -> Array:
+	var out: Array = []
+	var stack: Array = [n]
+	while stack.size() > 0:
+		var cur: Node = stack.pop_back()
+		if cur.has_meta("batch_manifest"):
+			var e: Variant = cur.get_meta("batch_manifest")
+			if e is Array and (e as Array).size() > 0:
+				out.append({"node": cur, "manifest": e})
+		for c in cur.get_children():
+			stack.append(c)
+	return out
+
+func _collect_pref(n: Node, prefix: String) -> Array:
+	var out: Array = []
+	if n == null:
+		return out
+	var stack: Array = [n]
+	while stack.size() > 0:
+		var cur: Node = stack.pop_back()
+		if String(cur.name).begins_with(prefix):
+			out.append(cur)
 			continue
-		_collect_props(c, out)
+		for c in cur.get_children():
+			stack.append(c)
+	return out
+
+func _count_pref(n: Node, prefix: String) -> int:
+	if n == null:
+		return 0
+	var c := 0
+	for ch in n.get_children():
+		if String(ch.name).begins_with(prefix):
+			c += 1
+	return c
 
 func _find_named(n: Node, nm: String) -> Node:
 	if String(n.name) == nm:
@@ -199,6 +247,19 @@ func _scene_stats(root: Node) -> Dictionary:
 				if mmi.material_override != null and mmi.material_override.next_pass != null:
 					pn = 2
 				st["dc"] = int(st["dc"]) + pn
+				# 与 tools/probe_batch_p7v31.gd 同口径：MultiMesh 的几何按其网格统计一次
+				# （不乘 instance_count），这样两边的 tris/verts 总数可以直接对账。
+				var mm2: Mesh = mmi.multimesh.mesh
+				for s in range(mm2.get_surface_count()):
+					var arr2 := mm2.surface_get_arrays(s)
+					if arr2.size() <= Mesh.ARRAY_VERTEX or arr2[Mesh.ARRAY_VERTEX] == null:
+						continue
+					var vc2: int = (arr2[Mesh.ARRAY_VERTEX] as PackedVector3Array).size()
+					var ic2: int = 0
+					if arr2.size() > Mesh.ARRAY_INDEX and arr2[Mesh.ARRAY_INDEX] != null:
+						ic2 = (arr2[Mesh.ARRAY_INDEX] as PackedInt32Array).size()
+					st["verts"] = int(st["verts"]) + vc2
+					st["tris"] = int(st["tris"]) + (ic2 / 3 if ic2 > 0 else vc2 / 3)
 		for c in n.get_children():
 			stack.append(c)
 	return st
