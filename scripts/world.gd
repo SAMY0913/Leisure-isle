@@ -3808,13 +3808,19 @@ static func _build_perches(big: Dictionary, dock_info: Dictionary, lighthouse: D
     # become invisible-air points. These five points sit on the real limb surfaces and
     # are only enabled by fx.gd while the winter weight is high enough.
     # Data derived analytically from the _big_tree limb segments (report §6.1); no rng.
+    # P8.2-04: winter_branch_4 was moved 0.316 m along the same limb (t 0.750 -> 0.835,
+    # local (-0.777,7.610,2.267) -> (-0.9066,7.7154,2.5349)) because a secondary twig
+    # sprouted from that limb right inside the previous foot zone: probe_p82_eco_geom
+    # measured -0.0154 m clearance at 0.04 m above the perch surface (bird legs would
+    # clip the twig). New spot: +0.0802 m min clearance, 1.974 m to winter_branch_3,
+    # same limb axis so normal (0.164,0.926,-0.339) / facing / slope (22.1 deg) stay unchanged.
     if include_winter:
         var winter_local := [
             Vector3(1.248, 5.827, 0.015),
             Vector3(2.818, 5.665, 0.833),
             Vector3(-2.009, 6.382, 0.437),
             Vector3(0.975, 7.155, 2.328),
-            Vector3(-0.777, 7.610, 2.267),
+            Vector3(-0.9066, 7.7154, 2.5349),
         ]
         var winter_normal := [
             Vector3(-0.015, 1.000, 0.000),
