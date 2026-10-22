@@ -49,7 +49,9 @@ static var _sail_segs: Array = []
 # ============================================================== entry point ==
 # Builds the whole island under "parent" and returns the handle dictionary the
 # main scene relies on (old keys kept, new keys appended).
-static func build(parent: Node3D) -> Dictionary:
+## P8.1: include_winter 默认 false —— 旧探针（P7-V2 perch/bird 等）调用 build(parent)
+## 仍得到 16/22/36 点契约；游戏内 main.gd 显式传 true 获得 41 点（world 27 + cottage 14）。
+static func build(parent: Node3D, include_winter: bool = false) -> Dictionary:
     _prepare()
     # Sail routes are planned first so that rock placement can keep clear of them.
     var route_plan: Dictionary = _sail_routes()
@@ -67,6 +69,7 @@ static func build(parent: Node3D) -> Dictionary:
     var grass_counts := _scatter_grass(root)
     _scatter_clover(root)
     var flower_stats := _scatter_flowers(root)
+    var winter_bloom := _winter_blooms(root)
     _scatter_bushes(root)
     var rock_stats := _rocks(root)
     _stepping_stones(root)
@@ -102,8 +105,10 @@ static func build(parent: Node3D) -> Dictionary:
     _distant_isles(root)
 
     # P7-V2: pass the real street lamps so each lantern cap gets a "lamp" roost.
-    # Probe stub calls that use the legacy three-argument form still produce 16 perches.
-    var perches: Array[Dictionary] = _build_perches(big, dock_info, lighthouse, lamps)
+    # P8.1: include_winter=true adds five bare-branch roosts for the leaf-off season.
+    # build() 默认 false，旧探针直接调用 build(parent) 仍是 16/22/36 点契约；
+    # main.gd 显式传 true（world 27 点 + cottage 14 = 41）。
+    var perches: Array[Dictionary] = _build_perches(big, dock_info, lighthouse, lamps, include_winter)
 
     return {
         "root": root,
@@ -154,6 +159,7 @@ static func build(parent: Node3D) -> Dictionary:
         # ---- probe / telemetry ----
         "rock_stats": rock_stats,
         "flower_stats": flower_stats,
+        "winter_bloom": winter_bloom,
     }
 
 # ================================================================= layout ===
@@ -1074,6 +1080,46 @@ static func _scatter_flowers(root: Node3D) -> Dictionary:
             stats["head_meshes"] += 1
     stats["clusters"] = clusters.size() + _bed_rects.size()
     return stats
+
+# ====================================================== winter ground blooms ==
+# P8.1: five red winter poppies on the front lawn (never on the tree). They are a
+# dedicated pair of MultiMeshes (stem + poppy head, same transforms) so they do not
+# depend on _grass_spot / flower_keep and stay invisible except in winter. The main
+# script re-writes their transforms every season update to bloom in/out.
+# Node names must NOT start with "Flower": _setup_season_visuals() picks those up.
+static func _winter_blooms(root: Node3D) -> Dictionary:
+    var rng := RandomNumberGenerator.new()
+    rng.seed = 8102
+    # world XZ anchors (front lawn, checked against _in_porch / path clearance).
+    var spots := [
+        Vector2(0.123, 8.716),
+        Vector2(1.285, 9.089),
+        Vector2(1.968, 8.250),
+        Vector2(1.014, 9.906),
+        Vector2(-0.309, 9.687),
+    ]
+    var xforms: Array = []
+    var base: Array = []
+    for i in range(spots.size()):
+        var xz: Vector2 = spots[i]
+        var gy := _h(xz.x, xz.y) - 0.01
+        var yaw := rng.randf_range(0.0, TAU)
+        # P8.1：放大花株，让 5 朵红花在深色冬草上可读。
+        var s := rng.randf_range(1.30, 1.60)
+        var pos := Vector3(xz.x, gy, xz.y)
+        xforms.append(Transform3D(Basis(Vector3.UP, yaw).scaled(Vector3(s, s, s)), pos))
+        base.append({"pos": pos, "yaw": yaw, "scale": s})
+    var mat_flower := M.toon_material(Color.WHITE,
+        {"vertex_color": true, "bands": 3.0, "rim": 0.04, "outline": 0.0})
+    # P8.1：花头抬到 0.62 m 并改用亮朱红——旧 c0392b 在阴天绿草里几乎读不出红。
+    var bloom_h := 0.62
+    var stems := M.multis(root, "WinterBloomStems",
+        _flower_stem_mesh(3, bloom_h, 0.06), xforms, [], mat_flower)
+    var heads := M.multis(root, "WinterBloomHeads",
+        _poppy_head_mesh(Color("e14a3f"), bloom_h, 0.06), xforms, [], mat_flower)
+    stems.visible = false
+    heads.visible = false
+    return {"stems": stems, "heads": heads, "base": base}
 
 # =============================================================== bushes ====
 static func _bush_spot(x: float, z: float) -> float:
@@ -3688,7 +3734,7 @@ static func _surface_perch(perch_id: String, pos: Vector3, facing: Vector3, radi
     return out
 
 static func _build_perches(big: Dictionary, dock_info: Dictionary, lighthouse: Dictionary,
-        lamps: Array = []) -> Array[Dictionary]:
+        lamps: Array = [], include_winter: bool = false) -> Array[Dictionary]:
     var perches: Array[Dictionary] = []
 
     # ---- big tree: six roosts along its upper limbs --------------------------
@@ -3756,5 +3802,39 @@ static func _build_perches(big: Dictionary, dock_info: Dictionary, lighthouse: D
         var lamp_pos: Vector3 = cap_top + to_side * 0.105 + Vector3.UP * 0.03
         perches.append(_surface_perch("lamp_%d" % i, lamp_pos, lface, 0.20, "lamp",
             Vector3.UP, 0.0, 1))
+
+    # ---- P8.1 winter bare-branch roosts (only when explicitly requested) ---------
+    # Winter drops the leafy canopy to zero, so the six canopy-surface tree perches
+    # become invisible-air points. These five points sit on the real limb surfaces and
+    # are only enabled by fx.gd while the winter weight is high enough.
+    # Data derived analytically from the _big_tree limb segments (report §6.1); no rng.
+    if include_winter:
+        var winter_local := [
+            Vector3(1.248, 5.827, 0.015),
+            Vector3(2.818, 5.665, 0.833),
+            Vector3(-2.009, 6.382, 0.437),
+            Vector3(0.975, 7.155, 2.328),
+            Vector3(-0.777, 7.610, 2.267),
+        ]
+        var winter_normal := [
+            Vector3(-0.015, 1.000, 0.000),
+            Vector3(-0.337, 0.935, -0.112),
+            Vector3(0.411, 0.908, -0.077),
+            Vector3(-0.117, 0.901, -0.418),
+            Vector3(0.164, 0.926, -0.339),
+        ]
+        var winter_facing := [
+            Vector3(1.0, 0.0, 0.0),
+            Vector3(0.949, 0.0, 0.316),
+            Vector3(-0.983, 0.0, 0.184),
+            Vector3(0.271, 0.0, 0.963),
+            Vector3(-0.436, 0.0, 0.900),
+        ]
+        var winter_slope_deg := [0.9, 20.8, 24.7, 25.7, 22.1]
+        for i in range(winter_local.size()):
+            var wpos: Vector3 = tree_base + (winter_local[i] as Vector3)
+            perches.append(_surface_perch("winter_branch_%d" % i, wpos,
+                winter_facing[i], 0.55, "winter_branch", winter_normal[i],
+                deg_to_rad(float(winter_slope_deg[i])), 1))
 
     return perches

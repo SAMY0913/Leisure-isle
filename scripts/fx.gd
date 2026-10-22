@@ -1629,6 +1629,12 @@ class BirdFlock extends Node3D:
 	var _wx_wind_z := -1.0
 	var _wx_storm := 0.0
 
+	# P8.1：季节栖点门控（来自 main._eco_ctx()["season"]）与传送计数（测试断言用）
+	var _winter_perch_open := false
+	var _leafy_perch_open := true
+	var _teleports_total := 0
+	var _season_evictions := 0
+
 	# P7-V2：停栖待机 / 随机分布 / 烟囱禁停 状态
 	var _perch_rng := RandomNumberGenerator.new()
 	var _sim_seconds_cur := -1.0
@@ -1858,6 +1864,10 @@ class BirdFlock extends Node3D:
 			"idle_active": idle_active,
 			"idle_counts": idle_counts,
 			"chimney_evictions": _chimney_evictions,
+			"season_evictions": _season_evictions,
+			"teleports": _teleports_total,
+			"winter_open": _winter_perch_open,
+			"leafy_open": _leafy_perch_open,
 			"cap_fallbacks": _cap_fallbacks,
 			"no_slot_skips": _no_slot_skips,
 			"night": _night,
@@ -1899,6 +1909,7 @@ class BirdFlock extends Node3D:
 		node.position = sp
 		b["prev_pos"] = sp
 		b["teleport"] = true
+		_teleports_total += 1
 		b["fold"] = 1.0
 		b["timer"] = 999.0 if _night else IsleFx.BIRD_TIMER_MIN
 		_apply_perch_pose(b, p)
@@ -2181,6 +2192,8 @@ class BirdFlock extends Node3D:
 				return "porch"
 			"lamp", "lamp_post", "street_lamp":
 				return "lamp"
+			"winter_branch":
+				return "winter_branch"
 		return "other"
 
 	func _perch_zone_weight(zone: String) -> float:
@@ -2201,6 +2214,8 @@ class BirdFlock extends Node3D:
 					return 0.45
 				"lamp":
 					return 0.40
+				"winter_branch":
+					return 1.35
 			return 0.50
 		match zone:
 			"lighthouse":
@@ -2217,6 +2232,8 @@ class BirdFlock extends Node3D:
 				return 0.65
 			"lamp":
 				return 0.55
+			"winter_branch":
+				return 1.20
 		return 0.50
 
 	func _seconds_to_next_smoke_start(sim_seconds: float) -> float:
@@ -2245,6 +2262,11 @@ class BirdFlock extends Node3D:
 		var kind: String = String(p.get("kind", ""))
 		if String(p.get("id", "")) == "":
 			return {"eligible": false, "reason": "invalid", "lead_left": -1.0}
+		# P8.1：季节门控——冬季裸枝点仅冬季开放；冠面树栖点在落叶后不可用（避免海鸥悬空）。
+		if kind == "winter_branch" and not _winter_perch_open:
+			return {"eligible": false, "reason": "season_off", "lead_left": -1.0}
+		if kind == "tree_branch" and not _leafy_perch_open:
+			return {"eligible": false, "reason": "season_off", "lead_left": -1.0}
 		if kind != "chimney":
 			return {"eligible": true, "reason": "ok", "lead_left": -1.0}
 		if night:
@@ -2314,12 +2336,14 @@ class BirdFlock extends Node3D:
 	func _slot_weight(p: Dictionary, sp: Vector3, from_pos: Vector3, zone_counts: Dictionary) -> float:
 		var zone: String = _perch_zone(String(p.get("kind", "")))
 		var w: float = _perch_zone_weight(zone)
+		# P8.1：裸枝栖点只有 5 个且是冬季主景，同区惩罚放缓，避免全挤到 1-2 根枝上。
+		var same_penalty: float = 0.80 if zone == "winter_branch" else IsleFx.PERCH_ZONE_SAME_PENALTY
 		var same_zone: int = int(zone_counts.get(zone, 0))
 		if same_zone > 0:
-			w *= pow(IsleFx.PERCH_ZONE_SAME_PENALTY, float(same_zone))
+			w *= pow(same_penalty, float(same_zone))
 		var used_same: int = (_perch_used.get(String(p["id"]), []) as Array).size()
 		if used_same > 0:
-			w *= pow(IsleFx.PERCH_ZONE_SAME_PENALTY, float(used_same))
+			w *= pow(same_penalty, float(used_same))
 		var min_d: float = IsleFx.PERCH_MIN_DIST_WEIGHT
 		for b_v in _birds:
 			var b: Dictionary = b_v
@@ -2544,18 +2568,22 @@ class BirdFlock extends Node3D:
 			if pid == "":
 				continue
 			var p: Dictionary = _find_perch(pid)
-			if p.is_empty() or String(p.get("kind", "")) != "chimney":
+			if p.is_empty():
 				continue
 			if _perch_eligible_now(p):
 				continue
-			# 时间跳入冒烟窗口而鸟仍占用烟囱：同一帧启动烟雾压制（安全回退；正常提前起飞不会走到这里）。
-			if _sim_seconds_cur >= 0.0 and IsleFx.is_smoke_window(_sim_seconds_cur):
-				if _smoke_hold_t <= 0.0:
-					_smoke_hold_count += 1
-					_smoke_hold_reason = "bird_on_chimney"
-				_smoke_hold_t = maxf(_smoke_hold_t, IsleFx.BIRD_TRANSITION_MAX + 0.6)
-			# 烟囱即将冒烟/正在冒烟/夜间：按正常起飞离开，飞行阶段会重新选有效栖点。
-			_chimney_evictions += 1
+			if String(p.get("kind", "")) == "chimney":
+				# 时间跳入冒烟窗口而鸟仍占用烟囱：同一帧启动烟雾压制（安全回退；正常提前起飞不会走到这里）。
+				if _sim_seconds_cur >= 0.0 and IsleFx.is_smoke_window(_sim_seconds_cur):
+					if _smoke_hold_t <= 0.0:
+						_smoke_hold_count += 1
+						_smoke_hold_reason = "bird_on_chimney"
+					_smoke_hold_t = maxf(_smoke_hold_t, IsleFx.BIRD_TRANSITION_MAX + 0.6)
+				# 烟囱即将冒烟/正在冒烟/夜间：按正常起飞离开，飞行阶段会重新选有效栖点。
+				_chimney_evictions += 1
+			else:
+				# P8.1：季节门控关闭的栖点（冬季裸枝点 / 落叶后的冠面点）按正常起飞驱逐，不传送。
+				_season_evictions += 1
 			_begin_takeoff(b)
 
 	func _find_free_slot_kind(from_pos: Vector3, kind: String) -> Dictionary:
@@ -2577,6 +2605,9 @@ class BirdFlock extends Node3D:
 		if id != "" and _perch_used.has(id):
 			var arr: Array = _perch_used[id]
 			arr.erase(int(b["perch_slot"]))
+			# P8.1：预约表不留空数组键（"不残留预约"断言按 key 判定）。
+			if arr.is_empty():
+				_perch_used.erase(id)
 		b["perch_id"] = ""
 		b["perch_slot"] = -1
 		b["perch_pos"] = Vector3.ZERO
@@ -2753,7 +2784,22 @@ class BirdFlock extends Node3D:
 		b["prev_pos"] = node.position
 		b["prev_vel"] = Vector3.ZERO
 		b["teleport"] = true
+		_teleports_total += 1
 		b["timer"] = _rng.randf_range(1.0, 4.0)
+		b["fly_since"] = _t
+
+	## P8.1：原地转入飞行（不瞬移）——用于栖点季节失效/落地目标失效时中止，保留当前位置连续飞走。
+	func _enter_fly_inplace(b: Dictionary) -> void:
+		_cancel_idle(b)
+		var node: Node3D = b["node"]
+		b["state"] = State.FLY
+		b["waiting"] = true
+		var ang: float = atan2(node.position.z, node.position.x)
+		b["phase"] = ang - _t * float(b["speed"]) * float(b["dir"])
+		b["timer"] = _rng.randf_range(0.8, 1.6)
+		b["prev_pos"] = node.position
+		b["prev_vel"] = Vector3.ZERO
+		b["teleport"] = false
 		b["fly_since"] = _t
 
 
@@ -3041,6 +3087,17 @@ class BirdFlock extends Node3D:
 		if _eco_paused:
 			_wx_bad = false
 
+	## P8.1：季节栖点门控。winter 权重 >=0.60 才开放冬季裸枝点；canopy_keep <0.40 时冠面点关闭。
+	func _update_season_eco(ctx: Dictionary) -> void:
+		var s: Dictionary = ctx.get("season", {})
+		_winter_perch_open = float(s.get("winter", 0.0)) >= 0.60
+		_leafy_perch_open = float(s.get("canopy_keep", 1.0)) >= 0.40
+
+	## 测试钩子：直接设置两个季节门控（不经过 ctx），供 selftest / probe 断言用。
+	func set_season_gate(winter: float, canopy_keep: float) -> void:
+		_winter_perch_open = winter >= 0.60
+		_leafy_perch_open = canopy_keep >= 0.40
+
 	func _update_perched(b: Dictionary, delta: float) -> void:
 		if _night:
 			return
@@ -3118,10 +3175,9 @@ class BirdFlock extends Node3D:
 		var node: Node3D = b["node"]
 		var target_p: Dictionary = _find_perch(String(b["perch_id"]))
 		if target_p.is_empty() or not _perch_eligible_now(target_p):
-			# 目标栖枝失效 → 中止并重新选点/盘旋
+			# 目标栖枝失效 → 原地中止并重新选点/盘旋（P8.1：不瞬移）
 			_release_perch(b)
-			_set_fly(b, _bird_index(b))
-			b["waiting"] = true
+			_enter_fly_inplace(b)
 			return
 		b["t"] = float(b["t"]) + delta / maxf(float(b["dur"]), 0.05)
 		var k: float = clampf(float(b["t"]), 0.0, 1.0)
@@ -3134,8 +3190,7 @@ class BirdFlock extends Node3D:
 			var perch: Dictionary = _find_perch(String(b["perch_id"]))
 			if perch.is_empty() or not _perch_eligible_now(perch):
 				_release_perch(b)
-				_set_fly(b, _bird_index(b))
-				b["waiting"] = true
+				_enter_fly_inplace(b)
 				return
 			_apply_perch_pose(b, perch)
 			b["prev_pos"] = node.position
@@ -3198,26 +3253,28 @@ class BirdFlock extends Node3D:
 		if _check_acc < 2.0:
 			return
 		_check_acc = 0.0
-		var valid: Dictionary = {}
+		var known: Dictionary = {}
+		var usable: Dictionary = {}
 		for p_v in _perches:
 			var p: Dictionary = p_v
-			valid[String(p["id"])] = true
+			known[String(p["id"])] = true
+			# P8.1：季节门控关闭的栖点视为暂不可用（但不算不存在，不清预约表）。
+			usable[String(p["id"])] = _perch_eligible_now(p)
 		var stale: Array = []
 		for id_v in _perch_used.keys():
-			if not valid.has(String(id_v)):
+			if not known.has(String(id_v)):
 				stale.append(id_v)
 		for s_v in stale:
 			_perch_used.erase(s_v)
 		for b_v in _birds:
 			var b: Dictionary = b_v
 			var pid: String = String(b["perch_id"])
-			if pid == "" or valid.has(pid):
+			if pid == "" or bool(usable.get(pid, false)):
 				continue
 			_release_perch(b)
 			var st: int = int(b["state"])
 			if st == State.PERCH or st == State.LANDING:
-				_set_fly(b, _bird_index(b))
-				b["waiting"] = true
+				_enter_fly_inplace(b)
 
 	# 朝向限幅（契约）：俯仰 ±35°，横滚 ±0.55 rad
 	const PITCH_MAX: float = 0.610865
@@ -3477,6 +3534,7 @@ class BirdFlock extends Node3D:
 		_update_day_night(delta, sun_alt)
 		_update_eco(delta, sun_alt, ctx)
 		_update_weather_eco(ctx)
+		_update_season_eco(ctx)
 		_update_perch_evictions()
 		_check_perch_validity(delta)
 		for b_v in _birds:

@@ -12,6 +12,8 @@ const P8_SEASON_DIR := "D:/休闲小岛幻境/开发产物/p8/seasons/"
 const P8_WEATHER_DIR := "D:/休闲小岛幻境/开发产物/p8/weather/"
 const P8_WFX_DIR := "D:/休闲小岛幻境/开发产物/p8/weatherfx/"
 const P8_ECO_DIR := "D:/休闲小岛幻境/开发产物/p8/ecology/"
+# P8.1-02 证据目录：冬季裸树/裸枝栖点/屋前红花截图（绝不写 P8 冻结目录）。
+const P81_EVIDENCE_DIR := "D:/休闲小岛幻境/开发产物/p81/evidence/p81_02/"
 const VIGNETTE_SHADER := "res://shaders/vignette.gdshader"
 const SKY_SHADER := "res://shaders/sky.gdshader"
 const SEA_SHADER := "res://shaders/sea.gdshader"
@@ -57,6 +59,7 @@ var _p8seasons := false   # --p8seasons：四季视觉专项截图（固定日�
 var _p8weather := false   # --p8weather：天气面板与天气状态专项截图（固定日期样本）
 var _p8wfx := false       # --p8wfx：天气视觉专项截图（雨/雪/台风/室内/低画质，固定日期样本）
 var _p8eco := false       # --p8eco：生态联动专项截图（雨日岛民门廊 / 晴雨夜萤火对比）
+var _p81treebird := false # --p81treebird：P8.1 冬树/裸枝栖点/屋前红花证据截图
 var _p8perf := false      # --p8perf：天气视觉性能对比（晴/阴/雨/雷暴/雪/台风 × 画质档）
 var _p8_moon_clear := false   # 月相诊断截图：临时清空云层，避免云遮住月盘判相
 
@@ -76,8 +79,7 @@ var _season_timer := 0.0
 var _season_nodes: Array = []       # 树冠/叶卡/背景树冠/灌木/花的季节条目（复制材质 + 稀疏化缓存）
 var _grass_season_mats: Array = []  # 草材质 + 原始 tint（与画质草密度互不覆盖）
 var _season_apply_count := 0
-var _winter_plum: MultiMeshInstance3D = null   # 冬季树梢花簇（红梅意象；只在冬季权重高时出现）
-var _winter_plum_anchors: Array = []          # {pos: Vector3, rot: float, scale: float}
+var _winter_bloom: Dictionary = {}             # P8.1 冬季屋前红花（world 提供 stems/heads/base；只在冬季权重高时出现）
 
 # ---- 天气（P8 阶段 5：独立确定性状态机；只读 _sim_seconds，不新建时钟） ----
 const ISLE_WEATHER := preload("res://scripts/isle_weather.gd")
@@ -316,7 +318,8 @@ func _ready() -> void:
 	_p8wfx = "--p8wfx" in OS.get_cmdline_args() or "--p8wfx" in OS.get_cmdline_user_args()
 	_p8eco = "--p8eco" in OS.get_cmdline_args() or "--p8eco" in OS.get_cmdline_user_args()
 	_p8perf = "--p8perf" in OS.get_cmdline_args() or "--p8perf" in OS.get_cmdline_user_args()
-	_shots = "--shots" in OS.get_cmdline_args() or "--shots" in OS.get_cmdline_user_args() or _p7shots or _p8shots or _p8moon or _p8seasons or _p8weather or _p8wfx or _p8eco
+	_p81treebird = "--p81treebird" in OS.get_cmdline_args() or "--p81treebird" in OS.get_cmdline_user_args()
+	_shots = "--shots" in OS.get_cmdline_args() or "--shots" in OS.get_cmdline_user_args() or _p7shots or _p8shots or _p8moon or _p8seasons or _p8weather or _p8wfx or _p8eco or _p81treebird
 	_transition = "--transition" in OS.get_cmdline_args() or "--transition" in OS.get_cmdline_user_args()
 	_selftest = "--selftest" in OS.get_cmdline_args() or "--selftest" in OS.get_cmdline_user_args()
 	_perf = "--perf" in OS.get_cmdline_args() or "--perf" in OS.get_cmdline_user_args()
@@ -329,7 +332,7 @@ func _ready() -> void:
 		DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
 	# 读取用户设置：菜单、时钟、画质、音量、窗口模式共用同一份数据。
 	# 自动化运行（截图/性能/自测/转场）使用默认设置，保证结果可复现且不受玩家配置影响。
-	var automation := _shots or _perf or _selftest or _transition or _p7shots or _p8shots or _p8moon or _p8seasons or _p8weather or _p8wfx or _p8eco or _p8perf
+	var automation := _shots or _perf or _selftest or _transition or _p7shots or _p8shots or _p8moon or _p8seasons or _p8weather or _p8wfx or _p8eco or _p8perf or _p81treebird
 	_settings = Settings.defaults() if automation else Settings.load_settings()
 	_setup_time_api()
 	_time_source = String(_settings.get("time_source", "sim"))
@@ -378,6 +381,8 @@ func _ready() -> void:
 		_run_p8shots()
 	elif _p8moon:
 		_run_p8moonshots()
+	elif _p81treebird:
+		_run_p81treebird_shots()
 	elif _p8seasons:
 		_run_p8seasonshots()
 	elif _p8weather:
@@ -574,7 +579,9 @@ func _build_world() -> void:
 	var holder := Node3D.new()
 	holder.name = "World"
 	add_child(holder)
-	_world = IsleWorld.build(holder)
+	# P8.1：游戏内启用冬季裸枝栖点（world 27 + cottage 14 = 41）；probe 直接 build() 仍为旧 36 点契约。
+	_world = IsleWorld.build(holder, true)
+	_winter_bloom = _world.get("winter_bloom", {})
 	_cottage = IsleCottage.build(holder)
 	_window_mats = _cottage["window_mats"]
 	_window_halos = _cottage["window_halos"]
@@ -836,58 +843,6 @@ func _setup_season_visuals() -> void:
 			if parts.size() < 2:
 				continue
 			_season_add_entry(child, "flower", String(parts[1]))
-	_setup_winter_plum()
-
-## 冬季树梢花簇：取叶卡实例（叶卡贴在树冠表面）作为锚点，生成一个小球状花簇 MultiMesh。
-## 只在冬天权重 >0.25 时逐渐显现，因此裸枝上会出现零星粉红梅簇；不创建逐帧节点、不重建几何。
-func _setup_winter_plum() -> void:
-	_winter_plum = null
-	_winter_plum_anchors.clear()
-	var canopy_mi := _season_find_mesh("Canopy") as MultiMeshInstance3D
-	if canopy_mi == null:
-		return
-	# 锚点贴着大树枝梢：主枝末端、横枝末端、树冠顶部的次生枝附近（world.gd _big_tree 的固定几何，
-	# 不随随机种子变化）。每处 2-3 簇小花，冬季裸枝上就有零星红梅，而不是漂浮在空中的红点。
-	var tips: Array = [
-		Vector3(3.32, 5.70, 1.00), Vector3(-2.88, 6.60, 0.60),
-		Vector3(1.22, 7.40, 3.20), Vector3(-1.18, 7.80, 3.10),
-		Vector3(5.20, 6.70, 0.80), Vector3(4.30, 6.80, -1.10),
-		Vector3(3.75, 5.82, 0.00),
-	]
-	var rng := RandomNumberGenerator.new()
-	rng.seed = 20261022
-	for tip_v in tips:
-		var tip: Vector3 = tip_v
-		var clusters := 2 + rng.randi_range(0, 1)
-		for c in range(clusters):
-			var jitter := Vector3(rng.randf_range(-0.32, 0.32),
-				rng.randf_range(-0.22, 0.32), rng.randf_range(-0.32, 0.32))
-			_winter_plum_anchors.append({
-				"pos": tip + jitter,
-				"rot": rng.randf() * TAU,
-				"scale": 0.65 + rng.randf() * 0.35,
-			})
-	if _winter_plum_anchors.is_empty():
-		return
-	var mesh := SphereMesh.new()
-	mesh.radius = 0.14
-	mesh.height = 0.22
-	mesh.radial_segments = 6
-	mesh.rings = 3
-	var mat := IsleMath.toon_material(Color("c94f5c"), {"bands": 3, "soft": 0.7, "rim": 0.0, "outline": 0.0})
-	var plum := MultiMeshInstance3D.new()
-	plum.name = "WinterPlum"
-	plum.material_override = mat
-	plum.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	var mm := MultiMesh.new()
-	mm.transform_format = MultiMesh.TRANSFORM_3D
-	mm.mesh = mesh
-	mm.instance_count = _winter_plum_anchors.size()
-	mm.visible_instance_count = 0
-	plum.multimesh = mm
-	plum.visible = false
-	canopy_mi.get_parent().add_child(plum)
-	_winter_plum = plum
 
 func _season_find_mesh(node_name: String) -> Node:
 	var root = _world.get("root", null)
@@ -998,8 +953,13 @@ func _apply_season_visuals() -> void:
 	var leaf_entry: Dictionary = _fx.get("leaves", {})
 	var leaves := leaf_entry.get("node", null) as GPUParticles3D
 	if leaves != null:
-		leaves.emitting = leaf_fall > 0.03
-		leaves.amount_ratio = clampf(0.15 + leaf_fall * 0.85, 0.0, 1.0) if leaf_fall > 0.03 else 0.0
+		var leaves_on := leaf_fall > 0.03
+		# P8.1：关发射时清空秋季残留叶片（否则冬季被 drift_color 染成漂白球，像浮空叶团）。
+		if leaves.emitting and not leaves_on:
+			leaves.emitting = false
+			leaves.restart()
+		leaves.emitting = leaves_on
+		leaves.amount_ratio = clampf(0.15 + leaf_fall * 0.85, 0.0, 1.0) if leaves_on else 0.0
 		var lmat := leaf_entry.get("mat", null) as StandardMaterial3D
 		if lmat != null:
 			var dc: Color = v.get("drift_color", Color(0.95, 0.52, 0.18))
@@ -1009,26 +969,37 @@ func _apply_season_visuals() -> void:
 	var petals := petal_entry.get("node", null) as GPUParticles3D
 	if petals != null:
 		var spring_w := float(_season_weights[0])
-		petals.emitting = spring_w > 0.05
+		var petals_on := spring_w > 0.05
+		# P8.1：关发射时清空非春残留花瓣（冬季旧花瓣会被染白，像浮空小球）。
+		if petals.emitting and not petals_on:
+			petals.emitting = false
+			petals.restart()
+		petals.emitting = petals_on
 		var pmat := petal_entry.get("mat", null) as StandardMaterial3D
 		if pmat != null:
 			var pc: Color = pmat.albedo_color
 			pmat.albedo_color = Color(pc.r, pc.g, pc.b, 0.85 * clampf(spring_w * 1.2, 0.0, 1.0))
-	# 冬季红梅：树梢花簇随冬季权重 0.25→0.80 渐显；春夏秋完全隐藏。
+	# P8.1 冬季屋前红花：随冬季权重 0.25→0.80 渐显；春夏秋完全隐藏。
+	# 茎和花头共用同一 Transform（只写花头会变成悬空花）；节点由 world._winter_blooms 建。
 	var winter_w := float(_season_weights[3]) if _season_weights.size() > 3 else 0.0
 	var bloom := clampf((winter_w - 0.25) / 0.55, 0.0, 1.0)
-	if _winter_plum != null:
-		_winter_plum.visible = bloom > 0.03
-		if _winter_plum.visible:
-			var pmm := _winter_plum.multimesh
-			for i in range(_winter_plum_anchors.size()):
-				var a: Dictionary = _winter_plum_anchors[i]
-				var s: float = clampf(float(a["scale"]) * bloom, 0.001, 1.5)
+	var wb_stems := _winter_bloom.get("stems", null) as MultiMeshInstance3D
+	var wb_heads := _winter_bloom.get("heads", null) as MultiMeshInstance3D
+	var wb_base: Array = _winter_bloom.get("base", [])
+	if wb_stems != null and wb_heads != null:
+		var show := bloom > 0.03
+		wb_stems.visible = show
+		wb_heads.visible = show
+		if show:
+			var s_factor := clampf(bloom, 0.05, 1.0)
+			for i in range(wb_base.size()):
+				var a: Dictionary = wb_base[i]
+				var bs: float = float(a["scale"]) * s_factor
 				var xf := Transform3D(
-					Basis(Vector3.UP, float(a["rot"])).scaled(Vector3(s, s * 0.82, s)),
+					Basis(Vector3.UP, float(a["yaw"])).scaled(Vector3(bs, bs, bs)),
 					a["pos"] as Vector3)
-				pmm.set_instance_transform(i, xf)
-			pmm.visible_instance_count = -1
+				wb_stems.multimesh.set_instance_transform(i, xf)
+				wb_heads.multimesh.set_instance_transform(i, xf)
 	_season_apply_count += 1
 
 ## 按“保留数量”隐藏实例：从确定性洗牌后的尾部收起（即 spatially 均匀稀疏），
@@ -1042,6 +1013,9 @@ func _apply_season_keep(e: Dictionary, target: int) -> void:
 	for i in range(target, n):
 		hide[int(order[i])] = true
 	e["hidden"] = n - target
+	# P8.1：全部收起时直接把 visible_instance_count 归零（比仅缩 basis 更明确，截图/探针可验证）；
+	# 部分收起仍用 basis 缩放（隐藏实例是洗牌尾部、索引不连续，不能用 visible_instance_count 表达）。
+	mm.visible_instance_count = 0 if target <= 0 else -1
 	var tiny := Vector3(0.0001, 0.0001, 0.0001)
 	for i in range(n):
 		var xf: Transform3D = base[i]
@@ -1513,6 +1487,11 @@ func _eco_ctx() -> Dictionary:
 		"paused": _paused,
 		"sim_rate": _sim_rate,  # 模拟秒/真实秒：生态超前量 = 过渡时长 × 该倍率
 		"weather": _weather_eco(),
+		# P8.1：海鸥栖点季节门控。winter 权重决定裸枝栖点，canopy_keep 决定树冠栖点。
+		"season": {
+			"winter": float(_season_weights[3]) if _season_weights.size() > 3 else 0.0,
+			"canopy_keep": float(_season_visuals.get("canopy_keep", 1.0)),
+		},
 	}
 
 func _update_lighting() -> void:
@@ -3522,11 +3501,12 @@ func _run_selftest() -> void:
 	var winter_flowers: Array = winter_v.get("flower_keep", [0.0, 0.0, 0.0, 0.0])
 	var winter_flowers_zero := float(winter_flowers[0]) <= 0.02 and float(winter_flowers[1]) <= 0.02 \
 		and float(winter_flowers[2]) <= 0.02 and float(winter_flowers[3]) <= 0.02
+	var wb_heads := _winter_bloom.get("heads", null) as MultiMeshInstance3D
 	var winter_ok := String(_season_label) == "冬季" \
-		and float(winter_v.get("canopy_keep", 1.0)) <= 0.25 \
+		and float(winter_v.get("canopy_keep", 1.0)) <= 0.001 \
 		and winter_flowers_zero \
 		and leaf_node != null and not leaf_node.emitting \
-		and _winter_plum != null and _winter_plum.visible
+		and wb_heads != null and wb_heads.visible
 	var tint_ok := (autumn_v.get("grass_tint", Color.WHITE) as Color).r > 1.1 \
 		and (spring_v.get("grass_tint", Color.WHITE) as Color).g > 1.0
 	results.append(["P8 四季视觉参数与日历联动", autumn_ok and winter_ok and tint_ok])
@@ -3541,12 +3521,43 @@ func _run_selftest() -> void:
 	# 因此这里断言"收起数量"这一纯逻辑结果；实际像素效果由 --p8seasons 窗口截图验收。
 	var canopy_hidden_ok := false
 	if not canopy_entry.is_empty():
-		canopy_hidden_ok = int(canopy_entry.get("hidden", 0)) >= int(float(canopy_entry.get("count", 0)) * 0.5)
+		var canopy_mm: MultiMesh = (canopy_entry["node"] as MultiMeshInstance3D).multimesh
+		canopy_hidden_ok = int(canopy_entry.get("count", 0)) > 0 \
+			and int(canopy_entry.get("hidden", 0)) == int(canopy_entry.get("count", 0)) \
+			and canopy_mm.visible_instance_count == 0
 	results.append(["P8 冬季树冠实例按比例收起", canopy_hidden_ok])
-	# 冬季红梅只在冬季出现：跳到盛夏应完全隐藏（同一权威时钟投影，不依赖现实时间）。
+	# P8.1：屋前冬季红花只在冬季出现；树顶红梅节点已删除。
 	_jump_datetime(2026, 7, 15, 10, 0, 0)
-	var plum_summer_hidden := _winter_plum != null and not _winter_plum.visible
-	results.append(["P8 冬季红梅花簇只出现在冬季", plum_summer_hidden])
+	var bloom_summer_hidden := wb_heads != null and not wb_heads.visible
+	var world_root: Node = _world.get("root", null) as Node
+	var plum_removed := world_root != null and world_root.find_child("WinterPlum", true, false) == null
+	results.append(["P8.1 冬季红花只在冬季出现且树顶红梅已移除", bloom_summer_hidden and plum_removed])
+	# P8.1 栖点季节门控：冬季裸枝点开、树冠点关；盛夏相反（P7 旧 36 点契约不受影响）。
+	_birds.set_season_gate(1.0, 0.0)
+	var winter_avail: Array = _birds.debug_perch_availability(_sim_seconds, _sun_alt, false)
+	var w_gate_ok := true
+	var w_count := 0
+	var t_count := 0
+	for ev_v in winter_avail:
+		var ev: Dictionary = ev_v
+		if String(ev["kind"]) == "winter_branch":
+			w_count += 1
+			w_gate_ok = w_gate_ok and bool(ev["eligible"])
+		elif String(ev["kind"]) == "tree_branch":
+			t_count += 1
+			w_gate_ok = w_gate_ok and not bool(ev["eligible"]) and String(ev["reason"]) == "season_off"
+	results.append(["P8.1 冬季裸枝栖点开/树冠栖点关", w_gate_ok and w_count == 5 and t_count == 6])
+	_birds.set_season_gate(0.0, 1.0)
+	var summer_avail: Array = _birds.debug_perch_availability(_sim_seconds, _sun_alt, false)
+	var s_gate_ok := true
+	for ev_v in summer_avail:
+		var ev: Dictionary = ev_v
+		if String(ev["kind"]) == "winter_branch":
+			s_gate_ok = s_gate_ok and not bool(ev["eligible"]) and String(ev["reason"]) == "season_off"
+		elif String(ev["kind"]) == "tree_branch":
+			s_gate_ok = s_gate_ok and bool(ev["eligible"])
+	results.append(["P8.1 盛夏裸枝栖点关/树冠栖点开", s_gate_ok])
+	_birds.set_season_gate(float(_season_weights[3]), float(_season_visuals.get("canopy_keep", 1.0)))
 	# --- P8 阶段 5：天气状态机（固定日期样本；唯一权威时钟仍是 _sim_seconds） ---
 	_time_source = "sim"
 	_paused = false
@@ -5780,13 +5791,64 @@ func _run_p8seasonshots() -> void:
 		_p8_camera_garden()
 		await get_tree().create_timer(0.8).timeout
 		await _save_shot("p8_season_%s_garden" % tag, P8_SEASON_DIR)
-		# 冬季补一张树梢花簇特写：证明"裸枝上只留零星红梅"确实可见。
+		# 冬季补一张大树近景：P8.1 起为纯裸枝+积雪（树顶红梅已移除）。
 		if tag == "winter":
-			_p8_camera_winter_plum()
+			_p8_camera_tree_close()
 			await get_tree().create_timer(0.8).timeout
-			await _save_shot("p8_season_winter_plum", P8_SEASON_DIR)
+			await _save_shot("p8_season_winter_tree_close", P8_SEASON_DIR)
 	print("[P8SEASONS] done")
 	get_tree().quit()
+
+## P8.1-02 证据截图（--p81treebird）：冬季裸树/裸枝栖点/屋前红花，以及春/夏/秋树冠回归对照。
+## 输出目录独立（P81_EVIDENCE_DIR），绝不触碰 开发产物/p8 冻结证据。
+func _run_p81treebird_shots() -> void:
+	_mode = Mode.PLAYING
+	_started = true
+	_paused = true            # 固定时刻：季节/红花 bloom 不漂移
+	_menu.instant_finish()
+	_blending = ""
+	_hud.set_hud_visible(false, false)
+	_auto_orbit = false
+	_shot_beam_lock = false
+	_time_source = "sim"
+	await get_tree().create_timer(0.9).timeout
+	var seasons: Array = [
+		["spring", 2026, 4, 15, 10, 0],
+		["summer", 2026, 7, 15, 10, 0],
+		["autumn", 2026, 10, 20, 16, 30],
+		["winter", 2027, 1, 15, 10, 0],
+	]
+	for spec in seasons:
+		var tag := String(spec[0])
+		_jump_datetime(int(spec[1]), int(spec[2]), int(spec[3]), int(spec[4]), int(spec[5]))
+		_p8_camera_island()
+		await get_tree().create_timer(0.9).timeout
+		await _save_shot("p81_%s_wide" % tag, P81_EVIDENCE_DIR)
+		_p8_camera_tree()
+		await get_tree().create_timer(0.8).timeout
+		await _save_shot("p81_%s_tree" % tag, P81_EVIDENCE_DIR)
+		if tag == "winter":
+			_p8_camera_tree_close()
+			await get_tree().create_timer(0.8).timeout
+			await _save_shot("p81_winter_tree_close", P81_EVIDENCE_DIR)
+			_p81_camera_bloom_front()
+			await get_tree().create_timer(0.8).timeout
+			await _save_shot("p81_winter_bloom_front", P81_EVIDENCE_DIR)
+		var cal: Dictionary = ISLE_CALENDAR.parts(_sim_seconds)
+		var v: Dictionary = _season_visuals
+		print("[P81] ", tag, " ", str(cal.get("date_label", "")),
+			" weights=", str(cal.get("season_weights", [])),
+			" canopy=", "%.3f" % float(v.get("canopy_keep", 1.0)),
+			" cards=", "%.3f" % float(v.get("leafcard_keep", 1.0)))
+	print("[P81] done")
+	get_tree().quit()
+
+## 屋前 5 朵冬季红花机位：从草坪外侧回看门廊，花在画面下中部、房子为背景。
+func _p81_camera_bloom_front() -> void:
+	var target := Vector3(0.82, 7.80, 9.13)  # World._winter_blooms 5 点质心（地面约 7.43，花头 0.62）
+	var front := Vector3(sin(IsleMath.HOUSE_YAW), 0.0, cos(IsleMath.HOUSE_YAW))
+	var right := Vector3(cos(IsleMath.HOUSE_YAW), 0.0, -sin(IsleMath.HOUSE_YAW))
+	_pose_look(target + front * 6.2 + right * 2.2 + Vector3(0.0, 2.6, 0.0), target, 42.0)
 
 func _p8_camera_tree() -> void:
 	# 大树基座地形高约 7.87 m，树冠中心约在 base+9.4 m；机位对准冠层中部而不是地面，
@@ -5800,9 +5862,9 @@ func _p8_camera_garden() -> void:
 	var target := Vector3(-7.82, 10.2, -6.20)
 	_pose_look(target + Vector3(-3.9, 2.7, 5.4), target, 40.0)
 
-func _p8_camera_winter_plum() -> void:
-	# 冬季树梢花簇特写：花簇锚点取自 80 张叶卡（贴在树冠表面），因此机位对准大树冠。
-	var target := Vector3(IsleMath.BIG_TREE_X + 0.28, 17.2, IsleMath.BIG_TREE_Z - 0.05)
+func _p8_camera_tree_close() -> void:
+	# 冬季大树近景（P8.1）：对准裸枝区，验证"无残冠、无悬空红梅"。
+	var target := Vector3(IsleMath.BIG_TREE_X + 0.28, 14.6, IsleMath.BIG_TREE_Z - 0.05)
 	_pose_look(target + Vector3(13.5, 2.5, 11.5), target, 46.0)
 
 ## P8 阶段 3.2 月球专项截图（--p8moon）：八相固定日期 + 海上生明月/不见月两组实景。

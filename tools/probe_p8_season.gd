@@ -2,7 +2,7 @@ extends SceneTree
 ## P8 阶段 4：四季视觉参数（IsleSeason）与日历季节权重（IsleCalendar）联动的纯函数 probe。
 ## 运行：Godot_v4.7.2-stable_win64_console.exe --headless --path D:/休闲小岛幻境/游戏工程 --script res://tools/probe_p8_season.gd
 ## 覆盖：权重归一/非负/和恒 1、四季中点 one-hot、边界连续（无硬切）、视觉参数连续性与极值、
-##       花按物种保留顺序、冬季红梅、确定性、weight_delta 对称、跨年/闰年边界。
+##       花按物种保留顺序、冬季红花（P8.1 屋前 WinterBloom，树顶红梅已移除）、确定性、weight_delta 对称、跨年/闰年边界。
 ## 退出码：0 = 全部通过；1 = 有失败。
 
 const Cal := preload("res://scripts/isle_calendar.gd")
@@ -143,7 +143,8 @@ func _run_visual_ranges() -> void:
 	_check(float(summer["canopy_keep"]) >= 0.99, "summer canopy full")
 	_check(float(autumn["leaf_fall"]) > 0.95, "autumn leaf fall")
 	_check(float(winter["leaf_fall"]) < 0.05, "winter no leaf fall")
-	_check(float(winter["canopy_keep"]) <= 0.22, "winter canopy thin", str(winter["canopy_keep"]))
+	# P8.1：冬季完全落叶（0.0），不再保留随机残冠（残冠子集会悬空）。
+	_check(float(winter["canopy_keep"]) <= 0.001, "winter canopy removed", str(winter["canopy_keep"]))
 	_check(float(winter["leafcard_keep"]) <= 0.05, "winter leaf cards gone", str(winter["leafcard_keep"]))
 	_check(float(spring["leafcard_keep"]) > 0.8, "spring leaf cards")
 	var gs: Color = spring["grass_tint"]
@@ -173,7 +174,7 @@ func _run_flower_species() -> void:
 	_check(Season.flower_keep_for(winter, "Tulip") <= 0.0001, "winter no tulip")
 	_check(Season.flower_keep_for(winter, "Daisy") <= 0.0001, "winter no daisy")
 	_check(Season.flower_keep_for(winter, "Bluebell") <= 0.0001, "winter no bluebell")
-	_check(Season.flower_keep_for(winter, "Poppy") <= 0.0001, "winter no garden poppy (red plum moved to tree blossoms)")
+	_check(Season.flower_keep_for(winter, "Poppy") <= 0.0001, "winter no garden poppy (P8.1 冬季红花改由屋前 WinterBloom 承担)")
 	_check(Season.flower_keep_for(winter, "Unknown") == 1.0, "unknown species keep 1")
 	_check(Season.flower_keep_for(spring, "") == 1.0, "empty species keep 1")
 
