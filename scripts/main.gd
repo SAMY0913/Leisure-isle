@@ -14,6 +14,8 @@ const P8_WFX_DIR := "D:/休闲小岛幻境/开发产物/p8/weatherfx/"
 const P8_ECO_DIR := "D:/休闲小岛幻境/开发产物/p8/ecology/"
 # P8.1-02 证据目录：冬季裸树/裸枝栖点/屋前红花截图（绝不写 P8 冻结目录）。
 const P81_EVIDENCE_DIR := "D:/休闲小岛幻境/开发产物/p81/evidence/p81_02/"
+# P8.1-03 证据目录：冬季全岛白化 + 室内豁免 + 五档画质截图（绝不写 P8 冻结目录）。
+const P81_03_EVIDENCE_DIR := "D:/休闲小岛幻境/开发产物/p81/evidence/p81_03/"
 const VIGNETTE_SHADER := "res://shaders/vignette.gdshader"
 const SKY_SHADER := "res://shaders/sky.gdshader"
 const SEA_SHADER := "res://shaders/sea.gdshader"
@@ -60,6 +62,11 @@ var _p8weather := false   # --p8weather：天气面板与天气状态专项截�
 var _p8wfx := false       # --p8wfx：天气视觉专项截图（雨/雪/台风/室内/低画质，固定日期样本）
 var _p8eco := false       # --p8eco：生态联动专项截图（雨日岛民门廊 / 晴雨夜萤火对比）
 var _p81treebird := false # --p81treebird：P8.1 冬树/裸枝栖点/屋前红花证据截图
+var _p81white := false
+var _p81snow := false      # --p81snow：P8.1-03 冬季季节白化 + 手动大雪（g_weather.w）叠加证据
+## P8.1-03 证据专用：ON/OFF 对照时钉住灯焰呼吸相位（_frame_t），否则夜间室内会因为
+## 解析点光的 sin 呼吸（main.gd 灯光循环 fl）产生 ±7.5% 的时相差，污染白化对比。
+var _p81_pin_light_t := -1.0    # --p81white：P8.1-03 冬季白化/室内豁免/五档画质证据截图
 var _p8perf := false      # --p8perf：天气视觉性能对比（晴/阴/雨/雷暴/雪/台风 × 画质档）
 var _p8_moon_clear := false   # 月相诊断截图：临时清空云层，避免云遮住月盘判相
 
@@ -319,7 +326,9 @@ func _ready() -> void:
 	_p8eco = "--p8eco" in OS.get_cmdline_args() or "--p8eco" in OS.get_cmdline_user_args()
 	_p8perf = "--p8perf" in OS.get_cmdline_args() or "--p8perf" in OS.get_cmdline_user_args()
 	_p81treebird = "--p81treebird" in OS.get_cmdline_args() or "--p81treebird" in OS.get_cmdline_user_args()
-	_shots = "--shots" in OS.get_cmdline_args() or "--shots" in OS.get_cmdline_user_args() or _p7shots or _p8shots or _p8moon or _p8seasons or _p8weather or _p8wfx or _p8eco or _p81treebird
+	_p81white = "--p81white" in OS.get_cmdline_args() or "--p81white" in OS.get_cmdline_user_args()
+	_p81snow = "--p81snow" in OS.get_cmdline_args() or "--p81snow" in OS.get_cmdline_user_args()
+	_shots = "--shots" in OS.get_cmdline_args() or "--shots" in OS.get_cmdline_user_args() or _p7shots or _p8shots or _p8moon or _p8seasons or _p8weather or _p8wfx or _p8eco or _p81treebird or _p81white or _p81snow
 	_transition = "--transition" in OS.get_cmdline_args() or "--transition" in OS.get_cmdline_user_args()
 	_selftest = "--selftest" in OS.get_cmdline_args() or "--selftest" in OS.get_cmdline_user_args()
 	_perf = "--perf" in OS.get_cmdline_args() or "--perf" in OS.get_cmdline_user_args()
@@ -332,7 +341,7 @@ func _ready() -> void:
 		DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
 	# 读取用户设置：菜单、时钟、画质、音量、窗口模式共用同一份数据。
 	# 自动化运行（截图/性能/自测/转场）使用默认设置，保证结果可复现且不受玩家配置影响。
-	var automation := _shots or _perf or _selftest or _transition or _p7shots or _p8shots or _p8moon or _p8seasons or _p8weather or _p8wfx or _p8eco or _p8perf or _p81treebird
+	var automation := _shots or _perf or _selftest or _transition or _p7shots or _p8shots or _p8moon or _p8seasons or _p8weather or _p8wfx or _p8eco or _p8perf or _p81treebird or _p81white or _p81snow
 	_settings = Settings.defaults() if automation else Settings.load_settings()
 	_setup_time_api()
 	_time_source = String(_settings.get("time_source", "sim"))
@@ -383,6 +392,10 @@ func _ready() -> void:
 		_run_p8moonshots()
 	elif _p81treebird:
 		_run_p81treebird_shots()
+	elif _p81white:
+		_run_p81white()
+	elif _p81snow:
+		_run_p81snow()
 	elif _p8seasons:
 		_run_p8seasonshots()
 	elif _p8weather:
@@ -507,6 +520,15 @@ func _setup_globals() -> void:
 		RenderingServer.global_shader_parameter_set("g_occ_c%d" % oi, Vector3.ZERO)
 		RenderingServer.global_shader_parameter_set("g_occ_h%d" % oi, Vector3.ZERO)
 		RenderingServer.global_shader_parameter_set("g_occ_y%d" % oi, 0.0)
+	# P8.1-03 冬季白化：季节进度 uniform + 小屋室内体积（世界空间，与摄像机无关）。
+	# g_winter = (whiteness, frost, ground_tint, foliage_desat)；全 0 时 shader 所有冬季项为 0，
+	# 外观与 P8 逐像素一致（可回滚 / A-B 对比）。只由 _apply_season_visuals 在季节变化时写。
+	_add_global("g_winter", RenderingServer.GLOBAL_VAR_TYPE_VEC4)
+	# g_house = (origin.xyz, cos_yaw)；g_house2 = (sin_yaw, half_x, half_z, floor_local)
+	# g_roof = (ridge_y, tan_pitch, under_margin, first_floor_top)（房屋局部 y 常量）
+	_add_global("g_house", RenderingServer.GLOBAL_VAR_TYPE_VEC4)
+	_add_global("g_house2", RenderingServer.GLOBAL_VAR_TYPE_VEC4)
+	_add_global("g_roof", RenderingServer.GLOBAL_VAR_TYPE_VEC4)
 
 func _add_global(name: String, type: int) -> void:
 	RenderingServer.global_shader_parameter_add(name, type, _default_value(type))
@@ -635,6 +657,9 @@ func _build_world() -> void:
 		_villager = ISLE_VILLAGER.build(holder, _cottage)
 	# P8 四季：建立季节视觉条目（复制材质，避免污染 isle_math 的全局材质缓存）。
 	_setup_season_visuals()
+	# P8.1-03：室内体积 uniform + 材质类别接收系数（必须在季节材质复制之后，才能覆盖那几份副本）。
+	_setup_winter_house_uniforms()
+	_tag_winter_materials(holder)
 	# P8 阶段 6：建立天气视觉（雨/雪粒子只建一次；运行期只改 amount_ratio/emitting/材质参数）。
 	_setup_weather_fx()
 
@@ -1001,6 +1026,8 @@ func _apply_season_visuals() -> void:
 				wb_stems.multimesh.set_instance_transform(i, xf)
 				wb_heads.multimesh.set_instance_transform(i, xf)
 	_season_apply_count += 1
+	# P8.1-03：季节权重 → g_winter（与天气驱动的 g_weather.w 积雪严格分离，各自独立消费）。
+	_set_winter_season_uniforms()
 
 ## 按“保留数量”隐藏实例：从确定性洗牌后的尾部收起（即 spatially 均匀稀疏），
 ## 把隐藏实例的 basis 缩到 1e-4；恢复时从缓存的原 Transform 写回。
@@ -1139,6 +1166,161 @@ func _place_weather_drips() -> void:
 	if pm != null:
 		pm.emission_box_extents = Vector3(half.x + 0.42, 0.05, 0.16)
 	entry["placed"] = true
+
+# ============================================================
+# P8.1-03 冬季白化：室内体积 uniform / 季节白化 uniform / 材质类别接收系数
+# ============================================================
+## 把房屋室内体积（世界空间，只设一次）推给 shader；房屋不可移动，因此这是常量。
+## 与摄像机无关：shader 只按片元世界坐标判定，所以「窗外看室内」与「走进室内」结果一致。
+## 一层内墙面 |x|=3.50 / |z|=2.80，外墙外皮 3.80 / 3.10；山墙内面 |z|=2.80、外面 3.10；
+## 屋脊 y=6.20、屋面 tan=2.47/3.8=0.65、一层顶棚 2.97（阁楼楼板底）。
+## half=(3.55, 2.95)：内表面判室内、外表面判室外；屋顶外表面在阈值之上判室外、内底面判室内。
+func _setup_winter_house_uniforms() -> void:
+	var root := _cottage.get("root", null) as Node3D
+	if root == null:
+		push_warning("[P81W] cottage root missing: indoor mask stays zero (全岛白化会刷到室内)")
+		return
+	var o := root.global_transform.origin
+	var yaw := root.global_rotation.y
+	var half_x := IsleMath.HOUSE_W * 0.5 - IsleMath.HOUSE_WALL_T + 0.05   # 3.55（内墙面 3.50）
+	var half_z := IsleMath.HOUSE_D * 0.5 - IsleMath.HOUSE_WALL_T + 0.15   # 2.95（内墙面 2.80）
+	var floor_local := IsleMath.HOUSE_FY - 0.05                          # 0.50（地坪 0.55）
+	var ridge := IsleMath.HOUSE_ROOF_BASE + IsleMath.HOUSE_ROOF_H        # 6.20
+	var tan_pitch := IsleMath.HOUSE_ROOF_H / (IsleMath.HOUSE_W * 0.5)    # 2.47/3.8 = 0.65
+	var in_top := IsleMath.HOUSE_FY + IsleMath.HOUSE_ROOM_CLEAR_H        # 2.97
+	RenderingServer.global_shader_parameter_set("g_house",
+		Vector4(o.x, o.y, o.z, cos(yaw)))
+	RenderingServer.global_shader_parameter_set("g_house2",
+		Vector4(sin(yaw), half_x, half_z, floor_local))
+	RenderingServer.global_shader_parameter_set("g_roof",
+		Vector4(ridge, tan_pitch, 0.10, in_top))
+	print("[P81W] house uniform origin=%s yaw=%.4f half=(%.2f,%.2f) floor=%.2f ridge=%.2f tan=%.4f" % [
+		str(o), yaw, half_x, half_z, floor_local, ridge, tan_pitch])
+
+## 季节进度 → g_winter（唯一来源：_season_weights 的冬季分量，与天气完全无关）。
+## whiteness=smoothstep(0.30,0.90,w)：2026-12-01(w=0.514)→0.29，12-06(w=0.830)→0.97，1 月→1.0，02-26→0.30。
+## frost=whiteness*0.65；ground_tint 与 foliage_desat 都取 whiteness，由各材质 winter_recv 分量缩放。
+func _set_winter_season_uniforms() -> void:
+	var winter_w := float(_season_weights[3]) if _season_weights.size() > 3 else 0.0
+	var whiteness := smoothstep(0.30, 0.90, winter_w)
+	RenderingServer.global_shader_parameter_set("g_winter",
+		Vector4(whiteness, whiteness * 0.65, whiteness, whiteness))
+	# 回读证据：global_shader_parameter_get 在非编辑器运行时报错且返回 null（material_storage.cpp:1913），
+	# 因此以「写入侧本地值」+ 截图 ON/OFF 像素差作为 uniform 生效证据。
+	print("[P81W] g_winter=(%.4f,%.4f,%.4f,%.4f) winter_weight=%.4f" % [
+		whiteness, whiteness * 0.65, whiteness, whiteness, winter_w])
+
+## 给 toon/grass 材质写 winter_recv=(snow, frost, ground_tint, foliage_desat)（启动期一次性）。
+## 依据「物体实际类别 + 材质类别」：world 子树节点名未合批可辨；cottage 只合批 MeshInstance3D，
+## 材质身份（self_lit/albedo）仍可读，室内外由 shader 的体积掩码区分，不依赖摄像机。
+## 合批把材质写在 mesh surface 上（isle_batch.gd:146），所以 override 与 surface 两条路径都要读。
+func _tag_winter_materials(holder: Node) -> void:
+	var seen: Dictionary = {}
+	var n_toon := 0
+	var n_grass := 0
+	var n_exempt := 0
+	var n_lit := 0
+	var n_skip := 0
+	var stack: Array[Node] = [holder]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		for c in n.get_children():
+			stack.append(c)
+		if not (n is GeometryInstance3D):
+			continue
+		var gi := n as GeometryInstance3D
+		var rel := String(holder.get_path_to(n))
+		var nm := String(n.name)
+		var mats: Array[ShaderMaterial] = []
+		var mo := gi.material_override
+		if mo is ShaderMaterial:
+			mats.append(mo as ShaderMaterial)
+		if gi is MeshInstance3D:
+			var mi := gi as MeshInstance3D
+			var mesh := mi.mesh
+			if mesh != null:
+				for si in range(mesh.get_surface_count()):
+					var sm := mi.get_surface_override_material(si) as ShaderMaterial
+					if sm == null:
+						var raw := mesh.surface_get_material(si)
+						if raw is ShaderMaterial:
+							sm = raw as ShaderMaterial
+					if sm != null and not mats.has(sm):
+						mats.append(sm)
+		elif gi is MultiMeshInstance3D:
+			var mmi := gi as MultiMeshInstance3D
+			if mmi.multimesh != null and mmi.multimesh.mesh != null:
+				var mmesh := mmi.multimesh.mesh
+				for si in range(mmesh.get_surface_count()):
+					var raw2 := mmesh.surface_get_material(si)
+					if raw2 is ShaderMaterial and not mats.has(raw2 as ShaderMaterial):
+						mats.append(raw2 as ShaderMaterial)
+		for m in mats:
+			var key := m.get_instance_id()
+			if seen.has(key):
+				continue
+			var spath := ""
+			if m.shader != null:
+				spath = String((m.shader as Shader).resource_path)
+			if spath.ends_with("grass.gdshader"):
+				m.set_shader_parameter("winter_recv", Vector4(0.90, 0.0, 0.55, 0.85))
+				seen[key] = true
+				n_grass += 1
+				continue
+			if not spath.ends_with("toon.gdshader"):
+				n_skip += 1
+				continue
+			var recv := _winter_recv_for(rel, nm, m)
+			var sl: Variant = m.get_shader_parameter("self_lit")
+			if sl is float and float(sl) > 0.5:
+				n_lit += 1
+			if recv.x <= 0.0 and recv.y <= 0.0 and recv.z <= 0.0 and recv.w <= 0.0:
+				n_exempt += 1
+			else:
+				n_toon += 1
+			m.set_shader_parameter("winter_recv", recv)
+			seen[key] = true
+	print("[P81W] tagged toon=%d grass=%d exempt=%d self_lit=%d skip=%d materials=%d" % [
+		n_toon, n_grass, n_exempt, n_lit, n_skip, seen.size()])
+
+## 材质类别 → winter_recv。顺序从「身份最确定」到「默认类别」，全部可由截图/探针复核。
+func _winter_recv_for(rel: String, node_name: String, m: ShaderMaterial) -> Vector4:
+	# 自发光灯罩/炉火/窗内暖光：一个像素都不刷白（P8 已知台灯/落地灯只有自发光灯罩）。
+	var sl: Variant = m.get_shader_parameter("self_lit")
+	if sl is float and float(sl) > 0.5:
+		return Vector4.ZERO
+	# 地形：白化主承载（ground_tint 满值 + 大量积雪 + 中等霜）
+	if node_name == "Terrain":
+		return Vector4(0.90, 0.55, 1.00, 0.0)
+	# 常绿植被：以降饱和为主，只挂薄雪（否则树冠会被刷成雪球）
+	if node_name == "Canopy" or node_name == "LeafCards" or node_name == "BgTreeCanopy":
+		return Vector4(0.30, 0.45, 0.0, 0.85)
+	if node_name == "Bushes":
+		return Vector4(0.45, 0.50, 0.0, 0.85)
+	# 屋顶瓦/脊瓦/椽尾（cottage 中层 MultiMesh 未被合批，名字保留）
+	if node_name.begins_with("Roof"):
+		return Vector4(0.95, 0.35, 0.35, 0.0)
+	# 灯塔（石/混凝土，白化强、泛灰中）
+	if rel.contains("Lighthouse"):
+		return Vector4(0.90, 0.45, 0.60, 0.0)
+	# 码头木构：木持雪少、吸收湿暗
+	if rel.contains("Dock"):
+		return Vector4(0.80, 0.35, 0.55, 0.0)
+	# 大树树干/裸枝：枝上只有薄雪
+	if rel.contains("BigTree"):
+		return Vector4(0.50, 0.30, 0.30, 0.0)
+	# 动态对象不参与季节白化（产品决策；与「道路/家具/木构」的静态白化解耦）
+	if rel.contains("Sailboat") or node_name == "Sailboat":
+		return Vector4.ZERO
+	if rel.contains("Islander") or node_name == "Islander":
+		return Vector4.ZERO
+	if rel.contains("PorchCat") or node_name == "PorchCat":
+		return Vector4.ZERO
+	# 花（含冬季红花）：花朵本身不改色，避免红梅变成白点
+	if node_name.begins_with("Flower") or node_name.begins_with("WinterBloom"):
+		return Vector4.ZERO
+	# 默认：外墙/木构/石阶/家具（雪 0.85 + 霜 0.35，垂直面靠 up_mask 自然变弱）
+	return Vector4(0.85, 0.35, 0.0, 0.0)
 
 ## 每帧推进天气视觉：平滑风、室内判定、粒子跟随/密度/颜色、共享 shader uniform。
 ## 这里不改变天气状态，也不新建权威时间；所有参数都来自 _weather_* 投影。
@@ -1634,7 +1816,9 @@ func _update_lighting() -> void:
 			var lpos: Vector3 = L["pos"]
 			var lcol: Color = _lin(L["color"])
 			# 极轻微火光呼吸，避免死板；白天整体压暗
-			var fl := 1.0 + sin(_frame_t * 6.7 + float(i) * 2.1) * 0.05 + sin(_frame_t * 11.9 + float(i) * 1.3) * 0.025
+			# P8.1-03 证据：对照截图期间可钉住呼吸相位（_p81_pin_light_t），消除时相污染。
+			var lt := _frame_t if _p81_pin_light_t < 0.0 else _p81_pin_light_t
+			var fl := 1.0 + sin(lt * 6.7 + float(i) * 2.1) * 0.05 + sin(lt * 11.9 + float(i) * 1.3) * 0.025
 			var en := float(L["energy"]) * light_scale * fl
 			RenderingServer.global_shader_parameter_set("g_l%d_pos" % i, Vector4(lpos.x, lpos.y, lpos.z, float(L["range"])))
 			RenderingServer.global_shader_parameter_set("g_l%d_col" % i, Vector4(lcol.r, lcol.g, lcol.b, en))
@@ -5866,6 +6050,304 @@ func _p8_camera_tree_close() -> void:
 	# 冬季大树近景（P8.1）：对准裸枝区，验证"无残冠、无悬空红梅"。
 	var target := Vector3(IsleMath.BIG_TREE_X + 0.28, 14.6, IsleMath.BIG_TREE_Z - 0.05)
 	_pose_look(target + Vector3(13.5, 2.5, 11.5), target, 46.0)
+
+# ============================================================
+# P8.1-03 冬季白化 / 室内豁免 / 五档画质 证据截图（--p81white）
+# 只写 P81_03_EVIDENCE_DIR，绝不触碰 开发产物/p8 冻结证据。
+# 室内像素 diff 采用自包含 ON/OFF 对：同机位把 g_winter 临时归零再拍一张，
+# 由 tools/probe_p81_whiteness.gd 的同级 Python 脚本比对，给出可复核证据。
+# 天气用 --weather-type 固定（默认可在调用侧指定 clear / heavy_snow），
+# 因此「季节白化」与「降雪积雪」两条链在同一批图里可以互相独立验证。
+# ============================================================
+
+## 与 shader 完全同一条 whiteness 曲线（仅日志用；写入在 _set_winter_season_uniforms）。
+func _p81_winter_whiteness() -> float:
+	var w := float(_season_weights[3]) if _season_weights.size() > 3 else 0.0
+	return smoothstep(0.30, 0.90, w)
+
+## 冬季近景：地面（花园外侧，沿用 P8 雨景机位基准，贴地 1.6 m 级）。
+func _p81_camera_ground() -> void:
+	var ground := Vector3(-7.82, 9.72, -6.20)
+	var target := ground + Vector3(0.9, 0.10, 1.5)
+	_pose_look(target + Vector3(2.4, 2.6, 2.8), target, 52.0)
+
+## 冬季近景：草丛（贴地看草叶顶端积雪/结霜）。
+func _p81_camera_grass() -> void:
+	var target := Vector3(-4.6, 0.0, 3.2)
+	target.y = IsleMath.terrain_height(target.x, target.z) + 0.22
+	_pose_look(target + Vector3(2.0, 1.15, 2.4), target, 44.0)
+
+## 冬季近景：岩石（内陆砾石群 spot=(9.8, 6.8)，world 生成 seed=90210 确定性）。
+func _p81_camera_rock() -> void:
+	var target := Vector3(9.8, 0.0, 6.8)
+	target.y = IsleMath.terrain_height(target.x, target.z) + 0.55
+	_pose_look(target + Vector3(3.2, 2.4, 3.0), target, 48.0)
+
+## 冬季近景：房屋侧墙外墙（从 +X 侧面平视，避开正门雨棚柱/烟囱遮挡；数据与 _p8_camera_eave 同源）。
+## 旧版正面机位会被门廊柱挡住，2026-10-22 改为侧墙机位。
+func _p81_camera_wall() -> void:
+	var center := Vector3(IsleMath.HOUSE_X, 8.4, IsleMath.HOUSE_Z)
+	var half := Vector3(3.8, 1.6, 3.1)
+	var rot_y := -IsleMath.HOUSE_YAW
+	var raw: Variant = _cottage.get("beam_occluders", [])
+	if raw is Array and not (raw as Array).is_empty() and (raw as Array)[0] is Dictionary:
+		var bd: Dictionary = (raw as Array)[0]
+		center = bd.get("center", center)
+		half = bd.get("half", half)
+		rot_y = -float(bd.get("yaw", IsleMath.HOUSE_YAW))
+	var front := Vector3(sin(rot_y), 0.0, cos(rot_y))
+	var right := Vector3(cos(rot_y), 0.0, -sin(rot_y))
+	var target := center + right * half.x + front * half.z * 0.25 - Vector3(0.0, half.y * 0.30, 0.0)
+	_pose_look(target + right * 5.6 + front * 1.9 + Vector3(0.0, 0.85, 0.0), target, 50.0)
+
+## 冬季近景：屋顶瓦（斜上方俯视，验证瓦面全白化 + 屋檐雪线）。
+func _p81_camera_roof() -> void:
+	var base := Vector3(IsleMath.HOUSE_X, IsleMath.house_ground_y(), IsleMath.HOUSE_Z)
+	var front := Vector3(sin(IsleMath.HOUSE_YAW), 0.0, cos(IsleMath.HOUSE_YAW))
+	var right := Vector3(cos(IsleMath.HOUSE_YAW), 0.0, -sin(IsleMath.HOUSE_YAW))
+	var target := base + Vector3(0.0, 5.9, 0.0)
+	_pose_look(target + front * 8.5 + right * 7.0 + Vector3(0.0, 6.4, 0.0), target, 46.0)
+
+## 冬季近景：码头木构（侧面看甲板/桩柱/系缆桩的积雪与木质泛白）。
+func _p81_camera_dock() -> void:
+	var start := IsleMath.dock_start()
+	var end := IsleMath.dock_end()
+	var target := start.lerp(end, 0.55)
+	target.y = float(_world.get("dock_deck_world_y", target.y))
+	var dir := IsleMath.dock_dir()
+	var side := Vector3(-dir.z, 0.0, dir.x)
+	_pose_look(target + side * 6.5 + dir * 3.5 + Vector3(0.0, 4.5, 0.0), target, 50.0)
+
+## 冬季近景：灯塔本体与石阶（塔身/红环/石基随机位斜上方入画）。
+func _p81_camera_lighthouse() -> void:
+	var lp := Vector3(IsleMath.HOUSE_X, IsleMath.house_ground_y(), IsleMath.HOUSE_Z)
+	var raw: Variant = _world.get("lighthouse", null)
+	if raw is Node3D:
+		lp = (raw as Node3D).global_position
+	var target := lp + Vector3(0.0, 7.5, 0.0)
+	_pose_look(target + Vector3(10.5, 2.6, 9.0), target, 46.0)
+
+## 阁楼机位：从阁楼内部看山墙窗（验证阁楼室内无白化、窗外正常白化）。
+func _p81_camera_attic() -> void:
+	var lamp: Vector3 = _cottage.get("attic_lamp_world", Vector3(0.8, 13.4, -0.6))
+	var win: Vector3 = _cottage.get("attic_window_world", lamp + Vector3(0.0, 0.0, 2.8))
+	var front := Vector3(sin(IsleMath.HOUSE_YAW), 0.0, cos(IsleMath.HOUSE_YAW))
+	var eye := win - front * 2.30 + Vector3(0.0, 0.55, 0.0)
+	_pose_look(eye, win + Vector3(0.0, -0.55, 0.0), 62.0)
+
+## 阁楼 diff 机位：只看阁楼山墙内侧/屋架，避开窗玻璃（窗外白化不应算室内像素）。
+func _p81_camera_attic_plain() -> void:
+	var lamp: Vector3 = _cottage.get("attic_lamp_world", Vector3(0.8, 13.4, -0.6))
+	var front := Vector3(sin(IsleMath.HOUSE_YAW), 0.0, cos(IsleMath.HOUSE_YAW))
+	var eye := lamp - front * 1.60 + Vector3(0.0, -0.90, 0.0)
+	var target := lamp - front * 2.85 + Vector3(0.0, -1.55, 0.0)
+	_pose_look(eye, target, 60.0)
+
+## 一层室内 diff 机位：相机在房内近前墙，只看后墙/壁炉/家具，不含任何窗玻璃。
+func _p81_camera_inside_plain() -> void:
+	var ip: Vector3 = _cottage.get("interior_pos", Vector3(0.35, 10.9, 0.0))
+	var front := Vector3(sin(IsleMath.HOUSE_YAW), 0.0, cos(IsleMath.HOUSE_YAW))
+	var eye := ip + front * 2.15 + Vector3(0.0, 0.10, 0.0)
+	var target := ip - front * 2.20 + Vector3(0.0, -0.05, 0.0)
+	_pose_look(eye, target, 50.0)
+## 一层室内「无窗」diff 机位：俯看地板/矮桌/沙发脚，画面内完全不含窗玻璃与窗外像素。
+## 用于 G3「室内像素差<0.5%」的严格口径（旧 inside_plain 机位仍会带入窗玻璃区域）。
+func _p81_camera_inside_floor() -> void:
+	var ip: Vector3 = _cottage.get("interior_pos", Vector3(0.35, 10.9, 0.0))
+	var front := Vector3(sin(IsleMath.HOUSE_YAW), 0.0, cos(IsleMath.HOUSE_YAW))
+	var right := Vector3(cos(IsleMath.HOUSE_YAW), 0.0, -sin(IsleMath.HOUSE_YAW))
+	var eye := ip + front * 1.55 + right * 0.45 + Vector3(0.0, 0.62, 0.0)
+	var target := ip + front * 0.55 + right * 0.15 - Vector3(0.0, 1.05, 0.0)
+	_pose_look(eye, target, 58.0)
+
+## 室外隔窗看室内（夜间）：站在前窗外看暖光房间，验证「室外被白化、室内不被白化」两态一致。
+func _p81_camera_outside_window() -> void:
+	var fws: Variant = _cottage.get("front_window_world", [])
+	var win := Vector3(IsleMath.HOUSE_X, IsleMath.house_ground_y() + 1.48, IsleMath.HOUSE_Z + 3.1)
+	if fws is Array and not (fws as Array).is_empty() and (fws as Array)[0] is Vector3:
+		win = (fws as Array)[0]
+	var front := Vector3(sin(IsleMath.HOUSE_YAW), 0.0, cos(IsleMath.HOUSE_YAW))
+	var eye := win + front * 3.05 + Vector3(0.0, 0.30, 0.0)
+	_pose_look(eye, win + Vector3(0.0, -0.10, 0.0), 42.0)
+
+## 单张截图：等一帧 + 保存 + 打日志（tag/日期/whiteness/当前天气）。
+func _p81_shot(tag: String, wait: float = 0.65) -> void:
+	await get_tree().create_timer(wait).timeout
+	await _save_shot(tag, P81_03_EVIDENCE_DIR)
+	var cal: Dictionary = ISLE_CALENDAR.parts(_sim_seconds)
+	print("[P81WHITE] shot ", tag, " date=", str(cal.get("date_label", "")),
+		" whiteness=%.3f" % _p81_winter_whiteness(),
+		" weather=", String(_weather_state.get("type", "clear")),
+		" snow=", "%.3f" % _weather_snow_depth,
+		" wet=", "%.3f" % _weather_wetness,
+		" quality=", _quality)
+
+## 一组 ON/OFF 对照：把 g_winter 归零再拍，随后用权威季节权重精确恢复（供像素 diff 用）。
+## 额外多拍一张 _on2：uniform 完全不变、仅隔两帧，作为「引擎时间噪声/灯焰闪烁」基线，
+## 以证明 ON-OFF 差值不是白化引入的（否则只能看到差值、无法区分噪声与效果）。
+func _p81_shot_pair(tag: String) -> void:
+	_p81_pin_light_t = _frame_t   # 钉住解析点光的呼吸相位：ON/OFF 只允许 g_winter 不同
+	await get_tree().process_frame
+	_set_winter_season_uniforms()   # 先确保 ON 侧就是权威值
+	await _p81_shot(tag + "_on", 0.75)
+	await _p81_shot(tag + "_on2", 0.15)   # 噪声基线：g_winter 未变
+	RenderingServer.global_shader_parameter_set("g_winter", Vector4.ZERO)
+	await get_tree().create_timer(0.25).timeout
+	await _p81_shot(tag + "_off", 0.15)
+	_set_winter_season_uniforms()   # 从 _season_weights 重算，不依赖 Variant 回读
+	# _on3：恢复 ON 后再拍一张（uniform 与 _on 相同，但晚约 1.2s）→ 与 _on 的差即「纯时间演化」基线。
+	# 夜间壁炉灯焰/灯火闪烁会随时间为室内带来低幅变化，必须用 _on3 而不是 _on2 才能解释 ON-OFF 差值。
+	await get_tree().create_timer(0.25).timeout
+	await _p81_shot(tag + "_on3", 0.15)
+	_p81_pin_light_t = -1.0   # 解除钉住，恢复真实呼吸
+
+## P8.1-03 证据截图主流程。
+func _run_p81white() -> void:
+	_mode = Mode.PLAYING
+	_started = true
+	_paused = true            # 固定时刻：季节/太阳/天气都不在截图期间漂移
+	_menu.instant_finish()
+	_blending = ""
+	_hud.set_hud_visible(false, false)
+	_auto_orbit = false
+	_shot_beam_lock = false
+	_time_source = "sim"
+	await get_tree().create_timer(0.9).timeout
+	var wx := String(_weather_state.get("type", "clear"))
+	var pf := "p81_03_"
+	if wx != "clear":
+		pf = "p81_03_wx_" + wx + "_"
+	print("[P81WHITE] begin weather=", wx, " prefix=", pf)
+	# uniform 生效证据：非编辑器运行时 global_shader_parameter_get 直接报错并返回 null，
+	# 故改用「写入侧本地值日志（_set_winter_season_uniforms 的 [P81W] g_winter=...）」
+	# +「同机位 g_winter ON/OFF 像素差」双重证据（见 evidence RM 与 diff_inside.py）。
+	# ---------- (1) 四季室外广角：白化只由季节驱动，春夏秋应与 P8 基线一致 ----------
+	var seasons: Array = [
+		["spring", 2026, 4, 15, 10, 0],
+		["summer", 2026, 7, 15, 10, 0],
+		["autumn", 2026, 10, 20, 16, 30],
+		["winter", 2027, 1, 15, 10, 0],
+	]
+	for spec in seasons:
+		var tag := String(spec[0])
+		_jump_datetime(int(spec[1]), int(spec[2]), int(spec[3]), int(spec[4]), int(spec[5]))
+		_p8_camera_island()
+		await _p81_shot(pf + tag + "_wide", 0.85)
+	# 冬季起止：W1 开始泛白 / W3 维持 / W4 退出（都拍同一广角，直接看白化曲线）
+	var transitions: Array = [
+		["w1_onset", 2026, 12, 1, 10, 0],
+		["w3_hold", 2027, 2, 15, 10, 0],
+		["w4_exit", 2027, 3, 5, 10, 0],
+	]
+	for spec in transitions:
+		_jump_datetime(int(spec[1]), int(spec[2]), int(spec[3]), int(spec[4]), int(spec[5]))
+		_p8_camera_island()
+		await _p81_shot(pf + String(spec[0]) + "_wide", 0.75)
+	# ---------- (2) 冬季近景：地面/草/岩石/外墙/屋顶/码头/灯塔 ----------
+	_jump_datetime(2027, 1, 15, 10, 0)
+	var closeups: Array = [
+		["ground", Callable(self, "_p81_camera_ground")],
+		["grass", Callable(self, "_p81_camera_grass")],
+		["rock", Callable(self, "_p81_camera_rock")],
+		["wall", Callable(self, "_p81_camera_wall")],
+		["roof", Callable(self, "_p81_camera_roof")],
+		["dock", Callable(self, "_p81_camera_dock")],
+		["lighthouse", Callable(self, "_p81_camera_lighthouse")],
+	]
+	for spec in closeups:
+		(spec[1] as Callable).call()
+		await _p81_shot(pf + "winter_" + String(spec[0]), 0.75)
+	# ---------- (3) 一层室内：白天窗景 / 白天窗内 ON-OFF ×2（带窗机位 + 严格无窗机位）/ 夜晚窗景 / 夜晚同两档 ----------
+	_jump_datetime(2027, 1, 15, 10, 0)
+	_p8_camera_inside()
+	await _p81_shot(pf + "winter_inside_window_day", 0.70)
+	_p81_camera_inside_plain()
+	await _p81_shot_pair(pf + "winter_inside_day")
+	_p81_camera_inside_floor()
+	await _p81_shot_pair(pf + "winter_inside_floor_day")
+	_jump_datetime(2027, 1, 15, 20, 30)
+	_p8_camera_inside()
+	await _p81_shot(pf + "winter_inside_window_night", 0.80)
+	_p81_camera_inside_plain()
+	await _p81_shot_pair(pf + "winter_inside_night")
+	_p81_camera_inside_floor()
+	await _p81_shot_pair(pf + "winter_inside_floor_night")
+	# 室外隔窗看室内（夜晚）：室外墙面/地面被白化，室内暖光与家具不应被刷白。
+	_p81_camera_outside_window()
+	await _p81_shot_pair(pf + "winter_outside_window_night")
+	# ---------- (4) 阁楼室内：窗景 / 山墙内侧 ON-OFF（验证阁楼室内完全不受白化） ----------
+	_jump_datetime(2027, 1, 15, 10, 0)
+	_p81_camera_attic()
+	await _p81_shot(pf + "winter_attic_window", 0.75)
+	_p81_camera_attic_plain()
+	await _p81_shot_pair(pf + "winter_attic")
+	# ---------- (5) 五档画质 W10：低档也不得关闭白化（只允许降细节） ----------
+	_jump_datetime(2027, 1, 15, 10, 0)
+	for q in range(5):
+		_apply_quality(q)
+		_p8_camera_island()
+		await _p81_shot(pf + "q%d_winter_wide" % q, 0.70)
+	_apply_quality(2)
+	print("[P81WHITE] done")
+	get_tree().quit()
+
+## P8.1-03 补充证据：冬季季节白化（g_winter）+ 手动大雪积雪（g_weather.w）叠加（--p81snow）。
+## 与 --p81white 的区别：先把日期锁在冬季，再用 _p8_wfx_apply 把天气强制为 heavy_snow 并累积 30000 模拟秒，
+## 让 g_weather.w（降雪/积雪）进入稳态；两套 uniform 在 shader 内独立计算、积雪块取 max 合成，室内同样豁免。
+func _run_p81snow() -> void:
+	_mode = Mode.PLAYING
+	_started = true
+	_paused = true
+	_menu.instant_finish()
+	_blending = ""
+	_hud.set_hud_visible(false, false)
+	_auto_orbit = false
+	_shot_beam_lock = false
+	_time_source = "sim"
+	await get_tree().create_timer(0.9).timeout
+	var pf := "p81_03_snow_"
+	print("[P81SNOW] begin")
+	# 冬季 + 大雪稳态（先跳到冬季日期，再强制类型并累积积雪）。
+	_p8_wfx_apply(2027, 1, 15, 10, 0, "heavy_snow", 30000.0)
+	await get_tree().create_timer(1.6).timeout
+	var st := _weather_state
+	print("[P81SNOW] state type=%s snow=%.2f wet=%.2f snow_depth=%.2f whiteness=%.4f" % [
+		String(st.get("type", "")), _weather_snow, _weather_wetness, _weather_snow_depth, _p81_winter_whiteness()])
+	# ---------- (1) 冬季大雪广角 + 近景 ----------
+	_p8_camera_island()
+	await _p81_shot(pf + "winter_wide", 0.85)
+	var closeups: Array = [
+		["ground", Callable(self, "_p81_camera_ground")],
+		["grass", Callable(self, "_p81_camera_grass")],
+		["roof", Callable(self, "_p81_camera_roof")],
+		["dock", Callable(self, "_p81_camera_dock")],
+		["lighthouse", Callable(self, "_p81_camera_lighthouse")],
+	]
+	for spec in closeups:
+		(spec[1] as Callable).call()
+		await _p81_shot(pf + String(spec[0]), 0.75)
+	# ---------- (2) 白天室内：严格无窗机位 ON/OFF + 带窗机位 ----------
+	_p81_camera_inside_floor()
+	await _p81_shot_pair(pf + "inside_floor_day")
+	_p8_camera_inside()
+	await _p81_shot(pf + "inside_window_day", 0.75)
+	# ---------- (3) 夜晚室内：大雪 + 灯光，室内仍不得被刷白 ----------
+	_p8_wfx_apply(2027, 1, 15, 20, 30, "heavy_snow", 30000.0)
+	await get_tree().create_timer(1.2).timeout
+	_p81_camera_inside_floor()
+	await _p81_shot_pair(pf + "inside_floor_night")
+	_p81_camera_outside_window()
+	await _p81_shot_pair(pf + "outside_window_night")
+	# ---------- (4) 五档画质：低档也不得关闭季节白化或雪面 ----------
+	_p8_wfx_apply(2027, 1, 15, 10, 0, "heavy_snow", 30000.0)
+	await get_tree().create_timer(1.2).timeout
+	for q in range(5):
+		_apply_quality(q)
+		_p8_camera_island()
+		await _p81_shot(pf + "q%d_winter_wide" % q, 0.70)
+	_apply_quality(2)
+	print("[P81SNOW] done")
+	get_tree().quit()
 
 ## P8 阶段 3.2 月球专项截图（--p8moon）：八相固定日期 + 海上生明月/不见月两组实景。
 ## 相时刻取自 HKO 2026 四相表（北京时），不依赖现实时间；每相在相邻主相窗口内挑选

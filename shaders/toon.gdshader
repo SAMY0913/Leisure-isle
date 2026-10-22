@@ -66,6 +66,17 @@ global uniform float g_occ_y2;
 global uniform vec3 g_occ_c3;
 global uniform vec3 g_occ_h3;
 global uniform float g_occ_y3;
+// P8.1-03 冬季白化（季节进度驱动，与 g_weather.w 降雪积雪严格分离）：
+// x whiteness 0..1 室外白化度, y frost 霜, z ground_tint 地面泛灰, w foliage_desat 植被去饱和。
+// g_winter=0 时本 shader 所有冬季项为 0 → 与 P8 外观逐像素一致（可回滚/A-B）。
+global uniform vec4 g_winter;
+// 小屋室内体积（世界空间，main.gd 一次性写入；与摄像机无关）：
+// g_house = (origin.x, origin.y, origin.z, cos_yaw)
+// g_house2 = (sin_yaw, half_x=内墙面, half_z=内墙面, floor_local_y)
+// g_roof = (ridge_y, tan_pitch, under_margin, first_floor_top_local_y)（均为房屋局部 y）
+global uniform vec4 g_house;
+global uniform vec4 g_house2;
+global uniform vec4 g_roof;
 
 uniform vec4 albedo : source_color = vec4(1.0);
 uniform sampler2D albedo_tex : source_color, filter_linear_mipmap, repeat_enable;
@@ -89,6 +100,9 @@ uniform float ambient_amount = 1.0;
 uniform vec3 foliage_tint = vec3(1.0);
 // 远海淡出：<1 时按屏幕抖动剔除像素（船体/帆/索具统一淡出，不产生透明排序问题）
 uniform float fade_alpha = 1.0;
+// P8.1-03 材质类别冬季接收系数（main.gd 按对象身份/材质类别写入；默认全接受）：
+// x 积雪, y 霜, z 地面泛灰, w 植被去饱和。自发光灯罩/玻璃/海面/船/岛民/花等写入 0。
+uniform vec4 winter_recv = vec4(1.0, 1.0, 0.0, 0.0);
 
 varying vec3 v_world;
 varying vec2 v_uv;
@@ -180,6 +194,34 @@ float beam_occlusion(vec3 p, vec3 n) {
 	return occl;
 }
 
+// P8.1-03 室内体积掩码（0=室外/外壳, 1=一层室内或阁楼室内）。
+// 完全由物体的世界坐标与房屋几何决定，与摄像机位置无关：窗外看室内、走进室内、
+// 从阁楼洞口俯视一层都得到同一结果。房屋局部坐标：root 原点在室内地坪下方，
+// 一层地坪 y=0.55，内墙面 |x|=3.5 / |z|=2.8，屋脊 y=6.20，屋面斜率 tan=2.47/3.8。
+float indoor_mask(vec3 wp) {
+	vec3 d = wp - g_house.xyz;
+	float c = g_house.w;
+	float s = g_house2.x;
+	float lx = c * d.x - s * d.z;
+	float lz = s * d.x + c * d.z;
+	if (abs(lx) > g_house2.y || abs(lz) > g_house2.z) {
+		return 0.0;
+	}
+	if (d.y < g_house2.w) {
+		return 0.0;
+	}
+	// 一层室内（含天花板底面与阁楼楼板，均为室内构件）
+	if (d.y <= g_roof.w) {
+		return 1.0;
+	}
+	// 阁楼室内：屋面底板以下（外坡屋面/瓦片在阈值之上，判为室外）
+	float roof_under = g_roof.x - g_roof.y * abs(lx) - g_roof.z;
+	if (d.y <= roof_under) {
+		return 1.0;
+	}
+	return 0.0;
+}
+
 void fragment() {
 	if (fade_alpha < 0.999) {
 		if (screen_dither(FRAGCOORD.xy) > fade_alpha) {
@@ -207,6 +249,27 @@ void fragment() {
 	// 雨后的湿润：整体压暗一点，再在受光后加一层低强度湿面反光（不引入透明/排序问题）
 	float wet = clamp(g_weather.z, 0.0, 1.0);
 	base *= 1.0 - 0.26 * wet;
+	// ---- P8.1-03 冬季白化：室内体积掩码（摄像机无关）+ 材质类别接收系数 ----
+	// 顺序：wet -> frost/desaturate/ground_tint -> snow（见下面积雪块）。
+	// g_winter=0 时所有项为 0，外观与 P8 完全一致。
+	float indoor = indoor_mask(v_world);
+	float lit_exempt = 1.0 - step(0.5, self_lit);   // 自发光灯罩/炉火不吃白化
+	float winter_vis = g_winter.x * (1.0 - indoor) * lit_exempt;
+	float w_snow = clamp(winter_vis * winter_recv.x, 0.0, 1.0);
+	float w_frost = clamp(g_winter.y * (1.0 - indoor) * lit_exempt * winter_recv.y, 0.0, 1.0);
+	float w_ground = clamp(g_winter.z * (1.0 - indoor) * lit_exempt * winter_recv.z, 0.0, 1.0);
+	float w_desat = clamp(g_winter.w * (1.0 - indoor) * lit_exempt * winter_recv.w, 0.0, 1.0);
+	if (w_desat > 0.001) {
+		float luma = dot(base, vec3(0.2126, 0.7152, 0.0722));
+		base = mix(base, vec3(luma), w_desat * 0.55);
+	}
+	if (w_ground > 0.001) {
+		base = mix(base, mix(base, vec3(0.62, 0.64, 0.60), 0.50), w_ground * 0.70);
+	}
+	if (w_frost > 0.001) {
+		float upw = clamp(Nw.y * 0.5 + 0.5, 0.0, 1.0);
+		base = mix(base, base * 0.55 + vec3(0.72, 0.78, 0.87) * 0.45, w_frost * (0.28 + 0.72 * upw));
+	}
 	vec3 V = normalize(CAMERA_POSITION_WORLD - v_world);
 	vec3 col;
 	if (self_lit > 0.5) {
@@ -267,8 +330,14 @@ void fragment() {
 		float nz = detail_noise(v_world.xz * 0.42 + v_world.y * 0.7);
 		float patchy = 0.62 + 0.38 * nz;
 		patchy *= 0.82 + 0.18 * detail_noise(v_world.xz * 1.7 + v_world.y * 1.3);
+		// U11：这是海平面岸线淡出（海平面 y=0，岛面 y≈7.4-7.9 恒为 1），不是“岛面无雪”的判据；
+		// 岛面高程依据 isle_math.gd:77-110 profile_at。P8 降雪行为保持不变。
 		float snow_line = smoothstep(1.05, 3.20, v_world.y);
-		float snow_m = clamp(up_mask * snow_cov * patchy * snow_line, 0.0, 1.0);
+		// 降雪积雪（g_weather.w）与季节白化（g_winter.x）严格分离，取 max 合成；室内不吃任何雪。
+		float snow_weather = clamp(up_mask * snow_cov * patchy * snow_line, 0.0, 1.0) * (1.0 - indoor);
+		float snow_winter = clamp(smoothstep(0.05, 0.72, clamp(Nw.y, 0.0, 1.0)) * w_snow
+			* patchy * smoothstep(0.50, 2.20, v_world.y), 0.0, 1.0);
+		float snow_m = max(snow_weather, snow_winter);
 		if (snow_m > 0.001) {
 			vec3 snow_col = vec3(0.90, 0.93, 0.99) * clamp(
 				ambient * 1.85 + g_sun_color.rgb * (0.26 + 0.52 * cel) + g_moon_color.rgb * 0.80, 0.0, 1.6);
