@@ -538,7 +538,7 @@ G6-front / G6-low / G6-oblique 三机位看不到火、G8b 光槽在实体盒内
 | 14 | `532e290` | P8.2-06 报告回填 §4.2/§4.3/§7 与 §0 对应行 |
 | 15 | `4ac7f0f` | P8.2-02 灯光视觉诊断工具链与 NOTES 定稿（含 02(c) 悬空球归因/NO-GO、02(d) 回滚登记） |
 | 16 | `f5f2fef` | P8.2-06 报告补 §8.1/§8.2（含 PRE-8 归因）/§8.3/§8.4；TEST_RESULTS 增 PRE-8 |
-| 17 | 本提交 | P8.2-06 文档定稿：§8.6/§8.7 与 §0 收口、selftest 分母修正（报告/TEST_RESULTS/01 NOTES/06 NOTES）、§9.2 增 L-11/L-12、`tools/*.gd.uid` 补交 |
+| 17 | `6c1aca7` + 本提交 | P8.2-06 文档定稿：§8.6/§8.7 与 §0 收口、selftest 分母修正（报告/TEST_RESULTS/01 NOTES/06 NOTES）、§9.2 增 L-11/L-12、`tools/*.gd.uid` 补交；本提交另补 §10.6 正式包构建与验收证据行 |
 
 **未采纳项没有提交**：02(d) 室内外过渡带（`g_indoor_band`）已整体回滚（`shaders/toon.gdshader` 与 `main.gd` 注册处均还原，全树 grep 命中 0）；02(c) 悬空球为 NO-GO。两者只留文档记录。
 
@@ -558,7 +558,7 @@ cp "D:/休闲小岛幻境/开发产物/backup/release_pre_p82/休闲小岛幻境
 git checkout p81-refinement-freeze-20261022
 ```
 
-**包与 tag 的可复核关系**：正式包由 `f5f2fef` 导出；其后只有本提交，修改范围仅 `docs/*.md` 与 `tools/*.gd.uid`（`docs/`、`*.md`、`tools/*` 全部在 `exclude_filter` 内）→ 导出输入未变。复核：
+**包与 tag 的可复核关系**：正式包由 `f5f2fef` 导出；其后仅有 `6c1aca7` 与本提交两个文档提交，修改范围只有 `docs/*.md` 与 `tools/*.gd.uid`（`docs/`、`*.md`、`tools/*` 全部在 `exclude_filter` 内，`.uid` 不进包）→ 导出输入未变。复核：
 
 ```bash
 git diff --stat f5f2fef p8.2-final -- scripts shaders art audio addons fonts project.godot isle.tscn export_presets.cfg icon.ico
@@ -717,6 +717,8 @@ git diff --stat f5f2fef p8.2-final -- scripts shaders art audio addons fonts pro
 | 全量回归台账 | `final/<RUN_ID>/regression.csv` + 各探针日志 + `evidence_backup/` | 列：name,mode,rc,expected_fail,status,fail_cnt,counts,log；含 `nondet` 分类 |
 | 30 min soak | `final/<RUN_ID>/soak/`、`06_soak/` | 帧时间 p50/p95/p99 首末窗、nodes/orphan/objects/dc/vram、天气/季节/画质/面板循环 |
 | 五档矩阵 | `final/<RUN_ID>/matrix/`、`06_matrix/` | 30 张 1600×900（q0..q4 × 6 场景）+ `matrix.csv` 22 列 + `MANIFEST.md` + `contact_sheet.png` |
+| **正式包构建（P8.2）** | `build_release_run_214845.log`；`release_preview/build_20261022_214845/{record.json,build.log,verify_quit.log,verify_selftest.log,savepack_list.txt}`；`backup/release_pre_p82/休闲小岛幻境_pre_p82_20261022_214845.exe` | verdict=PASS；117,248,168 B / `994ea96a…3795`；`--quit` EXIT 0；selftest 73/73；包内容排除 8 项全 0；旧包已备份（c40376ad…b668 / 117,238,104 B） |
+| **正式包独立验收（P8.2）** | `verify_release_run_215233.log`；`发布/verify_result_20261022_215233.json` | RESULT PASS（size/sha/selftest/版本/退出全 OK，exe_mtime 2026-10-22 21:49:45） |
 | 发布管线 | `build_release.sh`、`verify_release.sh`、`release_preview/` | 预览导出复现 `sha256=c40376ad…b668`、size 117,238,104（与 P8.1 冻结包逐字节一致） |
 | 冻结证据复核 | `integrity/frozen_p81_p8_manifest_before.txt`、`audit_sha_check_20261022.txt` | 599 文件 sha256；复核 599 OK / 0 FAILED（须在 `开发产物/` 下执行） |
 | 索引文档 | `docs/P8_2_TEST_RESULTS.md`、`docs/P8_2_06_NOTES.md` | 口径分层、预存在失败 PRE-1…PRE-7、NONDET-P82-1、冻结后流程 |
