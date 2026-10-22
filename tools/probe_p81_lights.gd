@@ -15,7 +15,8 @@ extends SceneTree
 #   Q7 槽位合法性与池隔离（L5/L6：上限、有限值、室内灯不进室外池）
 #   Q8 冬季夜间双池仍激活（L8 前提）
 
-const OUT_DIR := "D:/休闲小岛幻境/开发产物/p81/evidence/p81_06/"
+# P8.2-02 回归：输出改到 P8.2 证据目录（只改路径，断言未动）。
+const OUT_DIR := "D:/休闲小岛幻境/开发产物/p82/02_lighting/probe_p81_lights/"
 const EXP_BUDGET := [10, 11, 12, 14, 16]
 const EXP_INDOOR := [3, 3, 3, 4, 6]
 const OUT_CAP := 10
