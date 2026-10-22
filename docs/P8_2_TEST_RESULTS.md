@@ -240,6 +240,13 @@ checker 的两点增强（本阶段）：① 01 证据按 MANIFEST.csv 分节索
 | PRE-6 | probe_scale_house_p7v32 252 checks / 245 pass / **7 fail**（EXIT=1），7 条全在 light_sources 契约：探针期望「6 固定 + 5 窗」共 11 个光位，实际 P8.1-06 双池聚合后 light_sources=10 | 当前 HEAD：D:/休闲小岛幻境/开发产物/p82/01_fireplace/regress/scale_house_p7v32.log；冻结基线复现（逐字相同的 245/7）：D:/休闲小岛幻境/开发产物/p82/01_fireplace/regress/base_scale_house_p7v32.log | **预存在失败**（P8.1 冻结副本即可复现，非 P8.2 引入）；探针期望值过时。注意：若 02 模块改动 light_sources 结构，需同步更新该探针的期望值，否则会持续误报 |
 | PRE-7 | 05 桌面合成触摸点击/拖动曾一次不等价鼠标（tap=221.0x578.0 前后日期均为 2026-10-22 12:19；拖动 busy=false），11:28:16 重跑后 2 项均 PASS | 05_wheel/probe_p82_datetime_behavior_result.json（11:25:25 与 11:28:16 两次 started_at） | 环境相关/间歇：合成事件走 emulate_mouse_from_touch，本机无真机触屏（is_touchscreen_available=false），无法进一步复验；如实披露，不宣称"已修复" |
 
+| PRE-8 | `probe_p81_datetime_wheel_ui` 的 UI2「拖动 1 行 → 日期 +1」断言非确定性失败，落点每次不同（22→16 / 22→24 / 22→5 / 22→22），同代码 20:26 曾 PASS（82 项 80/2/0） | 当前 HEAD：开发产物/p82/final/20261022_205425/probe_p81_datetime_wheel_ui.window.log、开发产物/p82/verify_wheel/rerun1_213900.log、rerun2_214011.log、diag_*.log（插桩：`_ema_vel=-4.892`、物理位移正好 28 px=1 行）；**P8.1 基线 ddcde3a 同探针复现**：开发产物/p82/verify_wheel/base_p81_run_*.log（day 22→1） | **预存在 + 非确定性**：机制为 `ui_datetime_wheel.gd:624` 的瞬时速度用 `_dt_since_last()` 的 dt 下限 0.001 s，合并事件时 dt=1 ms 把速度放大 25 倍 → 越过 `FLICK_THRESHOLD=1.2` 走惯性滑行。P8.2 对该文件唯一改动（56bfbb1）是字面量 1.2→常量引用，行为不变。不修改断言/阈值，不在冻结前改动手感逻辑；建议下一迭代把 dt 下限提到 ~1/240 s 或对 inst 做 clamp（未实施） |
+### 4.1 非确定性统计断言（NONDET，非本轮代码回归）
+
+| 编号 | 现象 | 证据 | 定性 |
+| --- | --- | --- | --- |
+| NONDET-P82-1 | 04 生态 soak 的两条**统计断言**（「5 个冬季裸枝点都被自然使用过」「使用分布无极端偏斜」）在 `--headless --fixed-fps 60` 下**确定性失败**：33 个停栖事件里 `winter_branch_2` 未被采样（used 4/5，min=0），两次运行分布**逐字相同**；同一探针在**实时 headless**（不加 `--fixed-fps`，31 个事件）下 used 5/5 PASS | PASS：`04_winter/eco_soak_v3_20261022.log`（{3,3,1,2,3}=12/31=38.7%）；fixed-fps FAIL：`final/20261022_205425/probe_p82_eco_soak.headless.log` 与 `final/20261022_203054/probe_p82_eco_soak.headless.log`（均 `step_events=33`、`winter_branch_2:0`）；候选权重：`04_winter/eco_diag_20261022.log`（wb2 w=1.2613，与其余 4 点 1.2559–1.2806 相差 <2%，**无系统性低权重**） | **统计性 + 运行模式相关，不是本轮代码回归**：单次只采样 17–33 个事件，5 点均分 41.5% 权重份额时任一点 0 次的概率约 25%；跨模式聚合 5 个点全部被自然使用过。处置：**断言与阈值都不改**，runbook 将其记为 `nondet` 并要求人工核对分布列；报告 §6.3/§8.1 同步披露 |
+
 ## 5. TODO（最终阶段补齐后本索引即可冻结）
 
 已关闭：01 张数口径（after 20 / before 18）与 MANIFEST 登记、06_matrix 尺寸登记、checker 01/06 判据升级 —— 见 §2.1、§3。
