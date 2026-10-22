@@ -228,6 +228,8 @@ var _lantern_halo: MeshInstance3D
 var _lantern_halos: Array = []
 # P8.1-06：一层/阁楼吊灯灯罩材质（self_lit=false + glow），按昼夜调光。
 var _interior_shade_mats: Array = []
+# P8.2-02：室内吊灯光晕（cottage 的 interior_halos），按昼夜收放亮度与半径。
+var _interior_halos: Array = []
 var _lamp_mats: Array = []
 var _lamp_halos: Array = []
 var _light_sources: Array = []
@@ -686,6 +688,7 @@ func _build_world() -> void:
 	for m in (_cottage.get("interior_shade_mats", []) as Array):
 		if m is ShaderMaterial:
 			_interior_shade_mats.append(m)
+	_interior_halos = (_cottage.get("interior_halos", []) as Array).duplicate()
 	_lamp_mats = (_world.get("lamp_mats", []) as Array).duplicate()
 	_lamp_halos = (_world.get("lamp_halos", []) as Array).duplicate()
 	# 夜间光晕尺寸收敛：halo 是广告牌面片，原尺寸在近景会变成直径 1m+ 的光球
@@ -2099,6 +2102,15 @@ func _update_lighting() -> void:
 	for m in _interior_shade_mats:
 		if m is ShaderMaterial:
 			(m as ShaderMaterial).set_shader_parameter("glow", 0.10 + float(p["lanternI"]) * 1.05)
+	# P8.2-02：室内吊灯光晕随昼收放：白天只有微光点，夜里保留暖光晕；半径同步收小避免近景大白盘。
+	var ihf := clampf(0.02 + pow(float(p["lanternI"]), 1.6) * 0.95, 0.0, 1.2)
+	var ihs := clampf(0.30 + float(p["lanternI"]) * 0.70, 0.30, 1.0)
+	for h in _interior_halos:
+		if h is MeshInstance3D:
+			var ihm: Material = (h as MeshInstance3D).material_override
+			if ihm is StandardMaterial3D:
+				(ihm as StandardMaterial3D).albedo_color = Color(1.25 * ihf, 0.82 * ihf, 0.42 * ihf, 1.0)
+			(h as MeshInstance3D).scale = Vector3(ihs, ihs, 1.0)
 	var lf := clampf(0.03 + pow(float(p["lanternI"]), 1.6) * 0.85, 0.0, 1.6)
 	var lantern_halos: Array = _lantern_halos
 	if lantern_halos.is_empty() and _lantern_halo != null:

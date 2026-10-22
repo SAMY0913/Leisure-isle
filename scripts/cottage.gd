@@ -393,6 +393,9 @@ static func _context(root: Node3D) -> Dictionary:
         "glass_mats": [glass_mat, inner_glass],
         "window_halos": [],
         "lantern_halos": [],
+        # P8.2-02：室内吊灯光晕（一层吊灯 + 阁楼吊灯）。原先未纳入任何数组，白天也满亮度，
+        # 近景变成直径 ~1m 的白色光斑；改由 main._update_lighting 按 lanternI 收放亮度与半径。
+        "interior_halos": [],
         "win_lights": [],
         "front_window_world": [],
         "attic_window_world": Vector3.ZERO,
@@ -1655,8 +1658,10 @@ static func _attic_interior(root: Node3D, C: Dictionary) -> void:
     bulb.material_override = bulb_mat
     bulb.position = lamp_pos
     ia.add_child(bulb)
-    var halo: MeshInstance3D = M.halo(ia, lamp_pos, 0.95, Color(2.2, 1.5, 0.85, 1.0))
+    # P8.2-02：光晕基准尺寸 0.95→0.60、亮度 2.2/1.5/0.85→1.25/0.82/0.42（夜间由 main 调回暖光晕）。
+    var halo: MeshInstance3D = M.halo(ia, lamp_pos, 0.60, Color(1.25, 0.82, 0.42, 1.0))
     ia.set_meta("attic_lamp_halo", halo)
+    (C["interior_halos"] as Array).append(halo)
     C["attic_lamp_world"] = _world(root, lamp_pos)
     # ---- 阁楼家具 15 件（T3 最终 DIMS；原点=占地中心，落地件 y=地面）----
     var fl: float = attic_floor + 0.02
@@ -1827,7 +1832,9 @@ static func _interior(root: Node3D, C: Dictionary) -> void:
     bulb.material_override = bulb_mat
     bulb.position = Vector3(1.45, in_top - 0.62, 0.80)
     root.add_child(bulb)
-    M.halo(root, Vector3(1.45, in_top - 0.62, 0.80), 1.10, Color(2.2, 1.5, 0.85, 1.0))
+    # P8.2-02：一层吊灯光晕纳入昼夜调光数组（基准 0.60，白天收小、夜间回满）
+    var ch_halo: MeshInstance3D = M.halo(root, Vector3(1.45, in_top - 0.62, 0.80), 0.60, Color(1.25, 0.82, 0.42, 1.0))
+    (C["interior_halos"] as Array).append(ch_halo)
     # ---- 一层家具 23 件（T3 最终 DIMS；fl=板条面）----
     var fl: float = fy + 0.02
     P.build(root, "doormat", Vector3(0.0, fl, 2.30), 0.0)
