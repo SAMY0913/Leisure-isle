@@ -21,6 +21,10 @@ const M := preload("res://scripts/isle_math.gd")
 const P := preload("res://scripts/isle_house_props.gd")
 const CAT := preload("res://scripts/isle_cat.gd")
 
+# P8.2-01：探针专用开关。true 时 build() 跳过 IsleBatch.merge_static，保留逐件 MeshInstance，
+# 供 tools/probe_p82_fireplace.gd 在真实构建几何上逐件测量 AABB。生产路径恒为 false，不影响渲染。
+static var probe_skip_batch: bool = false
+
 ## 世界坐标换算：运行时 root 已在场景树内时用 to_global；探针以游离节点构建时，Godot 4 的
 ## to_global 会退化为单位变换，此时用 root.transform * local 得到同样正确的世界坐标。
 static func _world(root: Node3D, local: Vector3) -> Vector3:
@@ -159,9 +163,10 @@ static func build(parent: Node3D) -> Dictionary:
 
     # ---- P7-V3.1 静态合批（房屋外壳 / 一层室内 / 阁楼三层分区，家具与楼梯各自在自己的
     # 节点内已合批，不参与这里）----
-    IsleBatch.merge_static(root, {
-        "split": func(mi: Node3D) -> String: return _batch_region(root, mi),
-    })
+    if not probe_skip_batch:
+        IsleBatch.merge_static(root, {
+            "split": func(mi: Node3D) -> String: return _batch_region(root, mi),
+        })
 
     return {
         "root": root,
@@ -1164,10 +1169,16 @@ static func _chimney(root: Node3D, C: Dictionary) -> void:
     var pitch: float = C["pitch"]
     var cp: float = C["cp"]
     var sp: float = C["sp"]
-    # 主体
-    M.box(root, Vector3(0.88, 5.75, 0.80), Vector3(ch_x, 3.325, ch_z), M.C_STONE, 0.0, {"outline": 0.04})
-    # 3 道石箍
-    for yy in [1.60, 3.40, 5.40]:
+    # P8.2-01：烟囱分段。旧版一层段是一整块 (0.88,5.75,0.80)@z=ch_z，z 跨度
+    # -3.00..-2.20，侵入一层室内 0.60m，把壁炉炉膛/火焰/壁炉光槽全包在体内
+    # （P8 既有缺陷，非 P8.1 回归）。改为：屋面以上保持原轮廓，屋面以下退成墙内薄烟道。
+    # 上半段（阁楼 + 屋面以上）：外观与原来一致，z 仍为 -3.00..-2.20。
+    M.box(root, Vector3(0.88, 3.10, 0.80), Vector3(ch_x, 4.65, ch_z), M.C_STONE, 0.0, {"outline": 0.04})
+    # 一层/裙墙段：0.26m 薄烟道埋进后墙体（墙 z=-3.10..-2.80），
+    # 前后各留 0.01/0.03 偏移避免与墙面共面，室内外都看不到突变。
+    M.box(root, Vector3(0.88, 2.70, 0.26), Vector3(ch_x, 1.79, -2.96), M.C_STONE, 0.0, {"outline": 0.04})
+    # 石箍：y=1.60 那道原本只在一层室内可见（随侵入体一起消失）；保留 3.40/5.40 两道。
+    for yy in [3.40, 5.40]:
         M.box(root, Vector3(1.00, 0.18, 0.92), Vector3(ch_x, yy, ch_z), M.C_STONE_DARK, 0.0, {"outline": 0.03})
     # 泛水板 / 泛水石 / 压顶
     var roof_y: float = ridge_y - absf(ch_x) * tan(pitch)
@@ -1739,26 +1750,47 @@ static func _interior(root: Node3D, C: Dictionary) -> void:
     for sx in [-1.0, 1.0]:
         M.box(root, Vector3(0.24, 2.07, 0.12), Vector3(sx * 0.66, fy + 1.035, 2.80), wood, 0.0, yo)
     M.box(root, Vector3(1.44, 0.14, 0.14), Vector3(0.0, 2.56, 2.80), wood, 0.0, yo)
-    # ---- 壁炉（烟囱胸贴后墙内面 z=-2.80）----
-    M.box(root, Vector3(1.36, 1.62, 0.26), Vector3(ch_x, fy + 0.81, -2.67), M.C_STONE, 0.0, {"outline": 0.03})
-    M.box(root, Vector3(0.82, 0.72, 0.06), Vector3(ch_x, fy + 0.50, -2.56), Color("211812"), 0.0, {})
+    # ---- 壁炉（P8.2-01：真实凹龛，贴后墙内面 z=-2.80）----
+    # 石胸由一块整板改为「两侧石柱 + 上楣」框架，中间留 0.86 x 0.70 的炉膛开口：
+    #   框架前脸 z=-2.55，黑膛板退到 z=-2.79..-2.73 → 凹深 0.18m，火焰落在凹龛内。
+    # 旧版石胸 z=-2.80..-2.54 被烟囱体（z 到 -2.20）整体挡住，室内只能看到一块石板。
+    for sx in [-1.0, 1.0]:
+        M.box(root, Vector3(0.25, 1.62, 0.25), Vector3(ch_x + sx * 0.555, fy + 0.81, -2.675), M.C_STONE, 0.0, {"outline": 0.03})
+    # 上楣：比石柱前脸浅 1cm、顶面低 1cm，避免与前脸/顶面共面（z-fighting）
+    M.box(root, Vector3(1.16, 0.81, 0.25), Vector3(ch_x, fy + 1.205, -2.67), M.C_STONE, 0.0, {"outline": 0.03})
+    # 炉膛地石：顶上比炉台石低 1cm 形成台阶，且与炉台石在 z 向重叠 0.02m，避免共面
+    M.box(root, Vector3(0.90, 0.09, 0.28), Vector3(ch_x, fy + 0.045, -2.66), M.C_STONE_DARK, 0.0, {})
+    # 黑膛板（凹龛后壁）
+    M.box(root, Vector3(0.82, 0.72, 0.06), Vector3(ch_x, fy + 0.44, -2.76), Color("211812"), 0.0, {})
     for sx in [-1.0, 1.0]:
         M.box(root, Vector3(0.22, 0.90, 0.18), Vector3(ch_x + sx * 0.48, fy + 0.60, -2.48), M.C_STONE_DARK, 0.0, {"outline": 0.02})
     M.box(root, Vector3(1.34, 0.18, 0.22), Vector3(ch_x, fy + 0.95, -2.47), M.C_STONE_DARK, 0.0, {"outline": 0.02})
     M.box(root, Vector3(1.46, 0.09, 0.28), Vector3(ch_x, fy + 1.11, -2.44), wood_l, 0.0, {"outline": 0.02})
     M.box(root, Vector3(1.70, 0.10, 0.60), Vector3(ch_x, fy + 0.05, -2.24), M.C_STONE, 0.0, {})
-    M.cyl_rot(root, 0.07, 0.07, 0.42, Vector3(ch_x - 0.14, fy + 0.16, -2.52), Color("4a3222"), Vector3(0.0, 0.0, 1.5708), {})
-    M.cyl_rot(root, 0.06, 0.06, 0.38, Vector3(ch_x + 0.10, fy + 0.14, -2.50), Color("553a26"), Vector3(0.0, 0.4, 1.5708), {})
-    var fire_mat: ShaderMaterial = M.toon_material(Color("ff9a3c"), {"self_lit": true, "glow": 1.35})
-    for k in range(3):
+    # 柴薪移入凹龛（旧版整体探出到 z=-2.52 一带，与烟囱前脸互相穿插）
+    M.cyl_rot(root, 0.07, 0.07, 0.40, Vector3(ch_x - 0.10, fy + 0.14, -2.66), Color("4a3222"), Vector3(0.0, 0.0, 1.5708), {})
+    M.cyl_rot(root, 0.06, 0.06, 0.34, Vector3(ch_x + 0.12, fy + 0.13, -2.68), Color("553a26"), Vector3(0.0, 0.35, 1.5708), {})
+    var fire_mat: ShaderMaterial = M.toon_material(Color("ff8f30"), {"self_lit": true, "glow": 1.20})
+    # 火焰盒立起来（0.13x0.18）并整块退进凹龛 z=-2.68..-2.58；旧版 0.14x0.07 平躺、
+    # z=-2.61..-2.43 有 0.11m 露在烟囱前脸之外，被 fbb 遮挡后只剩硬边黄方块。
+    # 三簇火焰：不同高度 + 微错位，底部统一落在柴薪顶面（旧版三块等大平躺方糖，
+    # 被烟囱前脸挡住后只剩一块硬边黄方块，完全读不出"火"）
+    var flames := [
+        {"x": -0.15, "h": 0.20, "w": 0.12},
+        {"x": 0.00, "h": 0.26, "w": 0.13},
+        {"x": 0.15, "h": 0.20, "w": 0.12},
+    ]
+    for f in flames:
         var fm := BoxMesh.new()
-        fm.size = Vector3(0.14, 0.07, 0.18)
+        fm.size = Vector3(float(f["w"]), float(f["h"]), 0.10)
         var fmi := MeshInstance3D.new()
         fmi.mesh = fm
         fmi.material_override = fire_mat
-        fmi.position = Vector3(ch_x - 0.22 + float(k) * 0.22, fy + 0.16, -2.52)
+        fmi.position = Vector3(ch_x + float(f["x"]), fy + 0.15 + float(f["h"]) * 0.5, -2.63)
         root.add_child(fmi)
-    M.halo(root, Vector3(ch_x, fy + 0.32, -2.42), 0.85, Color(2.4, 1.2, 0.45, 1.0))
+    # halo 收小（0.85→0.40）并退入凹龛；旧版 0.85 的加色 billboard 挂在烟囱前脸外侧，
+    # 经 glow/tonemap 饱和成一块硬边黄方块。
+    M.halo(root, Vector3(ch_x, fy + 0.36, -2.565), 0.34, Color(1.7, 0.85, 0.32, 1.0))
     # ---- 吊灯（餐桌上方）----
     # P8.1-06：罩体 self_lit=false + glow（可受光），灯泡独立材质保持 self_lit。
     var lamp_mat: ShaderMaterial = M.toon_material(Color("ffd79b"), {"self_lit": false, "glow": 0.55})
