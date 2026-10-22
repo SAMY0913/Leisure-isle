@@ -101,6 +101,12 @@ bash ".../run_godot.sh" --path . --resolution 1600x900 \
 ```
 探针采集到逐件 MeshInstance3D 432 件（probe_skip_batch=true）；房屋原点 (0.8, 7.9456, -0.6)、yaw=0.30。
 
+#### after_geom 34 项 check 名（全部 OK，`after/after_geom.log`）
+`G1`（一层室内无进深>0.31m 侵入件）、`G2`（贴墙件进深≤0.275m）、`G2b`（贴墙件不埋进墙体 z0≥-2.815）、`G3`（黑膛板 1 块且尺寸 0.82×0.72）、`G3b`（膛板贴墙）、`G3c`（膛板在开口平面之后）、`G3d`（凹深≥0.10m）、`G4`（火焰 3 块）、`G4b`（火焰全在烟囱体之前、不露到室外）、`G5`（halo 1 块）、`G5b`（halo 尺寸≤0.50）、`G5c`（halo 在凹龛深度区间）、`G6`×4（front/low/oblique 三机位射线可见火焰 3/3、3/3、3/3）、`G6b`（halo 正面不被遮挡）、`G7`（ChimneyTop 位置）、`G7b`（烟帽最高点 6.550）、`G7c`（穿越屋面件≥1）、`G7d`（泛水件≥1）、`G7e`（栖点 chimney_0 位置）、`G7f`（栖点 kind=chimney）、`G7g`（栖点世界 y 与烟帽相对关系）、`G7h`（perch 数量/种类）、`G8`（壁炉光槽 local 契约）、`G8b`（光槽不在任何实体盒内）、`G8c`（光槽 indoor=true）、`G8d`（光槽在室内地面以上）、`G9`（ChimneyHit 位置）、`G9b`（ChimneyHit 尺寸 (1.1,2.9,1.1)）、`G9c`（ChimneyHit 层=2），加上 `isle.tscn`/`main` 两个装载检查 = 34。
+
+#### before_geom 的 10 条 FAILED_ITEM（`before/before_geom.log`，原样）
+`G1`（一层室内有 0.80m 深烟囱侵入）、`G2`（贴墙件进深超 0.275）、`G2b`（石胸前脸 -2.54 越出墙面）、`G3c`（黑膛板前脸 -2.53 比开口更靠前）、`G4b`（火焰 0.11m 露在烟囱前脸 -2.20 之外）、`G5`（探针初版未识别 StandardMaterial3D 加色 halo → 数量判 0，探针 bug，已在 after 版修正）、`G6`×3（front/low/oblique 火焰可见 0/3）、`G8b`（壁炉光槽 local (-2.200,1.100,-2.300) 落在烟囱主体 AABB 内）。
+
 ## 4. 真实数字（before → after，root 局部坐标；后墙内表面 z=-2.80）
 
 | 件 | before | after |
@@ -144,6 +150,8 @@ bash ".../run_godot.sh" --path . --resolution 1600x900 \
 - after：`D:/休闲小岛幻境/开发产物/p82/01_fireplace/after/`（20 张）
 - 命名：`q<0..4>_fire_front`、`q<0..4>_fire_oblique`、`q2_fire_low`、`q2_room_wide`、`q2_exterior_chimney`、`q2_attic_view`、`q2_attic_chimney_side`、`q2_attic_breast`、`day_fire_front`、`day_fire_oblique`、`day_room_wide`、`day_attic_breast`
 - 结构验收：屋外烟囱只露屋面以上部分，石箍/泛水石/压顶/顶盖/顶钮完整，雪面与屋顶交界自然，海鸥仍栖在檐口/屋脊；阁楼家具与屋面结构正常。
+- **MANIFEST**：`D:/休闲小岛幻境/开发产物/p82/01_fireplace/MANIFEST.csv`（逐张 filename/width/height/bytes/sha256，after 20 张 + before 18 张）。
+- **张数口径（after 20 / before 18）**：after 的 20 张 = 与 before 完全同机位的 18 张 + `q2_attic_breast`、`day_attic_breast`。后两张是发现原 `q2_attic_view`/`q2_attic_chimney_side` 被床/屋面挡住、看不到阁楼段烟囱胸后**新加的机位**，只在 after 侧拍（before 侧是只读副本、补拍要改副本内的探针，故不再动），因此 after 比 before 多 2 张、不是 1 张；若只把 `q2_attic_breast` 计入则是 19 张，`day_attic_breast`（白天版同机位）为第 20 张。完整文件名见 MANIFEST.csv。
 
 ## 6. 回归（当前 HEAD 复跑；日志在 `01_fireplace/regress/`）
 
