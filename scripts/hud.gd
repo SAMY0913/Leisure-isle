@@ -20,6 +20,8 @@ signal weather_type_requested(type_id: String)
 const ScrubberCtl := preload("res://scripts/ui_time_scrubber.gd")
 ## P8 日历：把“年月日时分”离散编辑量换算成主时钟秒数（isle_calendar 为纯函数模块，不持有时钟）。
 const CalendarCtl := preload("res://scripts/isle_calendar.gd")
+## P8.1-07：五列 Apple 式日期时间滚轮（只编辑草稿，不持有时钟）。
+const WheelCtl := preload("res://scripts/ui_datetime_wheel.gd")
 ## 时间面板高度：普通态 / 日历展开态（只改布局，不改任何时间状态）。
 const TIME_PANEL_TOP := -524.0
 const TIME_PANEL_TOP_CAL := -744.0
@@ -101,7 +103,11 @@ var _cal_toggle: Button
 var _cal_section: VBoxContainer
 var _cal_open: bool = false
 var _cal_draft: Dictionary = {}
-var _cal_value_labels: Dictionary = {}
+## P8.1-07：五列滚轮控件（替换旧 5 行“单位 + − 数值 +”）；数值仍在 _cal_draft，跳转由 main 落地。
+var _cal_wheel: Control
+var _cal_jump_btn: Button
+var _cal_reset_btn: Button
+var _cal_wheel_busy: bool = false
 ## 用户已修改草稿但尚未跳转：此时不要用权威时钟回灌，避免把编辑内容冲掉。
 var _cal_dirty: bool = false
 var _cal_preview: Label
@@ -477,11 +483,16 @@ func _build_time_console() -> void:
 	_cal_section.add_theme_constant_override("separation", 6)
 	_cal_section.visible = false
 	v.add_child(_cal_section)
-	_cal_row(_cal_section, "year", "年")
-	_cal_row(_cal_section, "month", "月")
-	_cal_row(_cal_section, "day", "日")
-	_cal_row(_cal_section, "hour", "时")
-	_cal_row(_cal_section, "minute", "分")
+	# P8.1-07：五列 Apple 式滚轮替换旧“单位 + − 数值 +”五行；只编辑草稿，跳转仍由 main 权威时钟落地。
+	_cal_wheel = WheelCtl.new()
+	_cal_wheel.name = "DateTimeWheel"
+	_cal_section.add_child(_cal_wheel)
+	(_cal_wheel as Control).call("setup", _font, _time_source != "real")
+	_cal_wheel.custom_minimum_size = Vector2(316.0, 156.0)
+	_cal_wheel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_cal_wheel.tooltip_text = "拖动 / 鼠标滚轮 / 方向键调整；松手自动吸附；点“跳转到该时刻”才改变时间"
+	_cal_wheel.connect("parts_changed", Callable(self, "_on_cal_parts_changed"))
+	_cal_wheel.connect("editing_changed", Callable(self, "_on_cal_editing_changed"))
 	_cal_preview = _mk_label("", 11, Color(0.82, 0.76, 0.66, 0.92), 2)
 	_cal_preview.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_cal_section.add_child(_cal_preview)
@@ -492,9 +503,11 @@ func _build_time_console() -> void:
 	jump_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	jump_btn.custom_minimum_size = Vector2(0, 30)
 	jump_row.add_child(jump_btn)
+	_cal_jump_btn = jump_btn
 	var reset_btn := _mk_button("回到当前", 11, _on_cal_reset)
 	reset_btn.custom_minimum_size = Vector2(84, 30)
 	jump_row.add_child(reset_btn)
+	_cal_reset_btn = reset_btn
 
 	_time_note = _mk_label(TIME_NOTE_SIM, 10, Color(0.68, 0.62, 0.53, 0.9), 2)
 	_time_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -875,6 +888,10 @@ func _apply_time_mode_labels() -> void:
 		_cal_toggle.modulate = Color(1.0, 1.0, 1.0, 0.45) if real else Color(1.0, 1.0, 1.0, 1.0)
 		if real and _cal_open:
 			_close_calendar()
+	# P8.1-07：滚轮同样只读；真实模式关闭面板后列置灰（set_editable 会取消拖动/惯性）。
+	if _cal_wheel != null:
+		_cal_wheel.call("set_editable", not real)
+		_on_cal_editing_changed(bool(_cal_wheel_busy))
 	_apply_time_mode_buttons()
 
 ## 时间来源按钮高亮：现实时间 / 模拟时间，与设置菜单同一状态源（data.time_source）。
@@ -915,6 +932,8 @@ func _on_time_mode_pressed(mode: String) -> void:
 	_time_mode_ui = ""
 	time_mode_requested.emit(src)
 	_apply_time_mode_buttons()
+	# P8.1-07：来源切换会改变日历可编辑性（现实时间只读），立即重刷一次。
+	_apply_time_mode_labels()
 
 ## timezone_label 允许两种形态：完整标签（含 “UTC”/“·”）原样使用；纯 IANA id 则补上当前偏移。
 func _normalize_tz_label(raw: String) -> String:
@@ -1030,42 +1049,33 @@ func _toggle_calendar() -> void:
 	_time_panel.offset_top = TIME_PANEL_TOP_CAL if _cal_open else TIME_PANEL_TOP
 	_time_idle = 0.0
 	if _cal_open:
+		# 打开即从权威时钟灌草稿；现实时间模式仍只读（列 mouse_filter=IGNORE）。
+		if _cal_wheel != null:
+			_cal_wheel.call("set_editable", _time_source != "real")
 		_seed_cal_draft(true)
+	elif _cal_wheel != null:
+		_cal_wheel.call("cancel_drag")
 
 ## 折叠日历（收起时间面板 / 隐藏 HUD / 自动收折时调用）：不触发信号、不动时间状态。
 func _close_calendar() -> void:
+	# 先停掉滚轮拖动/惯性（节点仍在树里，避免关闭后继续 tick 抢焦点）。
+	if _cal_wheel != null:
+		_cal_wheel.call("cancel_drag")
 	if not _cal_open:
 		return
 	_cal_open = false
 	_cal_section.visible = false
 	_cal_toggle.text = "编辑日期与时间 ▾"
 	_time_panel.offset_top = TIME_PANEL_TOP
+	# C12 / 收起语义：未确认编辑不跨面板生命周期保留，重置为权威时间。
+	if _cal_dirty:
+		_seed_cal_draft(true)
 
 ## 收起时间面板的公共路径：同步收日历并恢复面板高度。
 func _collapse_time_panel() -> void:
 	_time_open = false
 	_time_panel.visible = false
 	_close_calendar()
-
-## 一行 [单位][−][数值][＋]；回调带字段名与增量，全部夹取走 isle_calendar.clamp_parts。
-func _cal_row(parent: VBoxContainer, field: String, title: String) -> void:
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 6)
-	parent.add_child(row)
-	var lab := _mk_label(title, 12, DIM, 2)
-	lab.custom_minimum_size = Vector2(26, 0)
-	row.add_child(lab)
-	var minus := _mk_button("−", 15, Callable(self, "_cal_step").bind(field, -1))
-	minus.custom_minimum_size = Vector2(36, 28)
-	row.add_child(minus)
-	var val := _mk_label("--", 16, CREAM, 3)
-	val.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	val.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	row.add_child(val)
-	_cal_value_labels[field] = val
-	var plus := _mk_button("+", 15, Callable(self, "_cal_step").bind(field, 1))
-	plus.custom_minimum_size = Vector2(36, 28)
-	row.add_child(plus)
 
 ## 从权威时钟回灌草稿（force=true 丢弃用户未跳转的编辑，用于“回到当前”）。
 func _seed_cal_draft(force: bool = false) -> void:
@@ -1079,63 +1089,71 @@ func _seed_cal_draft(force: bool = false) -> void:
 		"minute": int(_data.get("minute", 0)),
 	}
 	_cal_dirty = false
+	if _cal_wheel != null:
+		_cal_wheel.call("set_parts", _cal_draft)
 	_refresh_cal_labels()
 
+## P8.1-07：只刷新“预览”文案；五列数值由滚轮内部重绘。不要在这里按 visible 提前 return
+## （旧实现会挡住滚轮刷新，计划 §10.5 第 4 条）。
 func _refresh_cal_labels() -> void:
-	if _cal_value_labels.is_empty():
+	if _cal_preview == null:
 		return
-	for field in CAL_FIELDS:
-		if not _cal_value_labels.has(field):
-			continue
-		var lab := _cal_value_labels[field] as Label
-		if field == "year":
-			lab.text = "%04d" % int(_cal_draft.get("year", 2026))
-		elif field == "month":
-			lab.text = "%02d" % int(_cal_draft.get("month", 1))
-		elif field == "day":
-			lab.text = "%02d" % int(_cal_draft.get("day", 1))
-		elif field == "hour":
-			lab.text = "%02d" % int(_cal_draft.get("hour", 0))
-		else:
-			lab.text = "%02d" % int(_cal_draft.get("minute", 0))
-	if _cal_preview != null:
-		var cal := CalendarCtl.parts(CalendarCtl.to_local_seconds(
-			int(_cal_draft.get("year", 2026)), int(_cal_draft.get("month", 1)),
-			int(_cal_draft.get("day", 1)), int(_cal_draft.get("hour", 0)),
-			int(_cal_draft.get("minute", 0)), 0))
-		_cal_preview.text = "%s  %s" % [str(cal.get("date_label", "")), str(cal.get("weekday_cn", ""))]
+	var c: Dictionary = CalendarCtl.clamp_parts(
+		int(_cal_draft.get("year", 2026)), int(_cal_draft.get("month", 1)),
+		int(_cal_draft.get("day", 1)), int(_cal_draft.get("hour", 0)),
+		int(_cal_draft.get("minute", 0)), 0)
+	var cal: Dictionary = CalendarCtl.parts(CalendarCtl.to_local_seconds(
+		int(c["year"]), int(c["month"]), int(c["day"]),
+		int(c["hour"]), int(c["minute"]), 0))
+	var text := "%s  %s" % [str(cal.get("date_label", "")), str(cal.get("weekday_cn", ""))]
+	if _cal_dirty:
+		text += "  · 未确认"
+	_cal_preview.text = text
 
-## 单步编辑：年夹 1..9999；月 / 时 / 分跨边界回绕；日按当月天数夹取（由 clamp_parts 负责）。
+## 单步编辑（键盘兼容 / 旧按钮路径）：交给滚轮 step_field，并同步本 UI 草稿。
 func _cal_step(field: String, delta: int) -> void:
-	var y := int(_cal_draft.get("year", 2026))
-	var mo := int(_cal_draft.get("month", 1))
-	var d := int(_cal_draft.get("day", 1))
-	var h := int(_cal_draft.get("hour", 0))
-	var mi := int(_cal_draft.get("minute", 0))
-	match field:
-		"year":
-			y = clampi(y + delta, CalendarCtl.MIN_YEAR, CalendarCtl.MAX_YEAR)
-		"month":
-			mo = wrapi(mo + delta, 1, 13)
-		"day":
-			d += delta
-		"hour":
-			h = wrapi(h + delta, 0, 24)
-		"minute":
-			mi = wrapi(mi + delta, 0, 60)
-		_:
-			return
-	_cal_draft = CalendarCtl.clamp_parts(y, mo, d, h, mi, 0)
+	if _time_source == "real":
+		show_toast("现实时间模式 · 日期与时间只读")
+		return
+	if _cal_wheel != null:
+		_cal_wheel.call("step_field", field, delta)
+		_cal_draft = _cal_wheel.call("get_parts")
 	_cal_dirty = true
 	_time_idle = 0.0
 	_refresh_cal_labels()
 
+## 滚轮停稳后一次性回传（拖动/惯性过程中不发，避免每帧外部重算）。
+func _on_cal_parts_changed(parts: Dictionary) -> void:
+	_cal_draft = parts.duplicate()
+	_cal_dirty = true
+	_time_idle = 0.0
+	_refresh_cal_labels()
+
+## 滚轮忙碌状态：busy 时强制视为已编辑（阻止 update_all 回灌草稿）并刷新按钮可用性。
+func _on_cal_editing_changed(busy: bool) -> void:
+	_cal_wheel_busy = busy
+	var real: bool = _time_source == "real"
+	if busy:
+		_cal_dirty = true
+		_time_idle = 0.0
+	if _cal_jump_btn != null:
+		_cal_jump_btn.disabled = busy or real
+	if _cal_reset_btn != null:
+		_cal_reset_btn.disabled = real
+
+## 确认跳转：把滚轮当前值定格为草稿，再交给 main 的权威跳转入口（只发一次信号）。
 func _on_cal_jump() -> void:
 	if _time_source == "real":
 		show_toast("现实时间模式 · 日期与时间只读")
 		return
-	_cal_dirty = false
+	if _cal_wheel != null:
+		if bool(_cal_wheel.call("is_busy")):
+			_cal_wheel.call("cancel_drag")
+		_cal_draft = _cal_wheel.call("get_parts")
+		_cal_wheel.call("set_parts", _cal_draft)
 	_time_idle = 0.0
+	_cal_dirty = false
+	_refresh_cal_labels()
 	datetime_jump_requested.emit(
 		int(_cal_draft.get("year", 2026)), int(_cal_draft.get("month", 1)),
 		int(_cal_draft.get("day", 1)), int(_cal_draft.get("hour", 0)),
@@ -1305,11 +1323,13 @@ func _process(delta: float) -> void:
 		if _toast_t <= 0.0:
 			var tw := create_tween()
 			tw.tween_property(_toast, "modulate:a", 0.0, 0.4)
-	# 时间面板展开后若长时间无人操作自动收折，避免长期遮挡画面
+	# 时间面板展开后若长时间无人操作自动收折，避免长期遮挡画面。
+	# P8.1-07：滚轮拖动/惯性期间禁止收折（C11），否则编辑器会在手指下消失。
 	if _time_open:
+		var busy := _cal_open and _cal_wheel != null and bool(_cal_wheel.call("is_busy"))
 		var mp := get_viewport().get_mouse_position()
 		var over: bool = _time_panel.get_global_rect().has_point(mp)
-		if over:
+		if over or busy:
 			_time_idle = 0.0
 		else:
 			_time_idle += delta
