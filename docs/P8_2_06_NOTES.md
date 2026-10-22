@@ -240,3 +240,101 @@ draw_calls, objects, lights_active, light_budget, msaa_3d, max_fps, capture_ok
   _apply_resolution 在 _shots/_perf/_p8perf/_selftest/_transition 为 true 时才跳过。
 - 新探针上库后如果被任何启动路径 preload，会导致发布包 main.gd 解析失败（D14）；新增探针请保持
   只在 --script 下运行，且 export exclude_filter 保持 tools/*。
+
+---
+
+## 5. 冻结后流程（Lead 宣布代码冻结后照做的一串命令）
+
+> 本章是 3.4 的可执行版本，把"发布包 + 长时 soak + 证据门禁 + 冻结 tag"串成一条线，供最终阶段直接照抄。
+> 前提：**所有功能改动已提交**、G 段 runbook 已跑完、没有其他 teammate 正在跑引擎。
+
+### 5.0 记录起点 + 清锁（不占 GPU）
+
+    cd "D:/休闲小岛幻境/游戏工程"
+    git status --short                       # 期望空；若只剩非构建输入文件需 Lead 确认
+    git rev-parse HEAD                       # 记为 COMMIT_FREEZE，写进 TEST_RESULTS 1.1
+    git log --oneline -3
+    rm -rf "D:/休闲小岛幻境/开发产物/p82/.engine.lock"   # 清陈旧锁
+    ls "D:/休闲小岛幻境/开发产物/p82" | grep -i godot || echo "no godot process marker"   # 确认无并发引擎
+
+### 5.1 30 分钟正式 soak（唯一能触发 C1 趋势判据的运行，必须独占 GPU）
+
+    OUT="D:/休闲小岛幻境/开发产物/p82/final/soak_$(date +%Y%m%d_%H%M%S)"
+    mkdir -p "$OUT"
+    bash "D:/休闲小岛幻境/开发产物/p82/run_godot.sh" --path . --resolution 1600x900 \
+         --script res://tools/probe_p82_soak.gd -- --minutes=30 --out="$OUT" > "$OUT/stdout.txt" 2>&1
+    echo "EXIT=$?"
+
+- 期间**不要**并行跑 matrix / 其他探针 / 导出（会抢 GPU 并污染 frame 数据）。
+- 看结果：`$OUT/soak_*_summary.md`（VERDICT）、`$OUT/soak_*_summary.json`（criteria C1–C6）、`$OUT/stdout.txt` 尾部 RESULT 行。
+- 判定要求：**RESULT PASS 且退出码 0**；若 C1 FAIL（末窗 p95 超 首窗*1.25+2ms），先看是否被并发运行污染，再复跑一次；仍 FAIL 则报 Lead 定性。
+- final 目录形如 开发产物/p82/final/soak_<stamp>/，check_evidence.py 已支持扫描 开发产物/p82/final/*/soak*（final_run 判据 elapsed>=1500s）。
+
+### 5.2 证据门禁（不占 GPU，秒级）
+
+    cd "D:/休闲小岛幻境/开发产物/p82"
+    PYTHONIOENCODING=utf-8 python check_evidence.py --strict --json="D:/休闲小岛幻境/开发产物/p82/final/check_evidence_strict.json"
+
+- 期望：**PASS 41 / FAIL 0 / GAP 0 / WARN 0**（05_wheel 最新一次 11:28:16 为 fail=0；若届时它又出现 fail，会以 WARN 形式出现，不阻断但需在报告披露）。
+- 若 final_run 仍 GAP：检查 5.1 的输出是否落在 开发产物/p82/final/<RUN_ID>/soak/ 且摘要 elapsed_s >= 1500。
+- 结果行与 JSON 路径贴进 TEST_RESULTS §3。
+
+### 5.3 正式发布包（导出 + 独立验收，自动备份旧包）
+
+    cd "D:/休闲小岛幻境/开发产物/p82"
+
+    # (a) 先出一份 preview 复核（不动 发布/）
+    bash build_release.sh --out="D:/休闲小岛幻境/开发产物/p82/release_preview/final_$(date +%H%M%S)"
+    # (b) PASS 后正式覆盖：先备份旧包到 开发产物/backup/release_pre_p82/，再覆盖 发布/ 与 构建输出/
+    bash build_release.sh --copy-to-release
+    # (c) 独立只读验收 发布/休闲小岛幻境.exe（脚本默认就验收它）
+    bash verify_release.sh            # 期望 RESULT PASS；EXIT 0
+
+- (b) 会自动把旧包备份为 `开发产物/backup/release_pre_p82/休闲小岛幻境_pre_p82_<stamp>.exe`（含旧 size/sha 记录），
+  **回滚就把它 cp 回 发布/ 与 构建输出/**。
+- (c) 要核对期望值时：`bash verify_release.sh --exe="D:/休闲小岛幻境/发布/休闲小岛幻境.exe" --expect-sha256=<新sha> --expect-size=<新size> --expect-selftest=75/75`。
+- 预期：selftest **75/75**（P8.2 HEAD 分母；P8.1/base 是 73/73，别混用）。
+
+### 5.4 回填文档（不占 GPU）
+
+1. `docs/P8_2_TEST_RESULTS.md` §1.1 表：构建 commit（COMMIT_FREEZE）、构建时间、命令、导出日志路径、
+   正式包路径、体积、SHA256、--headless --quit 结果、--selftest（75/75）、包内容排除检查结论、
+   旧包备份路径、独立验收（verify_release）结果。
+2. §1.1 末尾补「与 c40376ad…b668 的差异说明」：
+   - **同源且代码未变** → 应完全一致（本阶段 base 副本预览导出已证明管线可复现）；
+   - 若不一致 → 列出差异来源（代码改动 / 引擎版本 / 导出模板 / preset 改动 / 时间戳相关字节），禁止用"应该没问题"糊过去。
+3. §2.6（06-A）把"短跑"标注替换为 30min 结果（首末窗 p50/p95、C1 结论、final 目录）。
+4. §3 贴 `--strict` 的汇总行。
+5. 若 02 模块已合并：补 §2.2 并按 §5 TODO 第 4 条核对 light_sources 探针期望（PRE-6）。
+
+### 5.5 冻结 tag 与回滚命令
+
+    cd "D:/休闲小岛幻境/游戏工程"
+    git tag -a "p8.2-final" -m "P8.2 final: <COMMIT_FREEZE> 发布包 sha256 <new_sha> selftest 75/75" <COMMIT_FREEZE>
+    git tag -l "p8.2*"
+    git show --stat --oneline "p8.2-final" | head -20
+
+回滚（出问题时按序执行）：
+
+    # 1) 回滚发布包（用 5.3(b) 的备份）
+    cp "D:/休闲小岛幻境/开发产物/backup/release_pre_p82/休闲小岛幻境_pre_p82_<stamp>.exe" \
+       "D:/休闲小岛幻境/发布/休闲小岛幻境.exe"
+    cp "D:/休闲小岛幻境/开发产物/backup/release_pre_p82/休闲小岛幻境_pre_p82_<stamp>.exe" \
+       "D:/休闲小岛幻境/构建输出/休闲小岛幻境.exe"
+    sha256sum "D:/休闲小岛幻境/发布/休闲小岛幻境.exe"     # 应回到旧包 sha256
+    # 2) 回滚代码（tag 只读锚点，不改历史）：在分支上 revert 相关提交，禁止 reset --hard 已推送历史
+    git revert <坏提交sha> --no-edit
+    # 3) 回滚 tag（仅在 tag 尚未对外发布时）
+    git tag -d "p8.2-final"
+
+    # 注意：禁止 git reset --hard / amend 已提交历史；回滚一律用 revert + 备份包还原。
+
+### 5.6 冻结后流程一键检查清单
+
+- [ ] 5.1 soak RESULT PASS（exit 0，C1 生效）
+- [ ] 5.2 check_evidence --strict：FAIL 0 / GAP 0
+- [ ] 5.3 preview PASS → --copy-to-release PASS → verify_release PASS（旧包已备份）
+- [ ] 5.4 TEST_RESULTS §1.1 / §2.6 / §3 全部回填，差异说明已写
+- [ ] 5.5 tag p8.2-final 已打，回滚路径已验证（备份包存在 + sha256 可读）
+- [ ] 报告给 Lead：新包 size/sha256/版本、selftest 分数、soak 首末窗数据、strict 结果、tag 名
+
