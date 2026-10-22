@@ -113,6 +113,12 @@ func set_parts(p: Dictionary) -> void:
 	_col("hour").set_value_immediate(int(c["hour"]))
 	_col("minute").set_value_immediate(int(c["minute"]))
 	_sync_day_range()
+	# 程序化灌值不算用户编辑：同步 _last_parts，避免下一次 tick() 把同一组值当成新值再发 parts_changed
+	# （否则 HUD 打开日历 / 点“回到当前”后 _cal_dirty 会被误置 true）。
+	if _cols.size() == FIELDS.size():
+		_last_parts = get_parts()
+	_refresh_busy()
+	queue_redraw()
 
 ## 读回当前五列（已按公历夹取；不含秒——秒由 main._jump_datetime 固定为 0）。
 func get_parts() -> Dictionary:
@@ -691,14 +697,15 @@ class WheelColumn:
 		if event is InputEventMouseButton:
 			var mb := event as InputEventMouseButton
 			if mb.button_index == MOUSE_BUTTON_WHEEL_UP:
-				if _editable:
+				# 只认按下事件：部分平台/合成事件会给滚轮补一个 released，若不判断会滚动两格。
+				if mb.pressed and _editable:
 					grab_focus()
 					notch(-1)
 				if is_inside_tree():
 					accept_event()
 				return
 			if mb.button_index == MOUSE_BUTTON_WHEEL_DOWN:
-				if _editable:
+				if mb.pressed and _editable:
 					grab_focus()
 					notch(1)
 				if is_inside_tree():
