@@ -33,6 +33,11 @@ global uniform vec4 g_l6_pos;
 global uniform vec4 g_l6_col;
 global uniform vec4 g_l7_pos;
 global uniform vec4 g_l7_col;
+global uniform vec4 g_l8_pos;
+global uniform vec4 g_l8_col;
+global uniform vec4 g_l9_pos;
+global uniform vec4 g_l9_col;
+// P8.1-06：草只消费室外池（g_l0..g_l9），g_light_count = 室外池激活盏数；室内池不参与。
 // P8.1-03 冬季白化（与 toon.gdshader 同名同义；由 main.gd 每帧/一次性写入）：
 // g_winter = (whiteness, frost, ground_tint, foliage_desat)；g_house/g_house2/g_roof = 小屋室内体积。
 global uniform vec4 g_winter;
@@ -125,8 +130,8 @@ void fragment() {
 	vec3 col = base * (ambient + g_sun_color.rgb * cel * 0.78 + g_moon_color.rgb * moon * 0.22);
 	// 夜间局部暖光：草叶靠近灯时应受光，否则在灯下是一团黑
 	if (g_light_count > 0.5) {
-		float lamp = 0.0;
-		for (int i = 0; i < 8; i++) {
+		vec3 lamp = vec3(0.0);
+		for (int i = 0; i < 10; i++) {
 			if (float(i) >= g_light_count) { break; }
 			vec4 lp = g_l0_pos;
 			vec4 lc = g_l0_col;
@@ -137,14 +142,16 @@ void fragment() {
 			else if (i == 5) { lp = g_l5_pos; lc = g_l5_col; }
 			else if (i == 6) { lp = g_l6_pos; lc = g_l6_col; }
 			else if (i == 7) { lp = g_l7_pos; lc = g_l7_col; }
+			else if (i == 8) { lp = g_l8_pos; lc = g_l8_col; }
+			else if (i == 9) { lp = g_l9_pos; lc = g_l9_col; }
 			vec3 d = lp.xyz - v_world;
 			float dist = length(d);
 			float att = clamp(1.0 - dist / max(lp.w, 0.001), 0.0, 1.0);
 			att *= att;
 			float ndl2 = clamp(dot(Nw, d / max(dist, 0.001)) * 0.5 + 0.5, 0.0, 1.0);
-			lamp += att * (0.25 + 0.75 * ndl2) * lc.a;
+			lamp += att * (0.25 + 0.75 * ndl2) * lc.rgb * lc.a;
 		}
-		col += base * vec3(1.0, 0.78, 0.48) * lamp;
+		col += base * lamp;
 	}
 	float fres = pow(1.0 - clamp(dot(Nw, V), 0.0, 1.0), 2.0);
 	col += g_sun_color.rgb * fres * 0.10;

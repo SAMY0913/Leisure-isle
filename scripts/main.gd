@@ -199,10 +199,20 @@ var _window_halos: Array = []
 var _lantern_mat: ShaderMaterial
 var _lantern_halo: MeshInstance3D
 var _lantern_halos: Array = []
+# P8.1-06：一层/阁楼吊灯灯罩材质（self_lit=false + glow），按昼夜调光。
+var _interior_shade_mats: Array = []
 var _lamp_mats: Array = []
 var _lamp_halos: Array = []
 var _light_sources: Array = []
 var _lights: Array = []
+# P8.1-06 双池：_lights 是全部候选（路灯 + 室外 + 室内，共 18 条）；每帧由 _compute_light_pools()
+# 按 rank/priority 拆成室外池（写 g_l0..g_l9）与室内池（写 g_l10..g_l15）后截断。
+var _lights_outdoor: Array = []
+var _lights_indoor: Array = []
+var _light_out_budget := 10
+var _light_in_budget := 3
+# 船灯淡入淡出权重：只在帆船可见时替换「窗光聚合槽」，避免瞬时跳变。
+var _boat_light_gain := 0.0
 var _splash = null
 var _wake = null
 var _windmill_blades: Node3D = null
@@ -316,7 +326,7 @@ var _dbg_fog_far := 0.0
 const Settings := preload("res://scripts/isle_settings.gd")
 var _settings: Dictionary = {}
 var _quality := 2
-var _light_budget := 8
+var _light_budget := 12
 var _quality_state: Dictionary = {}
 var _sea_subdiv := 180
 var _hud_quality_label := "高 · 精致"
@@ -515,6 +525,9 @@ func _setup_globals() -> void:
 	RenderingServer.global_shader_parameter_set("g_outline_color", Color(0.12, 0.13, 0.17))
 	# 局部灯光（unshaded toon 材质不吃引擎灯光，这里自算最多 6 盏，见 toon.gdshader）
 	_add_global("g_light_count", RenderingServer.GLOBAL_VAR_TYPE_FLOAT)
+	# P8.1-06 双池：g_light_count = 室外池盏数（g_l0..g_l9）；g_light_indoor = 室内池盏数（g_l10..g_l15）。
+	# toon.gdshader 按 indoor_mask 逐片元选池，草只消费室外池。
+	_add_global("g_light_indoor", RenderingServer.GLOBAL_VAR_TYPE_FLOAT)
 	# 灯塔旋转光束（toon / sea 共用的解析光锥参数）
 	_add_global("g_beam_origin", RenderingServer.GLOBAL_VAR_TYPE_VEC3)
 	_add_global("g_beam_dir", RenderingServer.GLOBAL_VAR_TYPE_VEC3)
@@ -529,8 +542,8 @@ func _setup_globals() -> void:
 	RenderingServer.global_shader_parameter_set("g_spot_dir", Vector3(0.0, 0.0, -1.0))
 	RenderingServer.global_shader_parameter_set("g_spot_color", Color(0.0, 0.0, 0.0, 0.0))
 	RenderingServer.global_shader_parameter_set("g_spot_params", Vector4(0.90, 0.985, BOAT_SPOT_RANGE, 0.0))
-	# Phase6：局部灯上限从 8 提到 12（toon/grass/glass 同步扩到 12 盏）
-	for i in range(12):
+	# Phase6：局部灯上限从 8 提到 12；P8.1-06 双池后扩到 16（室外 g_l0..g_l9 + 室内 g_l10..g_l15）。
+	for i in range(16):
 		_add_global("g_l%d_pos" % i, RenderingServer.GLOBAL_VAR_TYPE_VEC4)
 		_add_global("g_l%d_col" % i, RenderingServer.GLOBAL_VAR_TYPE_VEC4)
 		RenderingServer.global_shader_parameter_set("g_l%d_pos" % i, Vector4(0.0, -999.0, 0.0, 1.0))
@@ -637,6 +650,10 @@ func _build_world() -> void:
 	_lantern_halos = (_cottage.get("lantern_halos", []) as Array).duplicate()
 	if _lantern_halos.is_empty() and _lantern_halo != null:
 		_lantern_halos.append(_lantern_halo)
+	_interior_shade_mats = []
+	for m in (_cottage.get("interior_shade_mats", []) as Array):
+		if m is ShaderMaterial:
+			_interior_shade_mats.append(m)
 	_lamp_mats = (_world.get("lamp_mats", []) as Array).duplicate()
 	_lamp_halos = (_world.get("lamp_halos", []) as Array).duplicate()
 	# 夜间光晕尺寸收敛：halo 是广告牌面片，原尺寸在近景会变成直径 1m+ 的光球
@@ -1930,38 +1947,22 @@ func _update_lighting() -> void:
 	RenderingServer.global_shader_parameter_set("g_fog_far", _dbg_fog_far)
 	RenderingServer.global_shader_parameter_set("g_wind_time", _frame_t)
 	RenderingServer.global_shader_parameter_set("g_outline_color", _lin(p["outline"]))
-	# 夜间局部灯光 → 全局 uniform（toon/grass/glass 在片元里自算点光衰减）
+	# 夜间局部灯光 → 全局 uniform（toon/grass 在片元里自算点光衰减）
 	var light_scale := clampf(0.10 + float(p["lanternI"]) * 1.05, 0.0, 1.30)
-	# 画质预设可降低参与着色的局部灯数量（4 / 6 / 8），其余仍保留自发光模型与光晕
-	# 船载悬挂灯：动态点光（跟随船体，优先占第一盏；亮度由 light_scale 随昼夜自动收敛）
-	var lights: Array = _lights
-	if _sailboat != null and _boat_fade > 0.02 and _boat_state != "OFFSCREEN_WAIT":
-		var bl := {
-			"pos": _sailboat.to_global(_boat_lantern_local),
-			"color": Color(1.0, 0.74, 0.40),
-			"energy": 1.30,
-			"range": 6.5,
-		}
-		var tmp_lights: Array = [bl]
-		tmp_lights.append_array(_lights)
-		lights = tmp_lights
-	# P7-V2：路灯保底。即使玩家把 light_budget 调低（或旧存档预算很小），
-	# 6 盏路灯 + 可能的船灯也必须全部参与着色，不允许高级选项意外关掉道路照明。
-	var lamp_need := 0
-	for L0 in _lights:
-		if String((L0 as Dictionary).get("kind", "")) == "street_lamp":
-			lamp_need += 1
-	var boat_extra := maxi(lights.size() - _lights.size(), 0)
-	var active_lights := maxi(mini(_light_budget, 12), lamp_need + boat_extra)
-	active_lights = mini(active_lights, mini(lights.size(), 12))
-	for i in range(12):
-		if i < active_lights:
-			var L: Dictionary = lights[i]
+	# P8.1-06 双池：室外池写 g_l0..g_l9，室内池写 g_l10..g_l15（互斥，由 toon indoor_mask 选池）。
+	var pools := _compute_light_pools()
+	var out_sel: Array = pools["out"]
+	var in_sel: Array = pools["in"]
+	_lights_outdoor = out_sel
+	_lights_indoor = in_sel
+	# 极轻微火光呼吸，避免死板；白天整体压暗。
+	# P8.1-03 证据：对照截图期间可钉住呼吸相位（_p81_pin_light_t），消除时相污染。
+	var lt := _frame_t if _p81_pin_light_t < 0.0 else _p81_pin_light_t
+	for i in range(10):
+		if i < out_sel.size():
+			var L: Dictionary = out_sel[i]
 			var lpos: Vector3 = L["pos"]
 			var lcol: Color = _lin(L["color"])
-			# 极轻微火光呼吸，避免死板；白天整体压暗
-			# P8.1-03 证据：对照截图期间可钉住呼吸相位（_p81_pin_light_t），消除时相污染。
-			var lt := _frame_t if _p81_pin_light_t < 0.0 else _p81_pin_light_t
 			var fl := 1.0 + sin(lt * 6.7 + float(i) * 2.1) * 0.05 + sin(lt * 11.9 + float(i) * 1.3) * 0.025
 			var en := float(L["energy"]) * light_scale * fl
 			RenderingServer.global_shader_parameter_set("g_l%d_pos" % i, Vector4(lpos.x, lpos.y, lpos.z, float(L["range"])))
@@ -1969,7 +1970,27 @@ func _update_lighting() -> void:
 		else:
 			RenderingServer.global_shader_parameter_set("g_l%d_pos" % i, Vector4(0.0, -999.0, 0.0, 1.0))
 			RenderingServer.global_shader_parameter_set("g_l%d_col" % i, Vector4.ZERO)
-	RenderingServer.global_shader_parameter_set("g_light_count", float(active_lights))
+	for j in range(6):
+		var slot := 10 + j
+		if j < in_sel.size():
+			var L2: Dictionary = in_sel[j]
+			var lpos2: Vector3 = L2["pos"]
+			var lcol2: Color = _lin(L2["color"])
+			# 壁炉呼吸振幅更大（火焰感），其余灯保持轻微呼吸。
+			var amp_a := 0.05
+			var amp_b := 0.025
+			if String(L2.get("kind", "")) == "fireplace":
+				amp_a = 0.10
+				amp_b = 0.05
+			var fl2 := 1.0 + sin(lt * 6.7 + float(slot) * 2.1) * amp_a + sin(lt * 11.9 + float(slot) * 1.3) * amp_b
+			var en2 := float(L2["energy"]) * light_scale * fl2
+			RenderingServer.global_shader_parameter_set("g_l%d_pos" % slot, Vector4(lpos2.x, lpos2.y, lpos2.z, float(L2["range"])))
+			RenderingServer.global_shader_parameter_set("g_l%d_col" % slot, Vector4(lcol2.r, lcol2.g, lcol2.b, en2))
+		else:
+			RenderingServer.global_shader_parameter_set("g_l%d_pos" % slot, Vector4(0.0, -999.0, 0.0, 1.0))
+			RenderingServer.global_shader_parameter_set("g_l%d_col" % slot, Vector4.ZERO)
+	RenderingServer.global_shader_parameter_set("g_light_count", float(out_sel.size()))
+	RenderingServer.global_shader_parameter_set("g_light_indoor", float(in_sel.size()))
 	# vignette
 	_vignette_mat.set_shader_parameter("vignette_strength", float(p["vignette"]))
 	_vignette_mat.set_shader_parameter("grain_amount", float(p["grain"]))
@@ -1993,6 +2014,10 @@ func _update_lighting() -> void:
 				(hm as StandardMaterial3D).albedo_color = Color(1.35 * wf, 0.86 * wf, 0.43 * wf, 1.0)
 	if _lantern_mat != null:
 		_lantern_mat.set_shader_parameter("glow", 0.06 + float(p["lanternI"]) * 1.0)
+	# P8.1-06：一层/阁楼吊灯灯罩昼夜调光（白天微亮、夜里全亮）；灯罩本体不再 self_lit。
+	for m in _interior_shade_mats:
+		if m is ShaderMaterial:
+			(m as ShaderMaterial).set_shader_parameter("glow", 0.10 + float(p["lanternI"]) * 1.05)
 	var lf := clampf(0.03 + pow(float(p["lanternI"]), 1.6) * 0.85, 0.0, 1.6)
 	var lantern_halos: Array = _lantern_halos
 	if lantern_halos.is_empty() and _lantern_halo != null:
@@ -4107,6 +4132,114 @@ func _scale_halos(arr: Array, k: float) -> void:
 			(h as Node3D).scale = (h as Node3D).scale * k
 
 # ============================================================
+# P8.1-06 双池：把 _lights 拆成室外池（g_l0..g_l9）/ 室内池（g_l10..g_l15）
+# 槽位契约见 toon.gdshader 顶部注释；室内外由片元 indoor_mask 判定，与摄像机无关。
+# ============================================================
+
+## 双池 rank：数值小的优先保留（同 rank 按 priority 降序、再 energy 降序）。
+func _light_rank_of(kind: String, indoor: bool) -> int:
+	if indoor:
+		match kind:
+			"fireplace":
+				return 0
+			"chandelier":
+				return 1
+			"table_lamp":
+				return 2
+			"floor_lamp":
+				return 3
+			"attic_chandelier":
+				return 4
+			"attic_table_lamp":
+				return 5
+			_:
+				return 9
+	# Lead 复核 2026-10-22：码头灯提前到 rank 2（priority 800）——q2 默认档必须能看到码头灯照明，
+	# 否则「户外灯照亮附近环境」在默认档失效（任务书 §6）。顺序：路灯0 → 灯塔1 → 码头2 → 门廊3 → 窗光4。
+	match kind:
+		"street_lamp":
+			return 0
+		"lighthouse":
+			return 1
+		"dock":
+			return 2
+		"porch_lantern":
+			return 3
+		"window_glow":
+			return 4
+		"boat_lantern":
+			return 4
+		_:
+			return 5
+
+func _light_rank_less(a: Dictionary, b: Dictionary) -> bool:
+	var ra := _light_rank_of(String(a.get("kind", "other")), bool(a.get("indoor", false)))
+	var rb := _light_rank_of(String(b.get("kind", "other")), bool(b.get("indoor", false)))
+	if ra != rb:
+		return ra < rb
+	var pa := int(a.get("priority", 0))
+	var pb := int(b.get("priority", 0))
+	if pa != pb:
+		return pa > pb
+	return float(a.get("energy", 0.0)) > float(b.get("energy", 0.0))
+
+## 按当前画质预算切池：室外 = light_budget - 室内预算（上限 10），室内 = LIGHT_INDOOR_BUDGET（上限 6）。
+## 船灯只在帆船可见时替换「窗光聚合槽」（淡入淡出），绝不挤掉码头灯/门廊灯/壁炉。
+func _compute_light_pools() -> Dictionary:
+	var in_budget := maxi(1, mini(6, IsleQuality.light_indoor_budget(_quality)))
+	var out_budget := clampi(_light_budget - in_budget, 1, 10)
+	# P7-V2 路灯保底：室外池至少留 6 槽，避免旧存档/低预算把道路照明整排挤掉。
+	out_budget = maxi(out_budget, mini(6, 10))
+	var out_pool: Array = []
+	var in_pool: Array = []
+	for L0 in _lights:
+		var Ld: Dictionary = L0
+		if bool(Ld.get("indoor", false)):
+			in_pool.append(Ld)
+		else:
+			out_pool.append(Ld)
+	var target := 0.0
+	if _sailboat != null and _boat_fade > 0.02 and _boat_state != "OFFSCREEN_WAIT":
+		target = 1.0
+	_boat_light_gain = move_toward(_boat_light_gain, target, get_process_delta_time() * 2.5)
+	if _boat_light_gain > 0.001 and _sailboat != null:
+		var filtered: Array = []
+		for Lb in out_pool:
+			if String((Lb as Dictionary).get("kind", "")) != "window_glow":
+				filtered.append(Lb)
+		filtered.append({
+			"pos": _sailboat.to_global(_boat_lantern_local),
+			"color": Color(1.0, 0.74, 0.40),
+			"energy": 1.30 * _boat_light_gain,
+			"range": 6.5,
+			"kind": "boat_lantern",
+			"indoor": false,
+			"priority": 665,
+		})
+		out_pool = filtered
+	out_pool.sort_custom(_light_rank_less)
+	in_pool.sort_custom(_light_rank_less)
+	_light_out_budget = out_budget
+	_light_in_budget = in_budget
+	return {
+		"out": out_pool.slice(0, out_budget),
+		"in": in_pool.slice(0, in_budget),
+		"out_budget": out_budget,
+		"in_budget": in_budget,
+	}
+
+## debug_light_state 的池条目投影（保留旧键 lights 的字段形状）。
+func _light_pool_entry(L: Dictionary) -> Dictionary:
+	return {
+		"kind": String(L.get("kind", "other")),
+		"pos": L["pos"],
+		"color": L["color"],
+		"energy": float(L["energy"]),
+		"range": float(L["range"]),
+		"indoor": bool(L.get("indoor", false)),
+		"priority": int(L.get("priority", 0)),
+	}
+# ============================================================
 # 夜间局部灯光：收集 cottage / world 提供的 light_sources
 # 结构：{pos: Vector3, color: Color, energy: float, range: float}（可选 node）
 # ============================================================
@@ -4137,6 +4270,9 @@ func _collect_lights() -> void:
 			"energy": float(ldct.get("energy", ldct.get("intensity", 1.35))),
 			"range": maxf(float(ldct.get("range", ldct.get("radius", 7.5))), 0.6),
 			"kind": "street_lamp",
+			"indoor": false,
+			# 同 rank 内用 priority 保持世界路灯原始顺序（探针按坐标逐盏核对）。
+			"priority": 1000 - lamp_lights.size(),
 		})
 	var norm: Array = []
 	for src in _light_sources:
@@ -4171,43 +4307,65 @@ func _collect_lights() -> void:
 					if dl is Dictionary and (dl as Dictionary).has("pos"):
 						if pos.distance_squared_to((dl as Dictionary)["pos"] as Vector3) < 0.25:
 							kind = "dock"
-		norm.append({"pos": pos, "color": col, "energy": energy, "range": maxf(rng, 0.6), "kind": kind})
-	# 取最重要的 12 盏（toon/grass shader 上限）；路灯永远在最前，任意画质截断都不会丢道路照明。
+		# P8.1-06 双池：cottage 源自带 indoor/priority（灯种语义），world 源按 kind 补默认权重。
+		var indoor := bool(d.get("indoor", false))
+		var prio := int(d.get("priority", 0))
+		if prio == 0:
+			match kind:
+				"lighthouse":
+					prio = 900
+				"dock":
+					prio = 800
+				_:
+					prio = 500
+		norm.append({"pos": pos, "color": col, "energy": energy, "range": maxf(rng, 0.6), "kind": kind, "indoor": indoor, "priority": prio})
+	# P8.1-06：不再在这里按 energy 截断（双池上限由 _compute_light_pools 按画质分别限制：
+	# 室外 10 槽 + 室内 6 槽）。_lights 保留全部候选，路灯永远在最前（probe 逐盏核对坐标）。
 	norm.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a["energy"]) > float(b["energy"]))
 	var merged: Array = []
 	merged.append_array(lamp_lights)
 	merged.append_array(norm)
-	_lights = merged.slice(0, 12)
-	RenderingServer.global_shader_parameter_set("g_light_count", float(_lights.size()))
+	_lights = merged
+	_lights_outdoor = []
+	_lights_indoor = []
+	RenderingServer.global_shader_parameter_set("g_light_count", 0.0)
+	RenderingServer.global_shader_parameter_set("g_light_indoor", 0.0)
 
-## P7-V2 探针接口：当前参与着色的光源清单（含 kind 标签）与真实路灯世界坐标。
+## P7-V2 / P8.1-06 探针接口：当前参与着色的光源清单（含 kind 标签）、双池明细与真实路灯世界坐标。
+## 旧键（lights / active / budget / lamp_count / lamp_positions）保持兼容：lights = 室外池 + 室内池，前 6 盏仍是路灯。
 func debug_light_state() -> Dictionary:
+	var pools := _compute_light_pools()
+	var out_sel: Array = pools["out"]
+	var in_sel: Array = pools["in"]
 	var arr: Array = []
-	for L in _lights:
-		arr.append({
-			"kind": String(L.get("kind", "other")),
-			"pos": L["pos"],
-			"color": L["color"],
-			"energy": float(L["energy"]),
-			"range": float(L["range"]),
-		})
+	for L in out_sel:
+		arr.append(_light_pool_entry(L))
+	for L in in_sel:
+		arr.append(_light_pool_entry(L))
 	var lamp_positions: Array = []
 	for l in (_world.get("lamps", []) as Array):
 		if l is Array and (l as Array).size() >= 3 and typeof((l as Array)[2]) == TYPE_DICTIONARY:
 			var ld: Dictionary = (l as Array)[2]
 			lamp_positions.append(ld.get("pos", ld.get("position", Vector3.ZERO)))
-	# 与 _update_lighting 的 active_lights 口径一致（不含临时船灯；船灯可见时实际再多 1 盏）。
-	var lamp_need := 0
-	for L in _lights:
-		if String((L as Dictionary).get("kind", "")) == "street_lamp":
-			lamp_need += 1
+	var pool_out: Array = []
+	for Lo in out_sel:
+		pool_out.append(_light_pool_entry(Lo))
+	var pool_in: Array = []
+	for Li in in_sel:
+		pool_in.append(_light_pool_entry(Li))
 	return {
 		"quality": _quality,
 		"budget": _light_budget,
-		"active": mini(_lights.size(), maxi(mini(_light_budget, 12), lamp_need)),
+		"active": out_sel.size() + in_sel.size(),
 		"lamp_count": lamp_positions.size(),
 		"lamp_positions": lamp_positions,
 		"lights": arr,
+		"pool_outdoor": pool_out,
+		"pool_indoor": pool_in,
+		"outdoor_count": out_sel.size(),
+		"indoor_count": in_sel.size(),
+		"outdoor_budget": int(pools["out_budget"]),
+		"indoor_budget": int(pools["in_budget"]),
 	}
 
 # ============================================================
@@ -5426,7 +5584,8 @@ func _apply_quality(q: int) -> void:
 		_sea_mat.set_shader_parameter("sea_normal_detail", float(sp.get("sea_normal_detail", 1.0)))
 		_sea_mat.set_shader_parameter("sea_foam_detail", float(sp.get("sea_foam_detail", 1.0)))
 		_sea_mat.set_shader_parameter("sea_refl_detail", float(sp.get("sea_refl_detail", 1.0)))
-	_light_budget = int(p.get("light_budget", 8))
+	# P8.1-06：双池 16 槽后预算下限 10（低画质不关灯）、上限 16；旧存档里的 7/8 在此被抬到 10。
+	_light_budget = clampi(int(p.get("light_budget", 12)), 10, 16)
 	_apply_sea_mesh(float(p.get("sea_mesh_scale", 1.0)))
 	_apply_lod_bias(float(p.get("lod_bias", 1.0)))
 	# 自定义 AO：开关由 posts_ao 布尔决定（同时兼容菜单高级覆盖写入的 UI 别名 post_ao），
@@ -5484,11 +5643,11 @@ func _apply_quality(q: int) -> void:
 ## 五档兜底参数表（isle_quality.gd 缺键时补齐；数值即真实渲染参数）。
 func _fallback_quality_params(q: int) -> Dictionary:
 	var tiers: Array = [
-		{"msaa_3d": 0, "msaa_2d": 0, "screen_space_aa": 1, "taa": false, "scaling_3d_scale": 0.82, "scaling_3d_mode": 0, "max_fps": 45, "sky_cloud_detail": 0.0, "sea_wave_detail": 0.35, "sea_foam": 0.35, "sea_reflection": 0.0, "sea_ssr": 0.0, "sea_mesh_scale": 0.55, "grass_density": 0.45, "particle_density": 0.45, "light_budget": 7, "glow_strength": 0.45, "tonemap": 0, "exposure": 1.0, "lod_bias": 0.8},
-		{"msaa_3d": 1, "msaa_2d": 0, "screen_space_aa": 1, "taa": false, "scaling_3d_scale": 0.95, "scaling_3d_mode": 0, "max_fps": 60, "sky_cloud_detail": 1.0, "sea_wave_detail": 0.65, "sea_foam": 0.6, "sea_reflection": 1.0, "sea_ssr": 0.0, "sea_mesh_scale": 0.8, "grass_density": 0.72, "particle_density": 0.65, "light_budget": 8, "glow_strength": 0.6, "tonemap": 1, "exposure": 1.0, "lod_bias": 1.0},
-		{"msaa_3d": 2, "msaa_2d": 1, "screen_space_aa": 1, "taa": false, "scaling_3d_scale": 1.0, "scaling_3d_mode": 0, "max_fps": 0, "sky_cloud_detail": 2.0, "sea_wave_detail": 1.0, "sea_foam": 0.78, "sea_reflection": 1.0, "sea_ssr": 0.0, "sea_mesh_scale": 1.0, "grass_density": 1.0, "particle_density": 0.85, "light_budget": 9, "glow_strength": 0.6, "tonemap": 2, "exposure": 1.0, "lod_bias": 1.1},
-		{"msaa_3d": 2, "msaa_2d": 1, "screen_space_aa": 2, "taa": false, "scaling_3d_scale": 1.2, "scaling_3d_mode": 0, "max_fps": 0, "sky_cloud_detail": 3.0, "sea_wave_detail": 1.45, "sea_foam": 0.9, "sea_reflection": 1.0, "sea_ssr": 0.6, "sea_mesh_scale": 1.3, "grass_density": 1.0, "particle_density": 1.0, "light_budget": 11, "glow_strength": 0.75, "tonemap": 3, "exposure": 1.03, "lod_bias": 1.3},
-		{"msaa_3d": 3, "msaa_2d": 1, "screen_space_aa": 2, "taa": true, "scaling_3d_scale": 1.5, "scaling_3d_mode": 0, "max_fps": 0, "sky_cloud_detail": 3.0, "sea_wave_detail": 2.0, "sea_foam": 1.0, "sea_reflection": 1.0, "sea_ssr": 1.0, "sea_mesh_scale": 1.6, "grass_density": 1.0, "particle_density": 1.15, "light_budget": 12, "glow_strength": 0.9, "tonemap": 3, "exposure": 1.06, "lod_bias": 1.5},
+		{"msaa_3d": 0, "msaa_2d": 0, "screen_space_aa": 1, "taa": false, "scaling_3d_scale": 0.82, "scaling_3d_mode": 0, "max_fps": 45, "sky_cloud_detail": 0.0, "sea_wave_detail": 0.35, "sea_foam": 0.35, "sea_reflection": 0.0, "sea_ssr": 0.0, "sea_mesh_scale": 0.55, "grass_density": 0.45, "particle_density": 0.45, "light_budget": 10, "glow_strength": 0.45, "tonemap": 0, "exposure": 1.0, "lod_bias": 0.8},
+		{"msaa_3d": 1, "msaa_2d": 0, "screen_space_aa": 1, "taa": false, "scaling_3d_scale": 0.95, "scaling_3d_mode": 0, "max_fps": 60, "sky_cloud_detail": 1.0, "sea_wave_detail": 0.65, "sea_foam": 0.6, "sea_reflection": 1.0, "sea_ssr": 0.0, "sea_mesh_scale": 0.8, "grass_density": 0.72, "particle_density": 0.65, "light_budget": 11, "glow_strength": 0.6, "tonemap": 1, "exposure": 1.0, "lod_bias": 1.0},
+		{"msaa_3d": 2, "msaa_2d": 1, "screen_space_aa": 1, "taa": false, "scaling_3d_scale": 1.0, "scaling_3d_mode": 0, "max_fps": 0, "sky_cloud_detail": 2.0, "sea_wave_detail": 1.0, "sea_foam": 0.78, "sea_reflection": 1.0, "sea_ssr": 0.0, "sea_mesh_scale": 1.0, "grass_density": 1.0, "particle_density": 0.85, "light_budget": 12, "glow_strength": 0.6, "tonemap": 2, "exposure": 1.0, "lod_bias": 1.1},
+		{"msaa_3d": 2, "msaa_2d": 1, "screen_space_aa": 2, "taa": false, "scaling_3d_scale": 1.2, "scaling_3d_mode": 0, "max_fps": 0, "sky_cloud_detail": 3.0, "sea_wave_detail": 1.45, "sea_foam": 0.9, "sea_reflection": 1.0, "sea_ssr": 0.6, "sea_mesh_scale": 1.3, "grass_density": 1.0, "particle_density": 1.0, "light_budget": 14, "glow_strength": 0.75, "tonemap": 3, "exposure": 1.03, "lod_bias": 1.3},
+		{"msaa_3d": 3, "msaa_2d": 1, "screen_space_aa": 2, "taa": true, "scaling_3d_scale": 1.5, "scaling_3d_mode": 0, "max_fps": 0, "sky_cloud_detail": 3.0, "sea_wave_detail": 2.0, "sea_foam": 1.0, "sea_reflection": 1.0, "sea_ssr": 1.0, "sea_mesh_scale": 1.6, "grass_density": 1.0, "particle_density": 1.15, "light_budget": 16, "glow_strength": 0.9, "tonemap": 3, "exposure": 1.06, "lod_bias": 1.5},
 	]
 	return (tiers[clampi(q, 0, tiers.size() - 1)] as Dictionary).duplicate(true)
 
@@ -5646,7 +5805,8 @@ func _update_perf_overlay(delta: float) -> void:
 		"draw_calls": int(Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME)),
 		"objects": int(Performance.get_monitor(Performance.RENDER_TOTAL_OBJECTS_IN_FRAME)),
 		"vram_mb": Performance.get_monitor(Performance.RENDER_VIDEO_MEM_USED) / 1048576.0,
-		"lights": mini(_lights.size(), _light_budget),
+		# P8.1-06：_lights 已是全候选清单（24 盏），显示实际激活盏数（室外池+室内池）。
+		"lights": _lights_outdoor.size() + _lights_indoor.size(),
 		"grass": _grass_visible_count,
 		"quality": _hud_quality_label,
 	})

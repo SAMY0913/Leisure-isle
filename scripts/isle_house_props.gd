@@ -19,7 +19,10 @@ extends RefCounted
 ##     部件沿局部 +Z（向室内）展开；垂直方向以原点为中心（curtain 由原点向下悬挂）。
 ##   - footprint = 局部 X/Z 占地（米），height = 局部 Y 总高（米）；墙挂件 height 为垂直跨度。
 ## * 返回 {node, footprint: Vector2(w,d), height, kind, lights}；lights 恒为空数组——
-##   灯具只用自发光灯罩（self_lit），不建 Light3D，光源由 main.gd 统一注册。
+##   本模块不建 Light3D，也不注册光源：光源位置由 cottage.gd 的 light_sources 统一登记，
+##   main.gd 每帧写进 toon.gdshader 的解析点光槽（g_l0..g_l15）。
+##   P8.1-06 起灯罩（light_shade）self_lit=false + glow=0.85（罩体受光有层次），
+##   灯泡仍 self_lit=true 作为高光核心。
 ## * 材质统一走 isle_math 的 toon 材质缓存（M.C_WOOD / M.C_WOOD_LIGHT / M.C_WOOD_DARK +
 ##   布艺色），所有可见部件描边 0.02（{outline: 0.02}），避免方块堆观感。
 ## * 自动命名 Prop_<kind>_<seq>，重复 build 不会出现节点重名。
@@ -257,6 +260,12 @@ static func _lit_cyl(p: Node3D, top_r: float, bot_r: float, h: float, pos: Vecto
 
 static func _lit_sphere(p: Node3D, r: float, pos: Vector3, c: Color, glow: float = 1.0) -> MeshInstance3D:
 	return M.sphere(p, r, pos, c, Vector3.ONE, {"outline": 0.02, "self_lit": true, "glow": glow})
+
+## 灯罩（P8.1-06）：罩体不再整体自发光（self_lit=false），只保留 glow 维持"灯罩是亮的"，
+## 其余亮度来自解析点光/环境光 → 罩体表面出现受光层次，灯本身也能照亮周围家具与地面。
+## 灯泡（_lit_sphere）仍 self_lit=true：小、被罩体半遮挡，作为高光核心。
+static func _shade_cyl(p: Node3D, top_r: float, bot_r: float, h: float, pos: Vector3, c: Color, glow: float = 0.85) -> MeshInstance3D:
+	return M.cyl(p, top_r, bot_r, h, pos, c, 0.0, {"outline": 0.02, "self_lit": false, "glow": glow})
 
 ## 柔和光晕（加色 billboard，无描边；名字 Glow 供探针排除描边/包围盒断言）。
 ## 材质按颜色缓存（M.additive_material + soft_dot_texture 只建一次），避免重复 build 泄漏材质实例。
@@ -833,7 +842,7 @@ static func _build_table_lamp(n: Node3D, opts: Dictionary) -> void:
 	_cy(n, 0.035, 0.045, 0.020, Vector3(0, 0.034, 0), base_c)
 	_cy(n, 0.011, 0.016, 0.240, Vector3(0, 0.164, 0), C_IRON)
 	# 自发光灯罩（锥台，0.285..0.485，底 r=0.123）+ 上下箍 + 灯泡
-	_role(_lit_cyl(n, 0.062, 0.123, 0.200, Vector3(0, 0.385, 0), shade_c, 0.85), "light_shade")
+	_role(_shade_cyl(n, 0.062, 0.123, 0.200, Vector3(0, 0.385, 0), shade_c, 0.55), "light_shade")
 	_cy(n, 0.124, 0.124, 0.012, Vector3(0, 0.288, 0), base_c)
 	_cy(n, 0.064, 0.064, 0.010, Vector3(0, 0.486, 0), base_c)
 	_lit_sphere(n, 0.030, Vector3(0, 0.390, 0), Color("fff1c8"), 1.0)
@@ -853,7 +862,7 @@ static func _build_floor_lamp(n: Node3D, opts: Dictionary) -> void:
 	_cy(n, 0.016, 0.022, 1.100, Vector3(0, 0.58, 0), C_IRON)
 	_sp(n, 0.035, Vector3(0, 0.70, 0), base_c)
 	# 自发光大灯罩（1.15..1.41，底 r=0.1845）+ 上下箍 + 灯泡
-	_role(_lit_cyl(n, 0.105, 0.1845, 0.260, Vector3(0, 1.28, 0), shade_c, 0.85), "light_shade")
+	_role(_shade_cyl(n, 0.105, 0.1845, 0.260, Vector3(0, 1.28, 0), shade_c, 0.55), "light_shade")
 	_cy(n, 0.186, 0.186, 0.012, Vector3(0, 1.153, 0), base_c)
 	_cy(n, 0.107, 0.107, 0.010, Vector3(0, 1.412, 0), base_c)
 	_lit_sphere(n, 0.040, Vector3(0, 1.270, 0), Color("fff1c8"), 1.0)

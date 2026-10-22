@@ -12,7 +12,8 @@ extends SceneTree
 
 const TIME_NIGHT := 22.0 * 60.0 + 10.0
 const TIME_DAY := 12.0 * 60.0
-const EXP_BUDGET := [7, 8, 9, 11, 12]
+# P8.1-06 契约变更：旧值 [7, 8, 9, 11, 12]（单池 12 槽）；双池 16 槽（室外 g_l0..9 + 室内 g_l10..15）后更新为 10/11/12/14/16。
+const EXP_BUDGET := [10, 11, 12, 14, 16]
 const LAMP_EPS := 0.01
 const OUT_DEFAULT := "D:/休闲小岛幻境/开发产物/p7v2/shots/light_probe/"
 const IsleMathScript := preload("res://scripts/isle_math.gd")
@@ -188,7 +189,8 @@ func _probe_five_quality_logic() -> void:
 		_check(first6_ok, "q=%d 前 6 盏均为 street_lamp 且坐标与真实路灯一一对应" % q)
 		# 低/中档不能把路灯挤掉：active 至少 6 路灯 + 1 环境灯
 		_check(active >= 7, "q=%d active=%d >= 7（6 路灯 + >=1 环境灯）" % [q, active])
-		_check(active <= 12, "q=%d active=%d <= 12（shader 点光上限）" % [q, active])
+		# P8.1-06 前上限为 12（单池）；双池后室外 10 + 室内 6 = 16。
+		_check(active <= 16, "q=%d active=%d <= 16（shader 双池点光上限）" % [q, active])
 		# 路灯参数不能被清成 0
 		var lit_ok := true
 		var warm_ok := true
@@ -290,7 +292,7 @@ func _probe_uniforms_day_night() -> void:
 	var st: Dictionary = _main.call("debug_light_state")
 	var active_real := int(round(float(gc)))
 	_check(active_real >= 7, "夜间 g_light_count=%d >= 7" % active_real)
-	_check(active_real <= 12, "夜间 g_light_count=%d <= 12" % active_real)
+	_check(active_real <= 16, "夜间 g_light_count=%d <= 16（室外池 10 槽上限）" % active_real)
 	var pos_ok := true
 	var col_ok := true
 	var night_alpha := 0.0

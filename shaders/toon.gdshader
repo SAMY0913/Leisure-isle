@@ -17,7 +17,12 @@ global uniform vec4 g_weather;    // x rain, y snow, z wetness, w snow_cover
 global uniform vec4 g_weather2;   // x cloud, y storm, z wind, w indoor
 global uniform vec4 g_wind_dir;   // x/z 风向，z 风力 0..1
 global uniform float g_lightning; // 闪电瞬时亮度 0..1（雷暴/台风；与天空同一来源）
+// P8.1-06 室内外双池：室外池槽位 g_l0..g_l9（0..9），室内池槽位 g_l10..g_l15（10..15）。
+// g_light_count = 室外池激活盏数（0..10），g_light_indoor = 室内池激活盏数（0..6）；
+// 池内连续排列（室外 [0,count)、室内 [10,10+indoor)），槽位归属由 main.gd 决定。
+// 室内片元只吃室内池、室外片元只吃室外池（按 indoor_mask 世界体积判定，与摄像机无关）。
 global uniform float g_light_count;
+global uniform float g_light_indoor;
 global uniform vec4 g_l0_pos; // xyz world position, w range
 global uniform vec4 g_l0_col; // rgb color, w intensity
 global uniform vec4 g_l1_pos;
@@ -42,6 +47,14 @@ global uniform vec4 g_l10_pos;
 global uniform vec4 g_l10_col;
 global uniform vec4 g_l11_pos;
 global uniform vec4 g_l11_col;
+global uniform vec4 g_l12_pos;
+global uniform vec4 g_l12_col;
+global uniform vec4 g_l13_pos;
+global uniform vec4 g_l13_col;
+global uniform vec4 g_l14_pos;
+global uniform vec4 g_l14_col;
+global uniform vec4 g_l15_pos;
+global uniform vec4 g_l15_col;
 // lighthouse beam: origin (world), tilted direction, params.x strength / y cos_outer / z cos_inner / w range
 global uniform vec3 g_beam_origin;
 global uniform vec3 g_beam_dir;
@@ -343,8 +356,18 @@ void fragment() {
 				ambient * 1.85 + g_sun_color.rgb * (0.26 + 0.52 * cel) + g_moon_color.rgb * 0.80, 0.0, 1.6);
 			col = mix(col, snow_col, snow_m * 0.84);
 		}
+		// P8.1-06 局部灯：室内外双池，按世界体积 indoor_mask 选池（与摄像机无关）。
+		// 室内片元只吃室内池（g_l10..g_l15），室外片元只吃室外池（g_l0..g_l9）→ 两池互不串光。
 		int lc_n = int(g_light_count);
-		if (lc_n > 0) {
+		int lc_in = int(g_light_indoor);
+		if (indoor > 0.5) {
+			if (lc_in > 0) { col += add_point_light(base, Nw, g_l10_pos, g_l10_col); }
+			if (lc_in > 1) { col += add_point_light(base, Nw, g_l11_pos, g_l11_col); }
+			if (lc_in > 2) { col += add_point_light(base, Nw, g_l12_pos, g_l12_col); }
+			if (lc_in > 3) { col += add_point_light(base, Nw, g_l13_pos, g_l13_col); }
+			if (lc_in > 4) { col += add_point_light(base, Nw, g_l14_pos, g_l14_col); }
+			if (lc_in > 5) { col += add_point_light(base, Nw, g_l15_pos, g_l15_col); }
+		} else if (lc_n > 0) {
 			col += add_point_light(base, Nw, g_l0_pos, g_l0_col);
 			if (lc_n > 1) { col += add_point_light(base, Nw, g_l1_pos, g_l1_col); }
 			if (lc_n > 2) { col += add_point_light(base, Nw, g_l2_pos, g_l2_col); }
@@ -355,8 +378,6 @@ void fragment() {
 			if (lc_n > 7) { col += add_point_light(base, Nw, g_l7_pos, g_l7_col); }
 			if (lc_n > 8) { col += add_point_light(base, Nw, g_l8_pos, g_l8_col); }
 			if (lc_n > 9) { col += add_point_light(base, Nw, g_l9_pos, g_l9_col); }
-			if (lc_n > 10) { col += add_point_light(base, Nw, g_l10_pos, g_l10_col); }
-			if (lc_n > 11) { col += add_point_light(base, Nw, g_l11_pos, g_l11_col); }
 		}
 	}
 	float dist = length(CAMERA_POSITION_WORLD - v_world);

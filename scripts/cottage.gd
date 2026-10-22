@@ -118,6 +118,10 @@ static func build(parent: Node3D) -> Dictionary:
     M.shadow_blob(parent, _world(root, Vector3(0.0, 0.01, 3.90)), 3.0, 0.20)
 
     # ---- 暖光光源位置（世界坐标；main 写进 shader 的解析点光）----
+    # P8.1-06：16 槽 = 室外池 g_l0..g_l9（上限 10）+ 室内池 g_l10..g_l15（上限 6）。
+    # 每盏灯带 kind / indoor / priority（池内排序，越大越优先）；main 按画质预算截断后上传。
+    # priority 约定：路灯 900（main 赋）、灯塔 800（main 赋）、门廊 700、窗光 660、码头 650（main 赋）；
+    #                壁炉 900、一层吊灯 850、一层台灯 800、一层落地灯 750、阁楼吊灯1 700、阁楼吊灯2 650、阁楼台灯 600/590。
     var lantern_world: Vector3 = _world(root, C["lantern_pos"])
     var lantern_world_right: Vector3 = _world(root, C["lantern_pos_right"])
     var lamp_world: Vector3 = _world(root, Vector3(1.45, C["in_top"] - 0.62, 0.80))
@@ -125,17 +129,31 @@ static func build(parent: Node3D) -> Dictionary:
     var attic_lamp_world: Vector3 = C["attic_lamp_world"]
     var attic_lamp2_world: Vector3 = _world(root, C["attic_lamp2_pos"])
     var attic_window_world: Vector3 = C["attic_window_world"]
+    # 门廊对称吊灯 → 1 个聚合槽（两盏相距 3.90m，取中点；两盏网格仍各自发光）
+    var lantern_mid_world: Vector3 = _world(root, (C["lantern_pos"] + C["lantern_pos_right"]) * 0.5)
+    # 窗光 → 1 个聚合槽：前立面两窗中线、墙外 0.70m（与 _window_assembly 的 win_lights 锚点同深度）
+    var window_glow_world: Vector3 = _world(root, Vector3(0.0, fy + 1.48, C["hd"] + 0.70))
+    # 一层家具灯具的灯泡位置（家具 builder 内灯泡局部 y：台灯 0.390 / 落地灯 1.270）
+    var fl1: float = fy + 0.02
+    var sideboard_lamp_world: Vector3 = _world(root, Vector3(0.20, fl1 + 0.80 + 0.390, -2.60))
+    var floor_lamp_world: Vector3 = _world(root, Vector3(-3.12, fl1 + 1.270, 2.35))
+    # 阁楼家具灯具的灯泡位置（床头柜台灯 y=+0.50、书桌台灯 y=+0.65，再 +0.390）
+    var flat: float = C["attic_floor"] + 0.02
+    var attic_bedside_lamp_world: Vector3 = _world(root, Vector3(-1.15, flat + 0.50 + 0.390, -1.61))
+    var attic_desk_lamp_world: Vector3 = _world(root, Vector3(0.45, flat + 0.65 + 0.390, 2.55))
     var light_sources: Array = []
-    light_sources.append({"pos": lamp_world, "color": Color(1.0, 0.74, 0.44), "range": 5.4, "intensity": 1.55})
-    light_sources.append({"pos": fire_world, "color": Color(1.0, 0.52, 0.22), "range": 4.0, "intensity": 1.20})
-    # 门廊对称吊灯：左右各一盏（新尺度下吊灯高 2.05m，光源同步下移）
-    light_sources.append({"pos": lantern_world, "color": Color(1.0, 0.78, 0.48), "range": 4.4, "intensity": 1.00})
-    light_sources.append({"pos": lantern_world_right, "color": Color(1.0, 0.78, 0.48), "range": 4.4, "intensity": 1.00})
-    # 阁楼两盏室内暖灯
-    light_sources.append({"pos": attic_lamp_world, "color": Color(1.0, 0.74, 0.44), "range": 4.6, "intensity": 1.45})
-    light_sources.append({"pos": attic_lamp2_world, "color": Color(1.0, 0.70, 0.40), "range": 4.0, "intensity": 1.35})
-    for wl in C["win_lights"]:
-        light_sources.append({"pos": wl["pos"], "color": Color(1.0, 0.80, 0.52), "range": 3.0, "intensity": 0.60})
+    # ---- 池 A：室外 -------
+    light_sources.append({"pos": lantern_mid_world, "color": Color(1.0, 0.78, 0.48), "range": 5.2, "intensity": 1.20, "energy": 1.20, "kind": "porch_lantern", "indoor": false, "priority": 700})
+    light_sources.append({"pos": window_glow_world, "color": Color(1.0, 0.80, 0.52), "range": 4.2, "intensity": 0.70, "energy": 0.70, "kind": "window_glow", "indoor": false, "priority": 660})
+    # ---- 池 B：室内 -------
+    light_sources.append({"pos": fire_world, "color": Color(1.0, 0.52, 0.22), "range": 5.0, "intensity": 1.50, "energy": 1.50, "kind": "fireplace", "indoor": true, "priority": 900})
+    light_sources.append({"pos": lamp_world, "color": Color(1.0, 0.74, 0.44), "range": 5.4, "intensity": 1.55, "energy": 1.55, "kind": "chandelier", "indoor": true, "priority": 850})
+    light_sources.append({"pos": sideboard_lamp_world, "color": Color(1.0, 0.82, 0.56), "range": 3.4, "intensity": 0.85, "energy": 0.85, "kind": "table_lamp", "indoor": true, "priority": 800})
+    light_sources.append({"pos": floor_lamp_world, "color": Color(1.0, 0.80, 0.52), "range": 4.4, "intensity": 1.30, "energy": 1.30, "kind": "floor_lamp", "indoor": true, "priority": 750})
+    light_sources.append({"pos": attic_lamp_world, "color": Color(1.0, 0.74, 0.44), "range": 4.6, "intensity": 1.45, "energy": 1.45, "kind": "attic_chandelier", "indoor": true, "priority": 700})
+    light_sources.append({"pos": attic_lamp2_world, "color": Color(1.0, 0.70, 0.40), "range": 4.0, "intensity": 1.35, "energy": 1.35, "kind": "attic_chandelier", "indoor": true, "priority": 650})
+    light_sources.append({"pos": attic_bedside_lamp_world, "color": Color(1.0, 0.78, 0.50), "range": 3.0, "intensity": 0.65, "energy": 0.65, "kind": "attic_table_lamp", "indoor": true, "priority": 600})
+    light_sources.append({"pos": attic_desk_lamp_world, "color": Color(1.0, 0.78, 0.50), "range": 3.0, "intensity": 0.65, "energy": 0.65, "kind": "attic_table_lamp", "indoor": true, "priority": 590})
     # ---- 灯塔光束遮挡盒（世界空间 yaw 对齐 AABB；main._collect_beam_occluders 写 g_occ_*）----
     var beam_occluders: Array = _beam_occluders_world(root, C)
 
@@ -154,6 +172,8 @@ static func build(parent: Node3D) -> Dictionary:
         "window_mats": C["window_mats"],
         "window_halos": C["window_halos"],
         "lantern_mat": C["lantern_mat"],
+        # P8.1-06：一层/阁楼吊灯灯罩（main 每帧按昼夜写 glow=0.10+lanternI*1.05）
+        "interior_shade_mats": [C.get("interior_shade_mat", null), C.get("attic_shade_mat", null)],
         "lantern_halo": C["lantern_halo"],
         "lantern_halos": C["lantern_halos"],
         "perches": perches,
@@ -167,6 +187,13 @@ static func build(parent: Node3D) -> Dictionary:
         "attic_window_world": attic_window_world,
         "attic_lamp_world": attic_lamp_world,
         "attic_lamp2_world": attic_lamp2_world,
+        # P8.1-06：门廊/窗光聚合槽 + 4 盏家具灯具（台灯/落地灯）的世界光源位置，供 probe/截图机位使用。
+        "lantern_mid_world": lantern_mid_world,
+        "window_glow_world": window_glow_world,
+        "table_lamp_world": sideboard_lamp_world,
+        "floor_lamp_world": floor_lamp_world,
+        "attic_bedside_lamp_world": attic_bedside_lamp_world,
+        "attic_desk_lamp_world": attic_desk_lamp_world,
         "attic_glass_mats": C["attic_glass_mats"],
         "beam_occluders": beam_occluders,
         "cat": C.get("cat", {}),
@@ -321,7 +348,9 @@ static func _context(root: Node3D) -> Dictionary:
     attic_inner_glass.set_shader_parameter("front_sheen", 0.004)
     attic_inner_glass.set_shader_parameter("refract_strength", 0.0)
     # 门廊吊灯材质：main 会持续写 "glow"，不能和别的网格共用同一缓存实例。
-    var lantern_mat: ShaderMaterial = M.toon_material(Color("ffcf9a"), {"self_lit": true, "glow": 1.0})
+    # P8.1-06：灯罩类材质改 self_lit=false + 保留 glow —— 罩体由 glow 维持发亮观感，
+    # 同时接受解析点光/环境光，灯本身才能照亮门廊台阶与室外地面。
+    var lantern_mat: ShaderMaterial = M.toon_material(Color("ffcf9a"), {"self_lit": false, "glow": 1.0})
     # L 形楼梯（Flight A 沿 -Z 上行 7 踏 + 平台第 8 级；Flight B 沿 -X 上行 7 踏接阁楼）
     var land_top: float = fy + 8.0 * stair_rise   # 1.860
     return {
@@ -1590,7 +1619,11 @@ static func _attic_interior(root: Node3D, C: Dictionary) -> void:
     rod.material_override = M.toon_material(M.C_WOOD_DARK, {"bands": 3.0})
     rod.position = Vector3(0.20, 5.605, 0.90)
     ia.add_child(rod)
-    var lamp_mat: ShaderMaterial = M.toon_material(Color("ffd79b"), {"self_lit": true, "glow": 1.05})
+    # P8.1-06：罩体不再整体自发光（self_lit=false + glow），灯泡独立材质保持 self_lit。
+    var lamp_mat: ShaderMaterial = M.toon_material(Color("ffd79b"), {"self_lit": false, "glow": 0.55})
+    var bulb_mat: ShaderMaterial = M.toon_material(Color("ffd79b"), {"self_lit": true, "glow": 1.15})
+    # 灯罩材质交给 main 做昼夜调光（白天微亮、夜里全亮），见 main._update_lighting 的 interior_shade_mats
+    C["attic_shade_mat"] = lamp_mat
     var shade := MeshInstance3D.new()
     var sm := CylinderMesh.new()
     sm.top_radius = 0.05
@@ -1608,7 +1641,7 @@ static func _attic_interior(root: Node3D, C: Dictionary) -> void:
     bm.radial_segments = 10
     bm.rings = 6
     bulb.mesh = bm
-    bulb.material_override = lamp_mat
+    bulb.material_override = bulb_mat
     bulb.position = lamp_pos
     ia.add_child(bulb)
     var halo: MeshInstance3D = M.halo(ia, lamp_pos, 0.95, Color(2.2, 1.5, 0.85, 1.0))
@@ -1727,7 +1760,11 @@ static func _interior(root: Node3D, C: Dictionary) -> void:
         root.add_child(fmi)
     M.halo(root, Vector3(ch_x, fy + 0.32, -2.42), 0.85, Color(2.4, 1.2, 0.45, 1.0))
     # ---- 吊灯（餐桌上方）----
-    var lamp_mat: ShaderMaterial = M.toon_material(Color("ffd79b"), {"self_lit": true, "glow": 1.05})
+    # P8.1-06：罩体 self_lit=false + glow（可受光），灯泡独立材质保持 self_lit。
+    var lamp_mat: ShaderMaterial = M.toon_material(Color("ffd79b"), {"self_lit": false, "glow": 0.55})
+    var bulb_mat: ShaderMaterial = M.toon_material(Color("ffd79b"), {"self_lit": true, "glow": 1.15})
+    # 灯罩材质交给 main 做昼夜调光（白天微亮、夜里全亮）
+    C["interior_shade_mat"] = lamp_mat
     var rod := MeshInstance3D.new()
     var rm := CylinderMesh.new()
     rm.top_radius = 0.012
@@ -1755,7 +1792,7 @@ static func _interior(root: Node3D, C: Dictionary) -> void:
     bm.radial_segments = 10
     bm.rings = 6
     bulb.mesh = bm
-    bulb.material_override = lamp_mat
+    bulb.material_override = bulb_mat
     bulb.position = Vector3(1.45, in_top - 0.62, 0.80)
     root.add_child(bulb)
     M.halo(root, Vector3(1.45, in_top - 0.62, 0.80), 1.10, Color(2.2, 1.5, 0.85, 1.0))
