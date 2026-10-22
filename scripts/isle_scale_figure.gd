@@ -2,7 +2,7 @@ class_name IsleScaleFigure
 extends RefCounted
 ## P7-V3.2 1.50 m 人体参照（低模、无动画、无脚本生命周期）。
 ##
-## 契约（供 tools/probe_scale_world.gd 与 tools/scale_debug_overlay.gd 共用）：
+## 契约（供 tools/probe_scale_world.gd 与 scripts/scale_debug_overlay.gd 共用）：
 ##   * 脚底局部 y = 0.000，头顶局部 y = 1.500（世界 AABB 高度 1.500 ± 0.010 m）
 ##   * 全部部件只用 IsleMath.toon_material（无自发光、无灯光、无 MultiMesh）
 ##   * MeshInstance3D 数量 ≤ 12（当前 12 个：2 脚 + 2 腿 + 1 髋 + 1 躯干 + 1 颈 + 1 头 + 2 臂 + 2 手）

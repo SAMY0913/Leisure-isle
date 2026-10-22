@@ -23,7 +23,7 @@ const SKY_SHADER := "res://shaders/sky.gdshader"
 const SEA_SHADER := "res://shaders/sea.gdshader"
 const BEAM_SHADER := "res://shaders/beam.gdshader"
 # P7-V3.2 T1 开发模式尺度标尺：默认不创建，--scale-debug 时才实例化一次。
-const ScaleOverlay := preload("res://tools/scale_debug_overlay.gd")
+const ScaleOverlay := preload("res://scripts/scale_debug_overlay.gd")
 # P7-V4 岛民（程序化模型 + 动画 + 日程）：--no-villager 时不创建，仅用于性能基线对照。
 const ISLE_VILLAGER := preload("res://scripts/isle_villager.gd")
 # P8：公历日历/季节投影（纯函数）。权威时间仍只有本文件的 _sim_seconds，日历只是它的只读投影。

@@ -2,7 +2,7 @@ extends Node3D
 ## P7-V3.2 开发模式尺度标尺（T1 交付 D）——默认不创建、不显示、零常驻开销。
 ##
 ## 安装（main.gd，由 T4 挂钩；3–5 行）：
-##   const ScaleOverlay := preload("res://tools/scale_debug_overlay.gd")
+##   const ScaleOverlay := preload("res://scripts/scale_debug_overlay.gd")
 ##   if ScaleOverlay.enabled():
 ##       var ov := ScaleOverlay.new()
 ##       ov.name = "ScaleDebugOverlay"

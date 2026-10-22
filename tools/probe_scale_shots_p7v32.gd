@@ -157,7 +157,7 @@ func _run() -> void:
 	# 开发者标尺：--scale-debug 时 main 已挂 ScaleDebugOverlay；这里先隐藏，s16 再打开
 	_overlay = _main.get_node_or_null("ScaleDebugOverlay") as Node3D
 	if _overlay == null:
-		var OV := load("res://tools/scale_debug_overlay.gd")
+		var OV := load("res://scripts/scale_debug_overlay.gd")
 		if OV != null:
 			_overlay = OV.new()
 			_overlay.name = "ScaleDebugOverlay"

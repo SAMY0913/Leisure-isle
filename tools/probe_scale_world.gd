@@ -18,7 +18,7 @@ extends SceneTree
 const SPEC := preload("res://scripts/isle_scale_spec.gd")
 const FIG := preload("res://scripts/isle_scale_figure.gd")
 const PROPS := preload("res://scripts/isle_house_props.gd")
-const OVERLAY := preload("res://tools/scale_debug_overlay.gd")
+const OVERLAY := preload("res://scripts/scale_debug_overlay.gd")
 
 const DEFAULT_OUT := "D:/休闲小岛幻境/开发产物/p7v32/scale"
 
@@ -1760,7 +1760,7 @@ func _js(v):
     return str(v)
 
 # ============================================================ overlay 自检 ====
-## 开发模式标尺运行时自检（--mode overlay）：真实实例化 tools/scale_debug_overlay.gd，
+## 开发模式标尺运行时自检（--mode overlay）：真实实例化 scripts/scale_debug_overlay.gd，
 ## 检查构建成功/人形 1.50 m（合批后从 batch_manifest 反推）/可隐藏/重建无重复/清理无残留/无常驻 _process。
 func _group_overlay() -> void:
     var enabled_no_flag: bool = OVERLAY.enabled()
