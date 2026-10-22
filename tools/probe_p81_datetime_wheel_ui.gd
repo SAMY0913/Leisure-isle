@@ -5,12 +5,12 @@ extends SceneTree
 ##   D:/休闲小岛幻境/引擎/Godot_v4.7.2-stable_win64_console.exe \
 ##       --path D:/休闲小岛幻境/游戏工程 --script res://tools/probe_p81_datetime_wheel_ui.gd
 ## 覆盖：计划 §10 UI1-UI10 + 第一阶段未验证 U01-U11。
-## 输出：开发产物/p81/evidence/p81_07_stage2/（日志、结果 JSON、1440x900 与 1600x900 截图+滚轮裁剪）
+## 输出：开发产物/p82/05_wheel/p81_ui_regression/（P8.2 起改到 p82 证据目录，避免覆盖 P8.1 历史证据）
 ## 纪律：不写 user://（_settings_save_delay 固定 -1 并逐次重置）；不改 main.gd；
-##       不改 开发产物/p8 冻结证据；退出码 0=全 PASS（WARN 不算失败），1=有 FAIL。
+##       不改 开发产物/p8 与 开发产物/p81 冻结证据；退出码 0=全 PASS（WARN 不算失败），1=有 FAIL。
 
 const Cal := preload("res://scripts/isle_calendar.gd")
-const OUT_DIR := "D:/休闲小岛幻境/开发产物/p81/evidence/p81_07_stage2"
+const OUT_DIR := "D:/休闲小岛幻境/开发产物/p82/05_wheel/p81_ui_regression"
 const LOG_PATH := OUT_DIR + "/probe_p81_datetime_wheel_ui.log"
 const JSON_PATH := OUT_DIR + "/probe_p81_datetime_wheel_ui_result.json"
 const RES_A := Vector2i(1440, 900)
@@ -1153,79 +1153,168 @@ func _ui9() -> void:
 		await _close_all_panels()
 
 # ============================================================
-# UI10：面板帧开销（wall-clock 帧间隔 A/B/A/B；TIME_PROCESS 仅记录，不作判据）
+# UI10：面板帧开销（P8.2 重写：vsync 关闭 + 逐对交错 + A/A 噪声底 + 95% CI）
 # ============================================================
 
-## 采样真实帧间隔（ms）：Time.get_ticks_usec() 跨 process_frame 的差值。
-## 实测 windowed 下 Performance.TIME_PROCESS 恒为常量（48.828ms/12.110ms），不可作为判据。
-func _measure_frame_wall(frames: int = 60) -> Dictionary:
-	for i in range(8):
-		await process_frame
-	var dt: Array = []
+## 帧间隔采样（ms）：Time.get_ticks_usec() 跨 process_frame 的差值。
+## P-5：windowed 下 Performance.TIME_PROCESS 恒为少数几个量化值（v1 采样唯一值=2），不可作判据；
+## 此处仅统计其唯一值个数作为 P-5 证据，并用 Performance.TIME_FPS 与墙钟 fps 交叉校验。
+func _measure_frame_wall(frames: int = 40) -> Dictionary:
+	await _frames(6)
+	var raw: Array = []
 	var proc: Array = []
 	var prev := Time.get_ticks_usec()
 	for i in range(frames):
 		await process_frame
 		var now := Time.get_ticks_usec()
-		dt.append(float(now - prev) / 1000.0)
+		raw.append(float(now - prev) / 1000.0)
 		prev = now
 		proc.append(Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0)
-	dt.sort()
+	var sorted := raw.duplicate()
+	sorted.sort()
 	proc.sort()
-	var n := dt.size()
+	var n := sorted.size()
 	var sum := 0.0
-	for v in dt:
+	for v in raw:
 		sum += float(v)
-	var p50 := float(dt[int(clampf(float(n) * 0.5, 0.0, float(n - 1)))])
-	var p95 := float(dt[int(clampf(float(n) * 0.95, 0.0, float(n - 1)))])
-	return {"avg": sum / maxf(1.0, float(n)), "p50": p50, "p95": p95, "max": float(dt[n - 1]),
+	var uniq := {}
+	for v in proc:
+		uniq[str(v)] = true
+	return {"avg": sum / maxf(1.0, float(n)),
+		"p50": float(sorted[int(clampf(float(n) * 0.5, 0.0, float(n - 1)))]),
+		"p95": float(sorted[int(clampf(float(n) * 0.95, 0.0, float(n - 1)))]),
+		"max": float(sorted[n - 1]),
 		"proc": float(proc[int(clampf(float(n) * 0.5, 0.0, float(n - 1)))]),
+		"proc_unique": uniq.size(),
+		"fps_engine": float(Engine.get_frames_per_second()),
+		"fps_wall": 1000.0 / maxf(0.001, sum / maxf(1.0, float(n))),
 		"draw": Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME),
 		"objs": Performance.get_monitor(Performance.RENDER_TOTAL_OBJECTS_IN_FRAME),
-		"fps": Engine.get_frames_per_second(), "n": n}
+		"n": n}
+
+static func _meanf(a: Array) -> float:
+	var s := 0.0
+	for v in a:
+		s += float(v)
+	return s / maxf(1.0, float(a.size()))
+
+static func _medianf(a: Array) -> float:
+	var b := a.duplicate()
+	b.sort()
+	if b.is_empty():
+		return 0.0
+	var n := b.size()
+	if n % 2 == 1:
+		return float(b[int(n / 2)])
+	return 0.5 * (float(b[n / 2 - 1]) + float(b[n / 2]))
+
+static func _percentilef(a: Array, q: float) -> float:
+	var b := a.duplicate()
+	b.sort()
+	if b.is_empty():
+		return 0.0
+	return float(b[int(clampf((float(b.size()) - 1.0) * q, 0.0, float(b.size() - 1)))])
+
+static func _stddevf(a: Array) -> float:
+	if a.size() < 2:
+		return 0.0
+	var m := _meanf(a)
+	var s := 0.0
+	for v in a:
+		var d := float(v) - m
+		s += d * d
+	return sqrt(s / float(a.size() - 1))
 
 func _ui10() -> void:
 	_log("----------------------------------------------------------------")
-	_log("[UI10] 面板帧开销：3 对 A/B 交错采样（每段 40 帧 wall-clock 帧间隔 + draw call 结构增量）")
+	_log("[UI10] 面板帧开销：P8.2 重写 = vsync 关闭 + 逐对交错 12 对 + A/A 噪声底 8 对（每段 40 帧）")
+	var prev_vsync := DisplayServer.window_get_vsync_mode()
+	var prev_max_fps := Engine.max_fps
+	DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
+	Engine.max_fps = 0
 	await _close_all_panels()
 	var win := Vector2i(DisplayServer.window_get_size())
 	Input.warp_mouse(Vector2(win.x - 60, 80))
-	await _wait(0.25)
-	var deltas: Array = []
-	var bases: Array = []
-	var opens: Array = []
+	await _wait(0.3)
+
+	var d_p50: Array = []
+	var d_avg: Array = []
+	var closed_p50: Array = []
+	var open_p50: Array = []
+	var planes: Array = []
 	var draw_closed := 0
 	var draw_open := 0
-	for round_i in range(3):
-		var base: Dictionary = await _measure_frame_wall(40)
+	var objs_closed := 0
+	var objs_open := 0
+	var proc_unique := 0
+	var fps_engine := 0.0
+	var fps_wall := 0.0
+	for i in range(12):
+		var a: Dictionary = await _measure_frame_wall(40)
+		_keep()
 		await _open_calendar()
 		_keep()
-		var openm: Dictionary = await _measure_frame_wall(40)
-		_keep()
-		deltas.append(float(openm["p50"]) - float(base["p50"]))
-		bases.append(base)
-		opens.append(openm)
-		if round_i == 0:
-			draw_closed = int(base["draw"])
-			draw_open = int(openm["draw"])
+		var b: Dictionary = await _measure_frame_wall(40)
 		await _close_all_panels()
+		_keep()
 		Input.warp_mouse(Vector2(win.x - 60, 80))
-		await _wait(0.12)
-	deltas.sort()
-	var d_med: float = float(deltas[1])
-	var dd: int = draw_open - draw_closed
-	var detail := "Δp50 三轮=%s 中位=%+.3fms；关闭 p50=%s / 打开 p50=%s；Δdraw=%+d（关闭=%d 打开=%d）；TIME_PROCESS(仅记录)=%.3f/%.3f" % [
-		str(deltas), d_med,
-		str([float(bases[0]["p50"]), float(bases[1]["p50"]), float(bases[2]["p50"])]),
-		str([float(opens[0]["p50"]), float(opens[1]["p50"]), float(opens[2]["p50"])]),
-		dd, draw_closed, draw_open,
-		float(bases[0]["proc"]), float(opens[0]["proc"])]
-	# 判据：结构增量（draw call）确定性；帧时间取三轮中位数，<0.3ms 才算通过，
-	# 0.3—1.5ms 记 WARN（该环境下帧间隔噪声大于面板真实开销，无法证明 L4 阈值）。
-	if d_med < 0.3 and dd > 0:
-		_pass("UI10", "面板帧开销 Δp50 中位<0.3ms 且 draw 增量>0", detail)
-	elif d_med < 1.5 and dd > 0:
-		_warn("UI10", "面板 draw 增量已确认，但帧时间噪声无法证明 Δp50<0.3ms", detail)
+		await _wait(0.05)
+		d_p50.append(float(b["p50"]) - float(a["p50"]))
+		d_avg.append(float(b["avg"]) - float(a["avg"]))
+		closed_p50.append(float(a["p50"]))
+		open_p50.append(float(b["p50"]))
+		planes.append("A%.3f/B%.3f" % [float(a["p50"]), float(b["p50"])])
+		proc_unique = maxi(proc_unique, int(a["proc_unique"]))
+		fps_engine = float(a["fps_engine"])
+		fps_wall = float(a["fps_wall"])
+		if i == 0:
+			draw_closed = int(a["draw"])
+			draw_open = int(b["draw"])
+			objs_closed = int(a["objs"])
+			objs_open = int(b["objs"])
+		_log("[UI10] 对%02d %s（Δp50=%+.3fms）" % [i + 1, planes[i], float(d_p50[i])])
+
+	# A/A 对照：同一"面板全关"状态连续两段，量化段间漂移/噪声底
+	var aa_p50: Array = []
+	var aa_avg: Array = []
+	for i in range(8):
+		var a: Dictionary = await _measure_frame_wall(40)
+		var b: Dictionary = await _measure_frame_wall(40)
+		await _close_all_panels()
+		_keep()
+		Input.warp_mouse(Vector2(win.x - 60, 80))
+		await _wait(0.05)
+		aa_p50.append(absf(float(b["p50"]) - float(a["p50"])))
+		aa_avg.append(absf(float(b["avg"]) - float(a["avg"])))
+	DisplayServer.window_set_vsync_mode(prev_vsync)
+	Engine.max_fps = prev_max_fps
+
+	var positive := 0
+	for v in d_p50:
+		if float(v) > 0.0:
+			positive += 1
+	var dmed := _medianf(d_p50)
+	var dmean := _meanf(d_p50)
+	var sd := _stddevf(d_p50)
+	var se := sd / sqrt(float(maxi(1, d_p50.size())))
+	var ci_hi := dmean + 1.96 * se
+	var noise_med := _medianf(aa_p50)
+	var noise_p95 := _percentilef(aa_p50, 0.95)
+	var dd := draw_open - draw_closed
+	var detail := "Δp50 中位=%+.3fms（均值 %+.3f±%.3f，95%%CI 上限 %+.3fms，正号 %d/12）；A/A |Δp50| 中位=%.3fms p95=%.3fms；关闭/打开 p50 中位=%.3f/%.3fms；Δdraw=%+d（%d→%d）；Δobjs=%+d；TIME_FPS 引擎=%.1f 墙钟≈%.1f；TIME_PROCESS 唯一值=%d（P-5 量化，仅记录）" % [
+		dmed, dmean, se, ci_hi, positive, noise_med, noise_p95,
+		_medianf(closed_p50), _medianf(open_p50), dd, draw_closed, draw_open, objs_open - objs_closed,
+		fps_engine, fps_wall, proc_unique]
+	_log("[UI10] " + detail)
+	_log("[UI10] 逐对=%s；A/A=|Δp50|%s" % [str(planes), str(aa_p50)])
+	# 判据：vsync 关闭 + 逐对交错消除段间漂移；以配对差均值 95% 置信上限 < 0.3ms 作为"证明通过"。
+	# dmed<0.3 但 CI 上限 ≥0.3 时只记 WARN（数据不足以证明门限，不冒充通过）；≥1.5ms 或无 draw 增量记 FAIL。
+	if dd > 0 and ci_hi < 0.3 and dmed < 0.3:
+		_pass("UI10", "面板帧开销 Δp50 中位<0.3ms（95% CI 上限<0.3ms，逐对交错）", detail)
+	elif dd > 0 and dmed < 0.3:
+		_warn("UI10", "面板 Δp50 中位<0.3ms 但 95% CI 上限≥0.3ms（A/A 噪声底 %.3fms，数据不足）" % noise_med, detail)
+	elif dd > 0 and dmed < 1.5:
+		_warn("UI10", "面板帧时间 Δp50 中位=%.3fms（0.3–1.5ms 区间）" % dmed, detail)
 	else:
 		_fail("UI10", "面板帧开销异常（Δp50 中位≥1.5ms 或 draw 无增量）", detail)
 

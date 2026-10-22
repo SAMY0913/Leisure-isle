@@ -636,7 +636,9 @@ class WheelColumn:
 			mode = 0
 			return
 		_drag_started = false
-		if absf(_ema_vel) > 1.2:
+		# P-4：原为硬编码字面量 1.2，与常量 FLICK_THRESHOLD 重复；改为引用常量（数值不变，行为不变）。
+		# 是否把 1.2 调整为更轻的 0.67 属手感设计决策，本轮不改（见 docs/P8_2_05_NOTES.md）。
+		if absf(_ema_vel) > FLICK_THRESHOLD:
 			mode = 2
 			vel = _ema_vel
 		else:
