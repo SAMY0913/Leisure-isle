@@ -25,9 +25,9 @@
 - **环境性噪声**：user:// 不可写导致的日志 ERROR、shader_rd _save_to_cache ERROR、Windows 系统证书读取 ERROR，
   每次真实运行都会出现，与产品行为无关（判定时排除）。
 
-> **selftest 分母变化（不要当回归异常）**：P8.1 及 base(ddcde3a) 副本为 **73/73**；P8.2 HEAD 为 **75/75**
-> （新增 2 项自测，来源见 lighting 的 01 NOTES）。因此第 1 节 base 副本的 73/73 与 P8.2 当前 HEAD 的 75/75
-> 不可直接对比；对比同一 commit 的分子分母即可。
+> **selftest 分母核对（Lead 修正，原记录有误）**：分母在 P8.1/base(ddcde3a)、P8.2 HEAD、正式发布包**三方完全一致，均为 73/73**。
+> 此前「P8.2 HEAD 变成 75/75、新增 2 项」的说法是误读：`[TEST]` 行数 75 = **73 项 PASS + 1 项 SKIP（真实鼠标拖动，headless 下跳过）+ 1 行 RESULT**，不是 75 项断言。
+> 证据（三份日志逐字同构）：`基线/selftest_HEAD_ddcde3a.log`、`final/20261022_205425/selftest.log`、`release_preview/build_20261022_214845/verify_selftest.log` → 各 `73 PASS / 1 SKIP / 1 RESULT`。
 
 
 
@@ -63,26 +63,26 @@ P8.2 改动后必须能证明"发布包仍可复现"，本阶段用**只读基�
 （verify_release.sh 用 integrity/release_exe_before.txt 记录的 sha256 复核仍一致）。
 最终代码冻结后仍需用 build_release.sh --copy-to-release 生成 P8.2 正式包并重新验收。
 
-### 1.1 P8.2 正式包（代码冻结后填写，数字待填）
+### 1.1 P8.2 正式包（已重建并验收，2026-10-22 21:48–21:53）
 
-> 本小节在**代码冻结、build_release.sh --copy-to-release 成功、verify_release.sh PASS** 之后填写；
-> 在此之前下列字段一律保留 TODO，不得用 P8.1 冻结包数字冒充。
+> 本小节在**代码冻结、build_release.sh --copy-to-release 成功、verify_release.sh PASS** 之后填写（已满足）。
+> 旧 P8.1 包数字仅用于对照，不作为本节结论。
 
 | 项 | 值 |
 | --- | --- |
-| 构建 commit | TODO（git rev-parse HEAD，冻结 tag 见 docs/P8_2_06_NOTES.md「冻结后流程」） |
-| 构建时间 | TODO |
-| 命令 | bash build_release.sh --copy-to-release（日志 开发产物/p82/final/<RUN_ID>/build_release.log） |
-| 导出日志 | TODO（build_release 产物目录 build.log / record.json） |
+| 构建 commit | `f5f2fef431db351f5aeeb016c5e1ce5aa6c98a10`（record.json `git_head`，构建时工作树干净） |
+| 构建时间 | 2026-10-22 21:48:45（stamp `20261022_214845`） |
+| 命令 | `bash 开发产物/p82/build_release.sh --copy-to-release`（日志 `开发产物/p82/build_release_run_214845.log`，verdict=PASS） |
+| 导出日志 | `开发产物/p82/release_preview/build_20261022_214845/{record.json,build.log,verify_quit.log,verify_selftest.log,savepack_list.txt}` |
 | 正式包路径 | D:/休闲小岛幻境/发布/休闲小岛幻境.exe（同步 构建输出/休闲小岛幻境.exe） |
-| 体积 | TODO B |
-| SHA256 | TODO |
-| --headless --quit | TODO（期望 EXIT 0，且无 SCRIPT ERROR / Parse Error / Corrupted header） |
-| --headless -- --selftest | TODO（期望 75/75，EXIT 0） |
-| 包内容排除检查 | TODO（tools/ docs/ shots/ refshots/ addons/ sounds/ *.md 全 0；scripts/main.gd 在包；_mcp_game_helper 已剥离） |
-| 与 P8.1 冻结包 c40376ad…b668 的关系 | TODO：说明 size/sha256 差异来源（本次改动涉及脚本，预期 sha256 必然变化；重点记录体积变化幅度与排除项一致性；若 size 完全一致需核实是否真的重新导出） |
-| 旧包备份 | 开发产物/backup/release_pre_p82/休闲小岛幻境_pre_p82_<stamp>.exe（由 --copy-to-release 自动生成） |
-| 独立验收 | bash verify_release.sh --exe="D:/休闲小岛幻境/发布/休闲小岛幻境.exe" --expect-sha256=<上表> --expect-size=<上表> --expect-selftest=75/75 → 结果 TODO |
+| 体积 | **117,248,168 B** |
+| SHA256 | **`994ea96a635eaacf0cefdc9225474851f9e4c0fc3fba521bf049ab80bc243795`** |
+| --headless --quit | **EXIT 0**，`verify_quit.log` 无 Parse Error / Corrupted header / SCRIPT ERROR |
+| --headless -- --selftest | **73/73 PASS + 1 SKIP（真实鼠标拖动）**，EXIT 0 |
+| 包内容排除检查 | `savepack_list.txt` 113 行：`res://tools/` 0、`res://docs/` 0、`res://shots/` 0、`res://refshots/` 0、`res://addons/godot_ai/` 0、`*.md` 0、`res://smoke_test.tscn` 0、`res://build/` 0；`res://scripts/main.gd` 在包；`_mcp_game_helper` 0 命中 |
+| 与 P8.1 冻结包 c40376ad…b668 的关系 | 体积 **+10,064 B**（117,238,104→117,248,168）、sha256 变化；差异来源 = 本轮脚本改动（`scripts/cottage.gd` 烟囱分段/壁炉凹龛、`scripts/main.gd` 灯光与分段计时、`scripts/world.gd` 栖点、`scripts/ui_datetime_wheel.gd` 常量引用）与 pck 内时间戳相关字节；导出管线本身已由 base 副本预览导出的逐字节复现（同 sha）证明未变；排除项集合与 P8.1 一致 |
+| 旧包备份 | `开发产物/backup/release_pre_p82/休闲小岛幻境_pre_p82_20261022_214845.exe`（117,238,104 B，sha256 c40376ad…b668，含旧 size/sha 记录；回滚即 cp 回 `发布/` 与 `构建输出/`） |
+| 独立验收 | `bash verify_release.sh --exe="D:/休闲小岛幻境/发布/休闲小岛幻境.exe" --expect-sha256=994ea96a… --expect-size=117248168 --expect-selftest=73/73` → **RESULT PASS**（EXIT 0，`开发产物/p82/verify_release_run_215233.log`，`发布/verify_result_20261022_215233.json`） |
 
 ---
 
@@ -101,12 +101,18 @@ P8.2 改动后必须能证明"发布包仍可复现"，本阶段用**只读基�
 | 判定 | owner 结论见 docs/P8_2_01_NOTES.md；本索引核对：20/18 张与 MANIFEST 逐张登记一致，尺寸统一 |
 | 预存在 | regress/scale_house_p7v32.log：252 checks / 245 pass / **7 fail**（light_sources 契约，见 PRE-6） |
 
-### P8.2-02 菜单 / 开场（TODO）
+### P8.2-02 灯光质量 + 五档性能（owner：lighting 视觉 / wind 性能；本索引转录）
 
 | 项 | 内容 |
 | --- | --- |
-| 证据目录 | **不存在** D:/休闲小岛幻境/开发产物/p82/02_*（模块尚未交付证据或使用其他目录） |
-| 判定 | TODO：需 owner 补证据目录与判据，否则最终报告不能引用 |
+| 提交 | 02(a) `ca22d08`、02(b) `befdb0f`、诊断工具链与 NOTES `4ac7f0f`；性能 A/B `f9123a4` `76787bf` |
+| 证据目录 | `D:/休闲小岛幻境/开发产物/p82/02_lighting/`（before/、after/、after_pre_02/、qa/、crop/、report_crop/、regress/、pixel*）与 `开发产物/p82/evidence/02_perf/` |
+| 视觉数字 | `day_room_wide` 右上 ROI 近白像素(min>235)：before(base) **42,309** → after(HEAD) **0**；ROI 均值 191.6→125.5（−34.5%）；壁炉光槽同 run 新旧参数 A/B：day 裁切 max=255 **11,634→5,694（−51.0%）**、night **47,125→21,836（−53.7%）**；炉台暖光保留（night 均值 93.1→92.4，hearth p99 208/220，clip 0） |
+| 02(c) 悬空球 | 逐盏隔离归因到 `L[13] fireplace`（关它 → ②③ 贡献 57%/63%）；**P8.1 基线 ddcde3a 同样存在** → 无阴影解析光墙热点，**NO-GO 不改**，登记 L-6 |
+| 02(d) 过渡带 | 未采纳（g_indoor_band 注册时序不一致 → 整体回滚，全树 grep 0），登记 L-7 |
+| 性能 A/B | base=ddcde3a vs new=befdb0f，8 次计时 ABBA + 2 次 warmup；A/A 单元级 |Δ| 中位 38 µs、p90 **386 µs**（显著阈值）；new−base 帧时间几何均值：q0 −72 µs(−1.3%)、q1 +44、q2 +36、q3 +47、q4 +91 µs；7 场景 −126…+154 µs；超过 773 µs 的单元 **0 个** → 无超噪声底回归；激活灯数两侧一致 10/11/12/14/16 |
+| q0 绝对 FPS | 7 场景几何均值 181.1→183.5 fps；clear_day 145.2、heavy_rain 132.2、winter_white 129.6 **均 < P8.1 遗留门 170** → 如实登记未达（G-4），与 P8.1 历史 166.1 不可直接比较（本机当前慢 10–20%） |
+| 判定 | **视觉 PASS（a/b）**；c/d 如实登记未采纳；**性能 PASS（相对判据）**，绝对 q0 门未达 |
 
 ### P8.2-03 风场 / CPU 开销（owner：wind，NOTES 已提交 766ce21；本索引含独立复算）
 
@@ -145,7 +151,7 @@ P8.2 改动后必须能证明"发布包仍可复现"，本阶段用**只读基�
 | 自测 | regress_selftest_20261022.log：RESULT 73/73 passed（EXIT 0，尾部有 8 个 ObjectDB leaked WARNING，历史已知） |
 | 生态长跑 | eco_soak_20261022.log / eco_soak_v2_20261022.log：v2 共 899 个 [OK] 与 **89 个 [FAIL]「无鸟钻地」**（bad=1，位置 dock_rail/dock_bollard，如 pos=(27.76,1.69,17.75) terrain=-3.70 gap=5.39）；属**预存在失败**，需 owner 定性（是栖点选点问题还是该断言口径问题），最终报告必须披露 |
 | 回归 | regress_probe_p7v2_bird / p7v2_perch / p81_tree_bird 日志（本阶段转录，结论待 owner） |
-| 判定 | 部分 PASS（自测/截图/几何诊断）；生态长跑存在预存在失败，TODO 定性 |
+| 判定 | **PASS**（owner 提交 `429da59`+`0447c0f`；自测 73/73、近景截图 5 有效+2 作废、几何 135/0、**soak v3 1407/0 PASS**）。注：`eco_soak_v2` 的 89 条「无鸟钻地」是**探针口径错误**（把码头 rail/bollard 下方海床 terrain≈−3.7~−4.8 m 当作可站立表面），v3 改为「可站立表面 = max(地形, 0)」后为 0；跨季/跨年/暂停恢复一致；自然使用率 38.7%（12/31，5/5 点） |
 
 ### P8.2-05 日期时间滚轮 / 面板（owner 交付，本索引转录）
 
@@ -171,7 +177,8 @@ P8.2 改动后必须能证明"发布包仍可复现"，本阶段用**只读基�
 | 短跑证据 | D:/休闲小岛幻境/开发产物/p82/06_soak/_short_window2/（soak_2026-10-22T19-00-35.csv/.log/_summary.json/_summary.md、stdout.txt） |
 | 短跑结果 | RESULT PASS；window=1600x900 vsync=off；elapsed=120.7s；samples=24；ops=45(ok=45 fail=0)；首窗 p50=10.08 p95=16.67 max=150.00；末窗 p50=11.67 p95=16.67 max=145.86；nodes 1546→1585；orphan +22；vram +296.7MB（启动期驻留）；mem_static +18.8MB |
 | 操作覆盖 | quality 19 / weather 13（12 类全覆盖）/ date 7（四季+跨年 2028-01-01+闰年 2028-02-29+月末 1/31→2/1）/ hud 6 |
-| 判定 | C1 SKIP（<720s 趋势无意义）、C2/C3/C4/C5/C6 PASS；**30min 正式跑待最终阶段**（唯一能触发 C1 的一次） |
+| 判定（短跑） | C1 SKIP（<720s 趋势无意义）、C2~C6 PASS |
+| **30min 正式跑结果** | `RESULT PASS`：elapsed=1800.0s、samples=360、ops=68(ok=68/fail=0)；C1 首末窗 p95 16.67→16.67 ms（limit 22.83）、C2 nodes 1546→1554（+8，limit 81）、C3 最长连续<20fps 1 次（仅 t=0）、C5 0 断言失败、C6 isle_valid=true；证据 `开发产物/p82/final/20261022_205425/soak_2026-10-22T21-06-01.*`；附注：q0/q1 档自带 `max_fps=60`，该档 p50=16.67 ms 为限帧所致 |
 | 已知噪声 | 3 个历史 smoke/短跑摘要同目录存在（18-56-06、18-57-55、19-00-35），check_evidence.py 取最新一份 |
 
 #### 06-B 五档画质矩阵 tools/probe_p82_matrix_shots.gd（提交 310edae）
@@ -181,7 +188,7 @@ P8.2 改动后必须能证明"发布包仍可复现"，本阶段用**只读基�
 | 命令 | bash run_godot.sh --path . --resolution 1600x900 --script res://tools/probe_p82_matrix_shots.gd -- --out="D:/休闲小岛幻境/开发产物/p82/06_matrix" |
 | 证据 | D:/休闲小岛幻境/开发产物/p82/06_matrix/（shots/ 30 PNG + shots/SHA256SUMS、matrix.csv 22 列、MANIFEST.md、matrix_summary_2026-10-22T19-07-27.json、contact_sheet.png 1600x1080、stdout.txt） |
 | 矩阵 | q0..q4 x {clear_day_outdoor, winter_white_outdoor, indoor_night_fireplace, dock_night, heavy_rain, heavy_snow_close} = 30 张，全部 1600x900 |
-| 判定 | RESULT PASS：H1 30/30；H2 6/6 场景 q0 vs q4 有可测差异；H3 夜间最低 mean 31.64（下限 12）@dock_night q0；H4 夜间最高白点 0.00009（上限 0.02）@dock_night q4；H5 无异常 |
+| 判定（正式跑 RUN_ID=20261022_205425） | RESULT PASS：H1 30/30；H2 6/6 场景 q0 vs q4 有可测差异；H3 夜间最低 mean **32.04**（下限 12）@dock_night q0；H4 夜间最高白点 **0.00007**（上限 0.02）；H5 无 runtime error；51 checks/0 fail/30 张；证据 `final/20261022_205425/matrix/`（短跑数字 31.64/0.00009 为 19:07 的早期 smoke，仅存档） q4；H5 无异常 |
 | 登记 | 30 张的尺寸 + sha256 已写入 MANIFEST.md 校验表与 shots/SHA256SUMS（后处理补录，PNG 未修改）；机器尺寸与 CSV width/height 30/30 一致 |
 | 备注 | 首轮码头机位构图错误（相机进礁石），已改复用 main.gd 的 _boat_dock_pos/_boat_dock_heading，_dockfix/ 单场景复验 PASS 后重跑；旧 summary 归档 06_matrix/_prev_run/ |
 
@@ -236,7 +243,7 @@ checker 的两点增强（本阶段）：① 01 证据按 MANIFEST.csv 分节索
 | PRE-2 | 04 生态长跑「无鸟钻地」89 次（dock_rail/dock_bollard） | 04_winter/eco_soak_v2_20261022.log | 预存在，待 owner 定性（栖点选点 vs 断言口径） |
 | PRE-3 | 05 U11 多显示器/高 DPI 无法真机验证 | 05_wheel JSON（SKIP/WARN） | 环境限制，如实披露 |
 | PRE-4 | 多处 user:// 日志写入失败、shader cache 保存失败、Windows 证书库读取失败 | 任意真实运行日志 | 环境性噪声，非产品缺陷（soak/matrix/selftest 退出码均为 0） |
-| PRE-5 | 自测尾部 "8 ObjectDB instances were leaked at exit"；同时 selftest 分母由 **73/73（base ddcde3a / P8.1）** 变为 **75/75（P8.2 HEAD）**，新增 2 项 | 04_winter/regress_selftest_20261022.log；P8.2 HEAD 实测 | 历史已知（P7 起），不影响退出码 0；分母变化非回归异常（来源由 lighting 在 01 NOTES 说明） |
+| PRE-5 | 自测尾部 "8 ObjectDB instances were leaked at exit"；**分母更正：P8.1/base、P8.2 HEAD、发布包三方均为 73/73（此前「75/75、新增 2 项」为 `[TEST]` 行数误读，已修正）** | 04_winter/regress_selftest_20261022.log；baseline/selftest_HEAD_ddcde3a.log（73 PASS/1 SKIP/1 RESULT）；final/20261022_205425/selftest.log；release_preview/build_20261022_214845/verify_selftest.log | 历史已知（P7 起），不影响退出码 0；分母变化非回归异常（来源由 lighting 在 01 NOTES 说明） |
 | PRE-6 | probe_scale_house_p7v32 252 checks / 245 pass / **7 fail**（EXIT=1），7 条全在 light_sources 契约：探针期望「6 固定 + 5 窗」共 11 个光位，实际 P8.1-06 双池聚合后 light_sources=10 | 当前 HEAD：D:/休闲小岛幻境/开发产物/p82/01_fireplace/regress/scale_house_p7v32.log；冻结基线复现（逐字相同的 245/7）：D:/休闲小岛幻境/开发产物/p82/01_fireplace/regress/base_scale_house_p7v32.log | **预存在失败**（P8.1 冻结副本即可复现，非 P8.2 引入）；探针期望值过时。注意：若 02 模块改动 light_sources 结构，需同步更新该探针的期望值，否则会持续误报 |
 | PRE-7 | 05 桌面合成触摸点击/拖动曾一次不等价鼠标（tap=221.0x578.0 前后日期均为 2026-10-22 12:19；拖动 busy=false），11:28:16 重跑后 2 项均 PASS | 05_wheel/probe_p82_datetime_behavior_result.json（11:25:25 与 11:28:16 两次 started_at） | 环境相关/间歇：合成事件走 emulate_mouse_from_touch，本机无真机触屏（is_touchscreen_available=false），无法进一步复验；如实披露，不宣称"已修复" |
 
@@ -247,15 +254,17 @@ checker 的两点增强（本阶段）：① 01 证据按 MANIFEST.csv 分节索
 | --- | --- | --- | --- |
 | NONDET-P82-1 | 04 生态 soak 的两条**统计断言**（「5 个冬季裸枝点都被自然使用过」「使用分布无极端偏斜」）在 `--headless --fixed-fps 60` 下**确定性失败**：33 个停栖事件里 `winter_branch_2` 未被采样（used 4/5，min=0），两次运行分布**逐字相同**；同一探针在**实时 headless**（不加 `--fixed-fps`，31 个事件）下 used 5/5 PASS | PASS：`04_winter/eco_soak_v3_20261022.log`（{3,3,1,2,3}=12/31=38.7%）；fixed-fps FAIL：`final/20261022_205425/probe_p82_eco_soak.headless.log` 与 `final/20261022_203054/probe_p82_eco_soak.headless.log`（均 `step_events=33`、`winter_branch_2:0`）；候选权重：`04_winter/eco_diag_20261022.log`（wb2 w=1.2613，与其余 4 点 1.2559–1.2806 相差 <2%，**无系统性低权重**） | **统计性 + 运行模式相关，不是本轮代码回归**：单次只采样 17–33 个事件，5 点均分 41.5% 权重份额时任一点 0 次的概率约 25%；跨模式聚合 5 个点全部被自然使用过。处置：**断言与阈值都不改**，runbook 将其记为 `nondet` 并要求人工核对分布列；报告 §6.3/§8.1 同步披露 |
 
-## 5. TODO（最终阶段补齐后本索引即可冻结）
+## 5. 收口记录（最终阶段已完成）
 
 已关闭：01 张数口径（after 20 / before 18）与 MANIFEST 登记、06_matrix 尺寸登记、checker 01/06 判据升级 —— 见 §2.1、§3。
 
-仍待最终阶段（按执行顺序）：
+**最终阶段（RUN_ID=20261022_205425，窗口+长跑全量回归）逐项结果**：
 
-1. **代码冻结后**跑 30min 正式 soak（06-A）：命令见 §2.6（06-A），输出目录约定 开发产物/p82/final/<RUN_ID>/soak/；把 C1 趋势结论与 final 目录写回 §2.6，替换"短跑"标注。
-2. 跑 `python check_evidence.py --strict`：预期 final_run 转 PASS 后 **PASS 41 / FAIL 0 / GAP 0 / WARN 0**（05_wheel 最新 11:28:16 已 fail=0，故 WARN 归零；若届时又有 fail 会以 WARN 形式回来，不阻断但需披露），把该行贴进 §3 与 P8.2 报告证据索引。
-3. 正式发布包：`bash 开发产物/p82/build_release.sh --copy-to-release`（自动备份旧包到 开发产物/backup/release_pre_p82/）→ `bash 开发产物/p82/verify_release.sh`；把 size/sha256/版本/--quit/selftest（期望 75/75）填入 §1.1，并与 P8.1 冻结包 c40376ad…b668 做差异说明（同源应一致；若不一致必须解释原因）。
-4. 02 菜单模块：目录与判据待 Lead 通知合并（§2.2 仍为 TODO）。
-5. 03/04/05 的 owner 最终结论与 P8.1 同口径对比（本索引只转录数据，不代替 owner 结论）；PRE-1/PRE-2/PRE-6/PRE-7 需在最终报告中各有一句定性。
-6. 结果收口后本文件即可冻结（改动只允许追加最终数字与冻结 commit）。
+1. **30min 正式 soak**：`RESULT PASS`（1800.0 s / 360 samples / 68 ops 全成功；C1 p95 16.67→16.67 ms、C2 nodes +8、C3 仅 t=0 一次、C5 0 失败、C6 isle_valid=true）→ 已写入 §2.6（06-A）。
+2. **`check_evidence.py --strict`**：**PASS 41 / FAIL 0 / GAP 0 / WARN 0**（15.01 s；含 frozen.release_exe 与 frozen.sha256 两条冻结证据校验）→ 见 §3。
+3. **正式发布包**：`build_release.sh --copy-to-release` verdict=PASS（旧包已备份）→ `verify_release.sh` **RESULT PASS**；size 117,248,168 B、sha256 `994ea96a…3795`、版本 1.0.0、`--quit` EXIT 0、selftest 73/73 → 已写入 §1.1。
+4. **P8.2-02 证据合并**：02 模块是灯光+性能（非「菜单/开场」，原 §2.2 的判断错误已改正），证据见 §2.2 与 `开发产物/p82/02_lighting/`、`evidence/02_perf/`。
+5. **预存在失败复核**：p7v2_light **1**、p7v2_flycam **7**、cottage6 **5**、scale_house_p7v32 **7** 四条在 P8.2 HEAD 上 rc 与失败数逐条吻合（无新增）；p82_eco_soak 2 条 = NONDET-P82-1（§4.1）；wheel_ui UI2 = PRE-8（§4）。
+6. **实现修正**：selftest 分母此前记「75/75、新增 2 项」为 `[TEST]` 行数误读；实际 P8.1/base、P8.2 HEAD、正式包**三方均 73/73 + 1 SKIP**（Lead 修正，见顶部注记与 PRE-5）。
+
+本文件随 P8.2 冻结提交一并冻结（提交号见 `docs/P8_2_REFINEMENT_REPORT.md` §8.7），冻结 tag `p8.2-final`。

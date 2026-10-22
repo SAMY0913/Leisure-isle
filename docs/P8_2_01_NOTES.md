@@ -161,7 +161,7 @@ bash ".../run_godot.sh" --path . --resolution 1600x900 \
 | `tools/probe_p7v2_perch.gd` | pass=265 fail=0 | 265/0 | 无 |
 | `tools/probe_p8_ecology.gd` | checks=41 fail=0 | 41/0 | 无 |
 | `tools/probe_p81_tree_bird.gd` | pass=149 fail=0 | 149/0 | 无 |
-| `--selftest`（窗口） | 75/75 passed（`regress/selftest.log`） | 73/73（本代新增 2 项） | 无 |
+| `--selftest`（窗口） | **73/73 passed** + 1 SKIP（`regress/selftest.log`） | 73/73 | 无（**Lead 复核修正**：原先记的 75/75 是 `[TEST]` 行数=73 PASS + 1 SKIP + 1 RESULT 的误读，分母未变；见 `docs/P8_2_TEST_RESULTS.md` PRE-5） |
 | `tools/probe_scale_world.gd -- --mode audit` | pass=90 warn=0 fail=0 info=17 | 90/0 | 无 |
 | `tools/probe_scale_house_p7v32.gd` | checks=252 pass=245 fail=7（EXIT=1） | 未登记过 | 见下：**预存在** |
 

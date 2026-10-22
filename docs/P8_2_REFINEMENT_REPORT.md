@@ -1,8 +1,8 @@
 # P8.2 工程收尾 / 室内灯光修复 / 性能与交互精修 — 精修报告
 
-> 状态：**进行中（骨架，数据随各模块验收回填）**。冻结前本文件必须完成全部章节并通过 P8.2-06 集成回归。
+> 状态：**已冻结（P8.2 全量回归与发布包验收完成）**。冻结 tag `p8.2-final`；发布包 sha256 `994ea96a635eaacf0cefdc9225474851f9e4c0fc3fba521bf049ab80bc243795`（117,248,168 B，selftest 73/73）。全部章节已回填，剩余限制见 §9。
 
-## 0. 结论摘要（待回填）
+## 0. 结论摘要
 
 | 模块 | 结论 | 证据索引 |
 | --- | --- | --- |
@@ -11,7 +11,7 @@
 | P8.2-03 强风 CPU | **P8.1 的 +1.93 ms 为 `Performance.TIME_PROCESS` 伪影**；强风视觉真实成本 41–47 µs/帧（0.7–0.8%），三项按需更新优化收回 19–31 µs/帧（相对同 run 未优化态 −35.9%…−42.7%，相对 P8 旧实现 −30.5%…−36.3%），视觉/行为逐帧等价 23/23 | §5 |
 | P8.2-04 冬季细节 + 跨季生态 | **5 个冬季栖点中 1 个修复**（wb4 足部净空 −0.0154→+0.1125 m），其余 4 个几何+红花 5 朵全部通过；裸枝自然使用率 38.7%（12/31，5/5 点）、跨季/跨年/暂停恢复全通过、固定种子 soak **1407/0** | §6 |
 | P8.2-05 日期滚轮窗口 E2E | **U-02…U-12 全部闭环**（U-02 帧时间 = **WARN 可测但不可分辨**：Δp50 中位 +0.400 ms vs A/A 噪声中位 0.729 ms；U-03/U-04 合成输入 PASS 但真机高 DPI/触屏未验证；其余 8 项 PASS）；窗口 behavior 87 项 **0 FAIL**、headless 82/82、UI 82 项 0 fail；生产码仅 1 行（常量去重，零行为变更） | §7 |
-| P8.2-06 全量回归 + 发布包 | 待回填 | §8 |
+| P8.2-06 全量回归 + 发布包 | **全量回归 29 项**：4 条登记预存在失败（p7v2_light 1 / p7v2_flycam 7 / cottage6 5 / scale_house 7）rc 与失败数逐条吻合、其余全 PASS；唯一非预存在项为滚轮 UI2 间歇失败，已归因为**预存在 PRE-8**（P8.1 基线同样复现，合成注入下 dt 下限 1 ms 使 EMA 失真，非本轮引入、不改手感参数）；eco_soak 2 条为**非确定性统计断言 NONDET-P82-1**（跨运行聚合 5/5，未改阈值）。30 分钟 soak **PASS**（360 样本、C1–C6 全过）、五档×6 场景矩阵 **51/0 + 30/30 张**、冻结证据 **599/599 sha 一致**。**发布包已重建并独立验收 PASS**：117,248,168 B、sha256 `994ea96a…3795`、`--headless --quit` EXIT 0、selftest **73/73**（分母与 P8.1/base 一致） | §8、§10 |
 
 ## 1. 基线与方法
 
@@ -365,7 +365,7 @@ G6-front / G6-low / G6-oblique 三机位看不到火、G8b 光槽在实体盒内
 
 | 项 | 结果 |
 | --- | --- |
-| `--headless --path . -- --selftest` | rc=0，全部 PASS（分母 **75/75**，P8.1 为 73/73，新增 2 项来源见 PRE-5） |
+| `--headless --path . -- --selftest` | rc=0，**73/73 PASS + 1 SKIP**（真实鼠标拖动：headless 无 GUI 输入）；分母与 P8.1/base、正式发布包三方一致（**Lead 修正**：此前记的 75/75 是 `[TEST]` 行数=73 PASS+1 SKIP+1 RESULT 的误读，见 TEST_RESULTS PRE-5） |
 | `--headless --check-only --script res://scripts/main.gd` | rc=0（语法/类型检查通过；注意引擎选项必须在 `--` 之前） |
 
 **B. 历史专项探针（P8 / P8.1）**
@@ -495,8 +495,75 @@ G6-front / G6-low / G6-oblique 三机位看不到火、G8b 光槽在实体盒内
 - 历史发布包未被覆盖：`发布/休闲小岛幻境.exe` 仍为 P8.1 冻结包（117,238,104 B，sha256 `c40376ad…b668`），P8.2 正式包在冻结阶段才覆盖，且先自动备份到 `开发产物/backup/release_pre_p82/`。
 - 既有证据目录 `开发产物/p82/integrity/` 里另有 `release_exe_before.txt` 与复核命令，可复跑。
 ### 8.6 发布包（size / SHA-256 / 版本 / 退出测试 / 自测）
+
+**P8.2 正式包已重建、独立运行验收并通过**（`build_release.sh --copy-to-release` → `verify_release.sh`，两次均 EXIT=0）。
+
+| 项 | 值 |
+| --- | --- |
+| 构建 commit | `f5f2fef431db351f5aeeb016c5e1ce5aa6c98a10`（record.json `git_head`；构建时工作树干净） |
+| 构建时间 / stamp | 2026-10-22 21:48:45 / `20261022_214845` |
+| 命令 | `bash 开发产物/p82/build_release.sh --copy-to-release` |
+| 导出日志 / record | `开发产物/p82/build_release_run_214845.log`；`开发产物/p82/release_preview/build_20261022_214845/{record.json,build.log,verify_quit.log,verify_selftest.log,savepack_list.txt}` |
+| 正式包路径 | `发布/休闲小岛幻境.exe`，同步 `构建输出/休闲小岛幻境.exe`（三者 sha256 一致） |
+| 体积 | **117,248,168 B**（P8.1 冻结包 117,238,104 B，**+10,064 B**） |
+| SHA-256 | **`994ea96a635eaacf0cefdc9225474851f9e4c0fc3fba521bf049ab80bc243795`** |
+| 产品 / 版本 / 引擎 | 休闲小岛幻境 1.0.0 / `4.7.2.stable.official.ed1daf0bf` |
+| `--headless --quit` | **EXIT 0**，无 Parse Error / Corrupted header（`verify_quit.log`） |
+| `--headless -- --selftest` | **73/73 PASS + 1 SKIP（真实鼠标拖动）**，EXIT 0（与 HEAD、base 同分母，见 §8.1 与 TEST_RESULTS PRE-5 的分母修正） |
+| 包内容排除审计 | `savepack_list.txt` 113 行：`res://tools/` 0、`res://docs/` 0、`res://shots/` 0、`res://refshots/` 0、`res://addons/godot_ai/` 0、`*.md` 0、`res://smoke_test.tscn` 0、`res://build/` 0；`res://scripts/main.gd` 在包；`_mcp_game_helper` 0 命中（已剥离） |
+| 导出前路径核查 | 全 `scripts/` 与 `isle.tscn` 无任何 `res://tools/`、`res://addons/godot_ai`、`*.md`、`res://shots/`、`res://build/` 引用；preload 目标仅 `res://scripts/`(40) 与 `res://shaders/`(3)，两目录均不在 `exclude_filter` 内 → 过滤规则安全 |
+| 与 P8.1 `c40376ad…b668` 的关系 | 体积 +10,064 B 与 sha 变化来自本轮脚本改动（`scripts/cottage.gd` 烟囱分段/壁炉凹龛、`scripts/main.gd` 灯光与分段计时、`scripts/world.gd` 栖点、`scripts/ui_datetime_wheel.gd` 常量引用、新增探针不进包）；导出管线本身已由 base 副本预览导出的逐字节复现证明未变，故差异只可能来自脚本与时间戳相关字节 |
+| 旧包备份 | `开发产物/backup/release_pre_p82/休闲小岛幻境_pre_p82_20261022_214845.exe`（size 117,238,104、sha256 `c40376ad…b668`，含 size/sha 记录） |
+| 独立验收 | `bash 开发产物/p82/verify_release.sh --exe="D:/休闲小岛幻境/发布/休闲小岛幻境.exe" --expect-sha256=994ea96a… --expect-size=117248168 --expect-selftest=73/73` → **RESULT PASS**（EXIT 0，日志 `开发产物/p82/verify_release_run_215233.log`，`发布/verify_result_20261022_215233.json`；exe_mtime 2026-10-22 21:49:45） |
+
 ### 8.7 提交、tag 与回滚命令
 
+**按模块拆分的提交链**（基于 P8.1 冻结提交 `ddcde3a`，分支 `p82-integration`；每个独立可回滚的改动单独成提交）：
+
+| # | 提交 | 内容 |
+| --- | --- | --- |
+| 1 | `eebbc59` | P8.2-06 报告骨架（基线/测量纪律/章节占位） |
+| 2 | `429da59` | P8.2-04 冬季裸枝栖点 `winter_branch_4` 移出次级枝穿模区（仅 world.gd +7/−1） |
+| 3 | `d95f4b2` `310edae` `3269ffc` | P8.2-06 基础设施：长时 soak 探针 / 五档×6 场景截图矩阵探针 / 回归与发布脚本笔记 |
+| 4 | `f116e12` | P8.2-06 报告回填 §3（01 根因与修复参数）与 §8.5（冻结证据 599/599） |
+| 5 | `766ce21` | P8.2-03 强风分段计时 + 三项按需更新优化（萤火/落叶/秋千）+ 等价性探针 |
+| 6 | `eff52e3` `5bf0660` | P8.2-06 测试证据索引与冻结后发布流程 |
+| 7 | `ce6fc30` `1121f65` `41c4816` | P8.2-01 烟囱分段 + 壁炉真实凹龛（cottage.gd）、几何探针 34 项、截图/像素比对与修复记录 |
+| 8 | `0447c0f` | P8.2-04 冬季生态几何/soak/截图探针与结论文档 |
+| 9 | `8707e81` | P8.2-06 报告回填 §6 与 §0/§2 |
+| 10 | `ca22d08` | P8.2-02(a) 室内吊灯光晕纳入昼夜调光（消除白天近景白色光斑） |
+| 11 | `befdb0f` | P8.2-02(b) 壁炉解析光槽近距离过曝参数（能量 1.5→1.05、半径 5→6，位置不变） |
+| 12 | `f9123a4` `76787bf` | P8.2-02 五档画质性能 A/B 可信测量（A/A 噪声底、8 次 ABBA）与文档 |
+| 13 | `56bfbb1` | P8.2-05 日期滚轮窗口端到端验证（生产码仅 1 行常量引用）+ UI10 帧时间可信重测 |
+| 14 | `532e290` | P8.2-06 报告回填 §4.2/§4.3/§7 与 §0 对应行 |
+| 15 | `4ac7f0f` | P8.2-02 灯光视觉诊断工具链与 NOTES 定稿（含 02(c) 悬空球归因/NO-GO、02(d) 回滚登记） |
+| 16 | `f5f2fef` | P8.2-06 报告补 §8.1/§8.2（含 PRE-8 归因）/§8.3/§8.4；TEST_RESULTS 增 PRE-8 |
+| 17 | 本提交 | P8.2-06 文档定稿：§8.6/§8.7 与 §0 收口、selftest 分母修正（报告/TEST_RESULTS/01 NOTES/06 NOTES）、§9.2 增 L-11/L-12、`tools/*.gd.uid` 补交 |
+
+**未采纳项没有提交**：02(d) 室内外过渡带（`g_indoor_band`）已整体回滚（`shaders/toon.gdshader` 与 `main.gd` 注册处均还原，全树 grep 命中 0）；02(c) 悬空球为 NO-GO。两者只留文档记录。
+
+**冻结 tag 与回滚命令**：
+
+```bash
+cd "D:/休闲小岛幻境/游戏工程"
+git tag -a "p8.2-final" -m "P8.2 final: 发布包 sha256 994ea96a…3795 (117,248,168 B) selftest 73/73; 导出源 f5f2fef" <本提交 SHA>
+git tag -l "p8.2*" && git show --stat --oneline "p8.2-final" | head -20
+
+# 回滚发布包（不改 git 历史）
+cp "D:/休闲小岛幻境/开发产物/backup/release_pre_p82/休闲小岛幻境_pre_p82_20261022_214845.exe" "D:/休闲小岛幻境/发布/休闲小岛幻境.exe"
+cp "D:/休闲小岛幻境/开发产物/backup/release_pre_p82/休闲小岛幻境_pre_p82_20261022_214845.exe" "D:/休闲小岛幻境/构建输出/休闲小岛幻境.exe"
+# 复原后应为 sha256 c40376ad2dda1d8eb2e9848ca8a2ce00e4c1a841a03444fa9e9b80ef5d62b668 / 117,238,104 B
+
+# 回滚代码到 P8.1 冻结态（不删除 P8.2 提交、不改写历史）
+git checkout p81-refinement-freeze-20261022
+```
+
+**包与 tag 的可复核关系**：正式包由 `f5f2fef` 导出；其后只有本提交，修改范围仅 `docs/*.md` 与 `tools/*.gd.uid`（`docs/`、`*.md`、`tools/*` 全部在 `exclude_filter` 内）→ 导出输入未变。复核：
+
+```bash
+git diff --stat f5f2fef p8.2-final -- scripts shaders art audio addons fonts project.godot isle.tscn export_presets.cfg icon.ico
+# 期望：无输出（空）
+```
 ## 9. 未完成事项与仍存在的限制
 
 > 口径：按「模块 × 限制」列。每条给：限制 / 影响 / 是否已在本报告披露 / 证据或复现 / 责任人（lead、lighting=01/02、wind=03+06、winter=04、wheel=05）。**未验证项一律不写成已验证**；未修的缺陷不写成已修。
@@ -528,6 +595,8 @@ G6-front / G6-low / G6-oblique 三机位看不到火、G8b 光槽在实体盒内
 | L-9 | 像素量化为固定 ROI（`x∈[1900,2560)`,`y∈[150,900)`），非全帧统计 | 只覆盖主要光晕区 | 02 NOTES；`pixels_after.csv` |
 | L-10 | 门廊灯 glow=1.0（P8.1 遗留）本轮**未改参数** | 门廊近景光团只做现状量化与 before/after 对照，未解决 | §4.1 逐项表；`after/night_porch.png` |
 
+| L-11 | 30 分钟 soak 的 orphan 节点 **+62**、VRAM **+296.7 MB**、mem_static +22.2 MB（节点树仅 +8） | VRAM 主因是画质循环把 q2↔q4 的 MSAA/纹理预算抬高（335↔628 MB）；orphan 未伴随节点树增长，draw/objects 稳定 → 登记观察项，不作泄漏判定 | §8.3；`final/20261022_205425/soak/soak_*.log` |
+| L-12 | 滚轮 **PRE-8**：`probe_p81_datetime_wheel_ui` 的 UI2 拖动断言在合成注入下非确定性失败（惯性滑行落点漂移 22→{16,24,5,22,1}），插桩显示 EMA −4.89 行/秒 而物理位移正好 1 行 | 影响的是**探针断言可信度**，不是真实手势（U-05 手感 47 步/0.392 s、超调 0、滑行比 0.95–1.01 全 PASS）；P8.1 基线 ddcde3a 同样复现；冻结前不改手感参数 | §8.2.1；`开发产物/p82/verify_wheel/` |
 ### 9.3 P8.2-03 强风 CPU
 
 | 编号 | 限制 | 影响 | 证据 / 复现 |
@@ -578,7 +647,8 @@ G6-front / G6-low / G6-oblique 三机位看不到火、G8b 光槽在实体盒内
 
 - **本轮已修复的产品缺陷**：01 壁炉几何遮挡（30/10→34/0）；02 吊灯光晕白天近白圆盘（42,309→0）、壁炉槽过曝（裁切 −51.0%/−53.7%）；03 强风三段按需更新（−19…−30 µs/帧）；04 冬季裸枝栖点穿模（足部净空 −0.0154→+0.1125 m）；05 滚轮硬编码阈值常量化（1 行，零行为变更）。
 - **本轮明确未修 / 未验证**：02 夜间悬空球（L-6，NO-GO，P8.1 既有）、门廊灯 glow（L-10）、室内外硬阶跃（L-7）、q0 ≥170 FPS（G-4）、真机高 DPI/多显示器/触屏（G-2/G-3/T-3/T-4/T-5）、生态 usage 单次统计（E-7）。
-- **纪律**：以上未验证项均给出证据或复现路径；未用「计划/代码已写/静态检查通过」替代真实验收；未降低任何断言阈值（NONDET 只登记不弱化）。
+- **P8.2-06 交付**：窗口+长跑全量回归 **29 项**（唯一非预存在项 = PRE-8，已归因为 P8.1 既有 + 合成注入）；30 min soak **PASS**（C1–C6 全过）；五档×6 场景矩阵 **51/0 + 30/30 张**；冻结证据 **599/599 sha 一致**、P8.1 发布包在重建前未被覆盖；**发布包已重建并独立验收 PASS**（117,248,168 B / `994ea96a…3795` / `--quit` EXIT 0 / selftest 73/73），旧包备份路径与回滚命令见 §8.6、§8.7。
+- **纪律**：以上未验证项均给出证据或复现路径；未用「计划/代码已写/静态检查通过」替代真实验收；未降低任何断言阈值（NONDET 只登记不弱化，PRE-8 只登记不改手感参数）。
 
 ## 10. 证据索引
 

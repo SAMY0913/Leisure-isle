@@ -292,13 +292,13 @@ draw_calls, objects, lights_active, light_budget, msaa_3d, max_fps, capture_ok
 
 - (b) 会自动把旧包备份为 `开发产物/backup/release_pre_p82/休闲小岛幻境_pre_p82_<stamp>.exe`（含旧 size/sha 记录），
   **回滚就把它 cp 回 发布/ 与 构建输出/**。
-- (c) 要核对期望值时：`bash verify_release.sh --exe="D:/休闲小岛幻境/发布/休闲小岛幻境.exe" --expect-sha256=<新sha> --expect-size=<新size> --expect-selftest=75/75`。
-- 预期：selftest **75/75**（P8.2 HEAD 分母；P8.1/base 是 73/73，别混用）。
+- (c) 要核对期望值时：`bash verify_release.sh --exe="D:/休闲小岛幻境/发布/休闲小岛幻境.exe" --expect-sha256=<新sha> --expect-size=<新size> --expect-selftest=73/73`。
+- 预期：selftest **73/73**（P8.2 HEAD、P8.1/base、正式发布包三方一致；**Lead 修正**：原写 75/75 是把 `[TEST]` 行数误当分母，见 TEST_RESULTS PRE-5）。
 
 ### 5.4 回填文档（不占 GPU）
 
 1. `docs/P8_2_TEST_RESULTS.md` §1.1 表：构建 commit（COMMIT_FREEZE）、构建时间、命令、导出日志路径、
-   正式包路径、体积、SHA256、--headless --quit 结果、--selftest（75/75）、包内容排除检查结论、
+   正式包路径、体积、SHA256、--headless --quit 结果、--selftest（73/73）、包内容排除检查结论、
    旧包备份路径、独立验收（verify_release）结果。
 2. §1.1 末尾补「与 c40376ad…b668 的差异说明」：
    - **同源且代码未变** → 应完全一致（本阶段 base 副本预览导出已证明管线可复现）；
@@ -310,7 +310,7 @@ draw_calls, objects, lights_active, light_budget, msaa_3d, max_fps, capture_ok
 ### 5.5 冻结 tag 与回滚命令
 
     cd "D:/休闲小岛幻境/游戏工程"
-    git tag -a "p8.2-final" -m "P8.2 final: <COMMIT_FREEZE> 发布包 sha256 <new_sha> selftest 75/75" <COMMIT_FREEZE>
+    git tag -a "p8.2-final" -m "P8.2 final: <COMMIT_FREEZE> 发布包 sha256 <new_sha> selftest 73/73" <COMMIT_FREEZE>
     git tag -l "p8.2*"
     git show --stat --oneline "p8.2-final" | head -20
 
