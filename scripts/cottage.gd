@@ -150,7 +150,10 @@ static func build(parent: Node3D) -> Dictionary:
     light_sources.append({"pos": lantern_mid_world, "color": Color(1.0, 0.78, 0.48), "range": 5.2, "intensity": 1.20, "energy": 1.20, "kind": "porch_lantern", "indoor": false, "priority": 700})
     light_sources.append({"pos": window_glow_world, "color": Color(1.0, 0.80, 0.52), "range": 4.2, "intensity": 0.70, "energy": 0.70, "kind": "window_glow", "indoor": false, "priority": 660})
     # ---- 池 B：室内 -------
-    light_sources.append({"pos": fire_world, "color": Color(1.0, 0.52, 0.22), "range": 5.0, "intensity": 1.50, "energy": 1.50, "kind": "fireplace", "indoor": true, "priority": 900})
+    # P8.2-02(b)：炉台石/地面在近距离被 1.5/5.0 的壁炉槽打到接近裁切，且顶面 vs 前脸硬边过强。
+    # 位置由 P8.2-01 探针 G8 钉死不可移，只把能量 1.50→1.05、半径 5.0→6.0：
+    # 近距离衰减更缓（0.45m 处直射 -31%）→ 去掉炉台石裁切与硬边，远处（≥3m）反而略增，房间暖光不变。
+    light_sources.append({"pos": fire_world, "color": Color(1.0, 0.52, 0.22), "range": 6.0, "intensity": 1.05, "energy": 1.05, "kind": "fireplace", "indoor": true, "priority": 900})
     light_sources.append({"pos": lamp_world, "color": Color(1.0, 0.74, 0.44), "range": 5.4, "intensity": 1.55, "energy": 1.55, "kind": "chandelier", "indoor": true, "priority": 850})
     light_sources.append({"pos": sideboard_lamp_world, "color": Color(1.0, 0.82, 0.56), "range": 3.4, "intensity": 0.85, "energy": 0.85, "kind": "table_lamp", "indoor": true, "priority": 800})
     light_sources.append({"pos": floor_lamp_world, "color": Color(1.0, 0.80, 0.52), "range": 4.4, "intensity": 1.30, "energy": 1.30, "kind": "floor_lamp", "indoor": true, "priority": 750})
