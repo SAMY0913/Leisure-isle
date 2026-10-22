@@ -1,8 +1,9 @@
 extends SceneTree
 ## P8 阶段 5：天气状态机（IsleWeather）纯函数 + 实例状态 probe。
 ## 运行：Godot_v4.7.2-stable_win64_console.exe --headless --path D:/休闲小岛幻境/游戏工程 --script res://tools/probe_p8_weather.gd
-## 覆盖：类型表/分季权重、雪仅冬/台风仅夏秋、确定性同 seed、轮次边界与过渡连续、
+## 覆盖：12 类类型表/分季观测权重、雪仅手动/台风仅夏秋、确定性同 seed、轮次边界与过渡连续、
 ##       跨季跳转合法性、暂停冻结、手动模式、湿润/积雪趋势、状态契约、种子差异、步长无关。
+## P8.1：13→12 类（普通有风合并进 strong_wind）；自动雪权重=0，积雪改用冬季手动选雪注入验证。
 ## 退出码：0 = 全部通过；1 = 有失败。
 
 const Weather := preload("res://scripts/isle_weather.gd")
@@ -21,6 +22,7 @@ var _fails: Array = []
 func _init() -> void:
 	var t0: int = Time.get_ticks_msec()
 	_run_types_and_params()
+	_run_auto_no_snow()
 	_run_season_probabilities()
 	_run_legality()
 	_run_determinism()
@@ -70,7 +72,8 @@ func _sum(arr: Array) -> float:
 # ---------------------------------------------------------------- 类型表
 
 func _run_types_and_params() -> void:
-	_check(Weather.TYPE_ORDER.size() == 13, "13 weather types", str(Weather.TYPE_ORDER.size()))
+	# P8.1：13→12 类（普通有风合并进 strong_wind）
+	_check(Weather.TYPE_ORDER.size() == 12, "12 weather types", str(Weather.TYPE_ORDER.size()))
 	var seen := {}
 	for tid in Weather.TYPE_ORDER:
 		seen[String(tid)] = true
@@ -79,17 +82,52 @@ func _run_types_and_params() -> void:
 		var p: Dictionary = Weather.TYPE_PARAMS.get(tid, {})
 		for key in ["cloud", "wind", "rain", "snow", "storm"]:
 			_check(p.has(key) and _finite01(float(p.get(key, -1.0))), "param %s.%s in 0..1" % [tid, key])
-	_check(seen.size() == 13, "type ids unique")
+	_check(seen.size() == 12, "type ids unique")
+	# 键一一对应 + 12 类顺序精确锁定（历史"普通有风"类型不残留）
+	_check(Weather.TYPE_LABELS.size() == Weather.TYPE_ORDER.size(), "labels count = type count")
+	_check(Weather.TYPE_PARAMS.size() == Weather.TYPE_ORDER.size(), "params count = type count")
+	var expected_order := ["clear", "partly", "overcast", "strong_wind", "light_rain", "mid_rain", "heavy_rain", "light_snow", "mid_snow", "heavy_snow", "thunder", "typhoon"]
+	_check(Weather.TYPE_ORDER == expected_order, "TYPE_ORDER exact 12 order", str(Weather.TYPE_ORDER))
+	# strong_wind 成为唯一具名大风：参数按 P8.1-04 微调（wind .92 / cloud .55 / storm .10）
+	var sw: Dictionary = Weather.TYPE_PARAMS.get("strong_wind", {})
+	_check(_near(float(sw.get("wind", -1.0)), 0.92) and _near(float(sw.get("cloud", -1.0)), 0.55) and _near(float(sw.get("storm", -1.0)), 0.10), "strong_wind tuned params", str(sw))
 	for sid in Weather.SEASON_IDS:
 		var row: Array = Weather.SEASON_WEIGHTS[sid]
-		_check(row.size() == 13, "season row 13: " + str(sid))
+		_check(row.size() == Weather.TYPE_ORDER.size(), "season row 12: " + str(sid), str(row.size()))
 		_check(_sum(row) > 0.0, "season row weight > 0: " + str(sid))
+		_check(_near(_sum(row), 100.0, 0.01), "season row sum=100: " + str(sid), str(_sum(row)))
 		var neg := false
 		for v in row:
 			if float(v) < 0.0:
 				neg = true
 		_check(not neg, "season row non-negative: " + str(sid))
 	_check(Weather.SEED_DEFAULT == 20261022, "default seed")
+
+# ---------------------------------------------------------------- 自动模式无雪
+
+func _run_auto_no_snow() -> void:
+	# P8.1：2023-2025 澎湖自然降雪=0 → 自动模式任何季节都不得产出雪。
+	# 纯函数 schedule_at 扫 30 天窗口：3 个冬季窗口 + 1 个夏季窗口。
+	var bases := [
+		_ls(2026, 12, 15, 0), _ls(2027, 1, 1, 0), _ls(2027, 2, 1, 0), _ls(2026, 7, 1, 0),
+	]
+	for base in bases:
+		var bad_type := 0
+		var bad_precip := 0
+		for i in range(24 * 30):
+			var st := Weather.schedule_at(float(base) + float(i) * 3600.0, Weather.SEED_DEFAULT)
+			var tid := String(st["type"])
+			if tid == "light_snow" or tid == "mid_snow" or tid == "heavy_snow":
+				bad_type += 1
+			if String(st["precip_type"]) == "snow":
+				bad_precip += 1
+		_check(bad_type == 0, "auto mode no snow type (30d)", "base=%s bad=%d" % [str(base), bad_type])
+		_check(bad_precip == 0, "auto mode no snow precip (30d)", "base=%s bad=%d" % [str(base), bad_precip])
+	# 自动=0 不代表手动被删：冬季手动仍可选雪。
+	var wm := Weather.new()
+	wm.configure(Weather.SEED_DEFAULT, "manual", "heavy_snow")
+	wm.reset(_ls(2027, 1, 15, 12))
+	_check(String(wm.state()["type"]) == "heavy_snow", "winter manual snow still available")
 
 # ---------------------------------------------------------------- 分季概率
 
@@ -105,23 +143,23 @@ func _run_season_probabilities() -> void:
 		_check(w.size() == 4, "weights size 4: " + str(sid))
 		_check(_near(_sum(w), 1.0, 0.0001), "weights sum=1: " + str(sid))
 		var tw := Weather.season_type_weights(w)
-		_check(tw.size() == 13, "type weights size 13: " + str(sid))
+		_check(tw.size() == Weather.TYPE_ORDER.size(), "type weights size 12: " + str(sid), str(tw.size()))
 		var total := _sum(tw)
 		_check(total > 0.0, "type weights sum>0: " + str(sid))
-		var snow := float(tw[8]) + float(tw[9]) + float(tw[10])
-		var typhoon := float(tw[12])
-		var thunder := float(tw[11])
-		if sid == "spring" or sid == "summer" or sid == "autumn":
-			_check(_near(snow, 0.0, 0.000001), "no snow in " + str(sid))
+		_check(_near(total, 100.0, 0.05), "type weights sum=100: " + str(sid), str(total))
+		# 索引：clear0 partly1 overcast2 strong_wind3 light4 mid5 heavy6 light_snow7 mid_snow8 heavy_snow9 thunder10 typhoon11
+		var snow := float(tw[7]) + float(tw[8]) + float(tw[9])
+		var thunder := float(tw[10])
+		var typhoon := float(tw[11])
+		# P8.1：2023-2025 澎湖无自然降雪 → 自动雪权重=0（四季），雪仅冬季手动可选。
+		_check(_near(snow, 0.0, 0.000001), "no auto snow in " + str(sid))
 		if sid == "winter":
-			_check(snow > 0.0, "winter snow possible")
-			_check(snow / total < 0.06, "winter snow rare", "ratio=" + str(snow / total))
 			_check(_near(typhoon, 0.0, 0.000001), "no typhoon in winter")
 		if sid == "summer" or sid == "autumn":
 			_check(typhoon > 0.0, "typhoon possible in " + str(sid))
 		if sid == "summer":
-			_check(thunder >= 6.0, "summer thunder weight high")
-		for i in range(13):
+			_check(thunder >= 1.5, "summer thunder weight >= 1.5 (obs 2.43)", str(thunder))
+		for i in range(tw.size()):
 			_check(float(tw[i]) >= 0.0, "type weight non-negative " + str(sid) + " " + str(i))
 
 # ---------------------------------------------------------------- 合法性
@@ -139,7 +177,7 @@ func _run_legality() -> void:
 	_check(Weather.type_legal("typhoon", w_summer), "typhoon legal summer")
 	_check(Weather.type_legal("typhoon", w_autumn), "typhoon legal autumn")
 	_check(Weather.type_legal("clear", w_winter), "clear legal winter")
-	for tid in ["clear", "partly", "overcast", "windy", "strong_wind", "light_rain", "mid_rain", "heavy_rain", "thunder"]:
+	for tid in ["clear", "partly", "overcast", "strong_wind", "light_rain", "mid_rain", "heavy_rain", "thunder"]:
 		_check(Weather.type_legal(tid, w_spring) and Weather.type_legal(tid, w_winter), "common type legal year-round: " + tid)
 	var summer_manual := Weather.manual_types(w_summer)
 	_check(not summer_manual.has("light_snow"), "summer manual excludes snow")
@@ -147,8 +185,14 @@ func _run_legality() -> void:
 	var winter_manual := Weather.manual_types(w_winter)
 	_check(winter_manual.has("light_snow"), "winter manual includes snow")
 	_check(not winter_manual.has("typhoon"), "winter manual excludes typhoon")
-	_check(winter_manual.size() == 12, "winter manual 12 types", str(winter_manual.size()))
-	_check(summer_manual.size() == 10, "summer manual 10 types", str(summer_manual.size()))
+	# P8.1：12 类按季节过滤 → 春 8 / 夏 9 / 秋 9 / 冬 11（精确顺序，防止类型表漂移）。
+	var warm_expected := ["clear", "partly", "overcast", "strong_wind", "light_rain", "mid_rain", "heavy_rain", "thunder", "typhoon"]
+	var spring_expected := ["clear", "partly", "overcast", "strong_wind", "light_rain", "mid_rain", "heavy_rain", "thunder"]
+	var winter_expected := ["clear", "partly", "overcast", "strong_wind", "light_rain", "mid_rain", "heavy_rain", "light_snow", "mid_snow", "heavy_snow", "thunder"]
+	_check(Weather.manual_types(w_spring) == spring_expected, "spring manual exact 8", str(Weather.manual_types(w_spring)))
+	_check(summer_manual == warm_expected, "summer manual exact 9", str(summer_manual))
+	_check(Weather.manual_types(w_autumn) == warm_expected, "autumn manual exact 9", str(Weather.manual_types(w_autumn)))
+	_check(winter_manual == winter_expected, "winter manual exact 11", str(winter_manual))
 
 # ---------------------------------------------------------------- 确定性 / 种子差异
 
@@ -353,31 +397,24 @@ func _run_manual_cross_season_legal() -> void:
 # ---------------------------------------------------------------- 湿润 / 积雪
 
 func _run_wetness_and_snow() -> void:
-	# 在冬季找一段下雪调度，验证 reset 后积雪>0、持续下雪时增加、跳到夏季后归零。
-	var t_snow := -1.0
-	var base := _ls(2027, 1, 10, 0)
-	for i in range(24 * 14):
-		var t := base + float(i) * 3600.0
-		var s := Weather.schedule_at(t, Weather.SEED_DEFAULT)
-		if String(s["precip_type"]) == "snow" and float(s["transition"]) < 0.1 and float(s["hold_left"]) > 3000.0:
-			t_snow = t
-			break
-	_check(t_snow > 0.0, "found winter snow sample", str(t_snow))
-	if t_snow > 0.0:
-		var w := Weather.new()
-		w.configure(Weather.SEED_DEFAULT, "auto", "clear")
-		w.reset(t_snow)
-		var s0 := w.state()
-		_check(float(s0["snow_depth"]) > 0.0, "snow depth > 0 after snowy reset")
-		_check(float(s0["snow_trend"]) >= 0.0, "snow trend positive while snowing")
-		for i in range(120):
-			w.tick(t_snow + float(i + 1) * 60.0, 60.0, true)
-		_check(float(w.state()["snow_depth"]) >= float(s0["snow_depth"]) - 0.0001, "snow accumulates under snow")
-		# 跳到夏季：立即无雪
-		var summer_t := _ls(2026, 7, 15, 12)
-		w.tick(summer_t, 60.0, true)
-		var s1 := w.state()
-		_check(_near(float(s1["snow_depth"]), 0.0, 0.000001), "jump to summer clears snow", str(s1["snow_depth"]))
+	# P8.1：自动雪权重=0，自动调度里已找不到雪样本；改用冬季【手动】选雪注入积雪，
+	# 验证 reset 后积雪>0、持续下雪时增加、跳到夏季后归零。
+	var winter_t := _ls(2027, 1, 15, 12)
+	var w := Weather.new()
+	w.configure(Weather.SEED_DEFAULT, "manual", "heavy_snow")
+	w.reset(winter_t)
+	var s0 := w.state()
+	_check(String(s0["type"]) == "heavy_snow" and String(s0["precip_type"]) == "snow", "winter manual snow state")
+	_check(float(s0["snow_depth"]) > 0.0, "snow depth > 0 after snowy reset", str(s0["snow_depth"]))
+	_check(float(s0["snow_trend"]) >= 0.0, "snow trend positive while snowing")
+	for i in range(120):
+		w.tick(winter_t + float(i + 1) * 60.0, 60.0, true)
+	_check(float(w.state()["snow_depth"]) >= float(s0["snow_depth"]) - 0.0001, "snow accumulates under snow")
+	# 跳到夏季：立即无雪
+	var summer_t := _ls(2026, 7, 15, 12)
+	w.tick(summer_t, 60.0, true)
+	var s1 := w.state()
+	_check(_near(float(s1["snow_depth"]), 0.0, 0.000001), "jump to summer clears snow", str(s1["snow_depth"]))
 	# 雨天：湿润度趋近雨强
 	var t_rain := -1.0
 	var base2 := _ls(2026, 4, 10, 0)
@@ -407,7 +444,7 @@ func _run_state_contract() -> void:
 	var s := w.state()
 	for key in REQUIRED_KEYS:
 		_check(s.has(key), "state key: " + str(key))
-	_check((s["available_types"] as Array).size() >= 10, "available_types size")
+	_check((s["available_types"] as Array).size() >= 8, "available_types size (spring min 8)")
 	_check(String(s["season_label"]).length() >= 2, "season label")
 	_check(int(s["season"]) >= 0 and int(s["season"]) <= 3, "season index")
 	# 状态字典是拷贝，外部修改不污染内部

@@ -69,11 +69,15 @@ const FOV_MAX := 65.0
 ## 自动/手动模式与手动天气类型。天气面板会实时改这三项，因此一并持久化。
 const WEATHER_SEED_DEFAULT := 20261022
 const WEATHER_DEFAULT_TYPE := "clear"
+## P8.1：12 类（windy 已合并进 strong_wind 并删除）。
 const WEATHER_TYPES := [
-	"clear", "partly", "overcast", "windy", "strong_wind",
+	"clear", "partly", "overcast", "strong_wind",
 	"light_rain", "mid_rain", "heavy_rain",
 	"light_snow", "mid_snow", "heavy_snow", "thunder", "typhoon",
 ]
+## P8.1：历史类型别名（旧存档/旧配置迁移用，幂等）。windy 是 P8 的"普通有风"，
+## 合并后语义归属唯一具名大风状态 strong_wind。
+const WEATHER_TYPE_ALIASES := {"windy": "strong_wind"}
 
 ## 音频分组：每组一条 AudioBus，界面滑块只改总线音量。
 const AUDIO_GROUPS := [
@@ -257,9 +261,13 @@ static func sanitize_weather_auto(value: Variant) -> bool:
 	return bool(value)
 
 
-## 手动天气类型：只认 13 种已知 id（雪/台风是否可选由面板按季节过滤）。
+## 手动天气类型：只认 12 种已知 id（雪/台风是否可选由面板按季节过滤）。
+## 先把历史别名迁移成新 id（windy → strong_wind），**再**做合法性校验；
+## 顺序不能反，否则旧存档里的 "windy" 会被当成非法值回退成 "clear"。
 static func sanitize_weather_type(value: Variant) -> String:
 	var text := str(value).strip_edges()
+	if WEATHER_TYPE_ALIASES.has(text):
+		text = String(WEATHER_TYPE_ALIASES[text])
 	if WEATHER_TYPES.has(text):
 		return text
 	return WEATHER_DEFAULT_TYPE

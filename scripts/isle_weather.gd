@@ -8,7 +8,8 @@ extends RefCounted
 ##     轮次长 2..10 块（1..5 游戏小时），因此任意时刻可以 O(1)-O(14) 直接算出天气，
 ##     不需要从开服补演、也不依赖帧率。
 ##   - 同一 seed + 同一时刻 → 同一状态（自动天气可复跑、可固定）。
-##   - 季节权重来自 IsleCalendar.parts()；雪只在深冬自动出现，台风只在夏秋；
+##   - 季节权重来自 IsleCalendar.parts()；台风只在夏秋；雪只保留为深冬【手动】选项
+##     （2023-2025 澎湖无自然降雪，自动雪权重=0，见 开发产物/p81/findings/weather_data.md）；
 ##     跨季跳转时非法天气立即换成合法天气（不补演、不硬切）。
 ##   - 模拟暂停时 main 传 advancing=false，调度与过渡都冻结。
 
@@ -20,15 +21,16 @@ const SUPER_BLOCKS := 10             # 每个"超级块"= 10 槽 = 5 游戏小�
 const SEED_DEFAULT := 20261022
 const CalendarCtl := preload("res://scripts/isle_calendar.gd")
 
+## P8.1：删除 windy（普通有风）；strong_wind 成为唯一具名大风状态，
+## 日常轻风改由连续风力参数 wind_strength 表达（见 SEASON_WEIGHTS 注释）。
 const TYPE_ORDER := [
-	"clear", "partly", "overcast", "windy", "strong_wind",
+	"clear", "partly", "overcast", "strong_wind",
 	"light_rain", "mid_rain", "heavy_rain",
 	"light_snow", "mid_snow", "heavy_snow", "thunder", "typhoon",
 ]
 
 const TYPE_LABELS := {
-	"clear": "晴", "partly": "多云", "overcast": "阴",
-	"windy": "有风", "strong_wind": "强风",
+	"clear": "晴", "partly": "多云", "overcast": "阴", "strong_wind": "强风",
 	"light_rain": "小雨", "mid_rain": "中雨", "heavy_rain": "大雨",
 	"light_snow": "小雪", "mid_snow": "中雪", "heavy_snow": "大雪",
 	"thunder": "雷暴", "typhoon": "台风",
@@ -39,8 +41,7 @@ const TYPE_PARAMS := {
 	"clear": {"cloud": 0.06, "wind": 0.18, "rain": 0.0, "snow": 0.0, "storm": 0.0},
 	"partly": {"cloud": 0.38, "wind": 0.26, "rain": 0.0, "snow": 0.0, "storm": 0.0},
 	"overcast": {"cloud": 0.82, "wind": 0.32, "rain": 0.0, "snow": 0.0, "storm": 0.0},
-	"windy": {"cloud": 0.30, "wind": 0.62, "rain": 0.0, "snow": 0.0, "storm": 0.0},
-	"strong_wind": {"cloud": 0.48, "wind": 0.88, "rain": 0.0, "snow": 0.0, "storm": 0.08},
+	"strong_wind": {"cloud": 0.55, "wind": 0.92, "rain": 0.0, "snow": 0.0, "storm": 0.10},
 	"light_rain": {"cloud": 0.68, "wind": 0.36, "rain": 0.30, "snow": 0.0, "storm": 0.0},
 	"mid_rain": {"cloud": 0.84, "wind": 0.46, "rain": 0.62, "snow": 0.0, "storm": 0.12},
 	"heavy_rain": {"cloud": 0.94, "wind": 0.58, "rain": 0.92, "snow": 0.0, "storm": 0.30},
@@ -51,12 +52,15 @@ const TYPE_PARAMS := {
 	"typhoon": {"cloud": 1.0, "wind": 1.0, "rain": 0.95, "snow": 0.0, "storm": 1.0},
 }
 
-## 自动天气分季权重（艺术化概率，不求真实气候；雪在广州只是罕见，台风主要夏秋）。
+## 自动天气分季权重（P8.1-04 校准：澎湖 2023-2025 再分析观测小时占比 ×100，每季和=100）。
+## 数组顺序 = TYPE_ORDER；推导与数据来源见 开发产物/p81/findings/weather_data.md。
+## 自动雪权重=0：三年 ERA5 snowfall 全 0、ISD 马公站无雪码、Tmin 11.6℃；
+## 雪仅保留为冬季【手动】选项（type_legal 的 winter_w>=0.60 仍成立）。
 const SEASON_WEIGHTS := {
-	"spring": [26.0, 18.0, 16.0, 12.0, 5.0, 8.0, 5.0, 2.0, 0.0, 0.0, 0.0, 3.0, 0.0],
-	"summer": [18.0, 16.0, 8.0, 7.0, 6.0, 8.0, 7.0, 4.0, 0.0, 0.0, 0.0, 9.0, 3.0],
-	"autumn": [22.0, 18.0, 13.0, 11.0, 6.0, 8.0, 6.0, 2.0, 0.0, 0.0, 0.0, 4.0, 3.0],
-	"winter": [18.0, 19.0, 17.0, 8.0, 6.0, 7.0, 4.0, 2.0, 1.2, 0.6, 0.2, 0.5, 0.0],
+	"spring": [32.82, 23.48, 27.78, 3.15, 11.29, 1.16, 0.0, 0.0, 0.0, 0.0, 0.32, 0.0],
+	"summer": [19.57, 19.93, 35.82, 0.35, 18.37, 1.45, 0.21, 0.0, 0.0, 0.0, 2.43, 1.87],
+	"autumn": [37.31, 20.34, 18.09, 11.83, 8.23, 0.44, 0.13, 0.0, 0.0, 0.0, 0.21, 3.42],
+	"winter": [34.03, 23.52, 19.07, 18.68, 4.61, 0.09, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
 }
 const SEASON_IDS := ["spring", "summer", "autumn", "winter"]
 
@@ -127,7 +131,7 @@ static func _run_bounds(block: int, seed_value: int) -> Dictionary:
 
 ## 季节权重混合后的天气类型概率（按 TYPE_ORDER 索引）。
 static func season_type_weights(season_weights: Array) -> Array:
-	var total := [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+	var total := [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 	for si in range(4):
 		var w := float(season_weights[si]) if season_weights.size() > si else 0.0
 		if w <= 0.0:

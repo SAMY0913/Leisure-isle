@@ -108,7 +108,7 @@ var _cal_preview: Label
 
 # ---- P8 天气面板（可折叠；与时间面板同样的空闲自动收折 / H 同步收起）----
 const WeatherCtl := preload("res://scripts/isle_weather.gd")
-const WEATHER_PANEL_TOP := -338.0   # 内容高度约 270px + 内边距（12 个类型 3 行），不留空白
+const WEATHER_PANEL_TOP := -338.0   # 内容高度约 270px + 内边距（手动按钮最多 11 个，4 列 3 行），不留空白
 var _weather_pill: Button
 var _weather_panel: PanelContainer
 var _weather_open: bool = false
@@ -580,6 +580,8 @@ func _build_weather_console() -> void:
 	var pick_lbl := _mk_label("手动选择 · 仅列本季合法选项", 10, Color(0.68, 0.62, 0.53, 0.9), 2)
 	v.add_child(pick_lbl)
 	_weather_type_grid = GridContainer.new()
+	# P8.1：12 类按季节过滤后为 8/9/9/11 个按钮；4 列 → 最多 3 行。
+	# 不要改成 6 列：6×72px + 间距 ≈457px 会超出面板内容宽度（面板 356px）。
 	_weather_type_grid.columns = 4
 	_weather_type_grid.add_theme_constant_override("h_separation", 5)
 	_weather_type_grid.add_theme_constant_override("v_separation", 4)
