@@ -14,7 +14,9 @@ P8 为《休闲小岛幻境》补上了“日历 / 月球 / 四季 / 天气 / �
 - **统一日历与时间编辑**：完整可编辑公历（年月日时分秒、大小月/闰年/跨年），模拟可暂停、可跳转，现实时间模式只读；仍然只有 `main.gd._sim_seconds` 一个权威时间源。
 - **月球修正**：相位命名、明暗轴、可见性、跳日期更新全部按真实天文状态工作，并用 HKO / MET Norway 公开数据做了可复跑回归。
 - **四季**：北半球公历季 + 边界 ±10 天连续混合；草色、树冠、花量、落叶、冬季裸枝与红梅联动，全部走实例化/材质参数，不重建几何。
+  - **P8.1 注记**：冬季树冠保留量已于 P8.1-02 改为 **0**（完全裸枝）、树顶红梅已删除并改为屋前 5 朵地栽红花，原树冠球面栖点冬季关闭、新增 5 个冬季裸枝栖点。详见 docs/P8_1_REFINEMENT_REPORT.md §2。
 - **天气**：13 种天气、分季权重、确定性调度、20 分钟过渡、湿润与积雪累积/消融、自动/手动双模式、可固定 seed；HUD 天气面板可折叠，仅影响观感，不改变任何进度。
+  - **P8.1 注记**：P8.1 起天气类型合并为 12 类（windy 已并入 strong_wind 的强风状态），详见 docs/P8_1_REFINEMENT_REPORT.md / P8_1_TEST_RESULTS.md。
 - **天气视觉**：一份共享天气参数驱动天空/云/草/海/材质；雨雪各一个 GPU 粒子系统 + 逐粒子室内剔除、屋檐滴水、水花、积雪、湿地面、台风、闪电，5 档画质均有降级路径。
 - **生态联动**：岛民雨天改去门廊、强天气回室内，海鸥避风避雨，帆船恶劣天气停航，炊烟受风/雨影响，萤火在雨雪/大风/雷暴中消失；同时修复了 P7 遗留的“萤火发射器埋在地下”问题。
 
@@ -100,6 +102,7 @@ main.gd::_sim_seconds（唯一权威模拟时钟，秒；现实模式 = unix + �
   - 树冠保留比例：春 0.96、夏 1.00、秋 0.94、冬 0.10；冬季叶卡 0（无悬空菱形叶卡）。
   - 秋叶 `foliage_tint=(1.48,0.86,0.34)`；落叶仅秋季开启（`IsleFx.leaves()`，GPUParticles3D 64 片）。
   - 花量保留：春 1/1/1/.92、夏 .62/1/.86/1、秋 .05/.28/.06/.48、冬 0（按 Tulip/Daisy/Bluebell/Poppy 四种）；冬季红梅用树梢 30 实例 MultiMesh（单 draw call）实现。
+  - **P8.1 注记**（P8.1-02）：树顶红梅 MultiMesh 方案已**整体删除**（锚点取枝轴端点 + ±0.32 m 抖动，实测必然出现“红点漂浮枝梢外”）；冬季红花改为**屋前草坪 5 朵地栽花**，仅冬季随权重渐显；冬季树冠保留量同时改为 0。详见 docs/P8_1_REFINEMENT_REPORT.md §2。
 - 实现方式：草只改 `grass.gdshader` 的 `tint`；树冠/红梅改 MultiMesh 实例色与 `visible_instance_count`（或节点可见性）；花按节点名显隐；地形/材质用季节乘色。**不重建树/花/地形，不逐帧改 2 万+草实例**。
 - 跨季跳转：只更新参数，无粒子/节点累积；selftest 断言冬季树冠实例收起、红梅只在冬季。
 - 验收：13 张截图（4 季 × wide/tree/garden + 冬季红梅）；`probe_p8_season.gd` 114 项 0 失败；详见 `docs/P8_SEASONS_TEST_REPORT.md`。
@@ -108,6 +111,7 @@ main.gd::_sim_seconds（唯一权威模拟时钟，秒；现实模式 = unix + �
 
 - 新增 `scripts/isle_weather.gd`（500 行，`class_name IsleWeather extends RefCounted`，依赖全部 preload，兼容 `--script` 模式）：
   - **13 类型**：`clear / partly / overcast / windy / strong_wind / light_rain / mid_rain / heavy_rain / light_snow / mid_snow / heavy_snow / thunder / typhoon`。
+  - **P8.1 注记**：P8.1 起为 **12 类型**：clear / partly / overcast / strong_wind / light_rain / mid_rain / heavy_rain / light_snow / mid_snow / heavy_snow / thunder / typhoon（windy 已并入 strong_wind 的强风状态，日常轻风由连续 `wind_strength` 表达）。详见 docs/P8_1_REFINEMENT_REPORT.md §4。
   - **确定性调度**：30 模拟分钟一个槽（`BLOCK_SECONDS=1800`）；5 游戏小时一个“超级块”，内部按 seed 确定性切分为长度和恒为 10 的若干轮（1–4 轮/超级块），每轮 1–5 游戏小时；`_rand01` 用 xorshift32（seed/index/salt），完全可复现；默认 seed `20261022`。
   - **分季权重**（13 维，和不必为 100，按相对权重抽取）：
     ```
@@ -239,6 +243,7 @@ main.gd::_sim_seconds（唯一权威模拟时钟，秒；现实模式 = unix + �
 2. **draw call / 常驻节点超预算**：+15 / +15，超过计划 §9.1 的 ≤+8 / ≤+12；frame 时间仍在预算内，作为已知偏差记录。
 3. **月盘为艺术放大**：`sky.gdshader` 月盘半径 0.013 rad（直径≈1.49°，真实≈0.52°），属既有美术选择，P8 未改尺寸。
 4. **积雪覆盖范围**：toon 不透明表面（地面/屋顶/岩石/树冠上侧/树枝上侧/码头面等）生效；玻璃灯罩、halo、草叶按设计淡出而非积雪覆盖，属艺术取舍。
+   **P8.1 注记**：P8.1-03 起季节白化（`g_winter`）与降雪积雪（`g_weather`）分离；树冠/树枝上侧积雪仍由 `g_weather.w` 驱动，冬季另叠加季节白化且室内一层/阁楼完全豁免。详见 docs/P8_1_REFINEMENT_REPORT.md §3。
 5. **自动气候为艺术权重**：广州冬季自动下雪约 2%，不代表真实气候；手动模式仍可在冬季选雪、夏秋选台风。
 6. **室内剔除以小屋为准**：使用小屋 4 个遮挡盒；岛上其他无可进入室内，无影响。
 7. **现实模式不可暂停**：沿用既有语义（现实时间应继续走），因此天气与生态在现实模式下也不会因暂停而冻结。

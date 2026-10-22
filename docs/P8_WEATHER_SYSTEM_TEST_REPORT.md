@@ -17,6 +17,8 @@
 | `scripts/menu.gd` | 设置回写透传上述三个键，避免菜单保存时丢天气偏好 |
 | `tools/probe_p8_weather.gd`（新增） | headless 纯逻辑探针，3135 项检查 |
 
+> **P8.1 注记**：P8.1 起天气类型为 **12 类**（windy 已并入 strong_wind 的强风状态），`probe_p8_weather` 对应 **3145** 项检查。详见 docs/P8_1_REFINEMENT_REPORT.md / P8_1_TEST_RESULTS.md。
+
 设计约束：不新增时钟。天气只读 `main._sim_seconds`（唯一权威模拟时间），自身不维护模拟时间轴；暂停时调度与过渡全部冻结。
 
 ## 2. 天气状态模型
@@ -25,6 +27,8 @@
 
 13 种类型（`TYPE_ORDER`）：
 晴 / 多云 / 阴 / 有风 / 强风 / 小雨 / 中雨 / 大雨 / 小雪 / 中雪 / 大雪 / 雷暴 / 台风。
+
+> **P8.1 注记**：P8.1 起为 **12 类**：晴 / 多云 / 阴 / 强风 / 小雨 / 中雨 / 大雨 / 小雪 / 中雪 / 大雪 / 雷暴 / 台风（原“有风”并入强风状态，日常轻风由连续 `wind_strength` 表达）。详见 docs/P8_1_REFINEMENT_REPORT.md §4。
 
 状态契约（`state()` 返回字典，供 HUD 与后续视觉消费）包含：
 `type`、`label`、`mode`、`auto`、`manual_type`、`intensity`、`cloud`、`wind_dir`、`wind_strength`、`storm`、`precip_type`、`precip_intensity`、`transition`、`next_type`、`next_label`、`run_start`、`run_end`、`hold_left`、`hold_total`、`wetness`、`snow_depth`、`snow_trend`、`season`、`season_label`、`season_t`、`season_weights`、`available_types`、`seed`、`cal`。
@@ -90,6 +94,7 @@
 
 - 13 种类型标签与参数完整性；
 - 四季权重概率采样（冬季雪占比 < 6%，雪不在春/夏/秋出现，台风不在春/冬出现）；
+  - **P8.1 注记**：P8.1-04 起自动权重换为澎湖 2023–2025 观测小时占比×100，**自动雪权重为 0**（三年观测无雪），雪改为冬季手动选项；类型由 13 减为 12。详见 docs/P8_1_REFINEMENT_REPORT.md §4。
 - 季节合法性 `type_legal` / 手动列表过滤；
 - 调度确定性（同 seed 同时间一致、不同 seed 不同）；
 - 轮次边界（每轮 1~5 游戏小时、首尾相接）；
