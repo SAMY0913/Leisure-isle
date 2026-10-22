@@ -846,7 +846,8 @@ static func fireflies(parent: Node3D, center: Vector3) -> Dictionary:
 	quad.material = mat
 	p.draw_pass_1 = quad
 	parent.add_child(p)
-	return {"node": p, "mat": mat}
+	# P8.1-05：pm 一并返回，main 每帧按风/雨/风暴三通道写活动范围与速度（不重建系统）。
+	return {"node": p, "mat": mat, "pm": pm}
 
 static func petals(parent: Node3D, pos: Vector3) -> Dictionary:
 	var p := GPUParticles3D.new()
@@ -897,14 +898,19 @@ static func leaves(parent: Node3D, pos: Vector3) -> Dictionary:
 	var p := GPUParticles3D.new()
 	p.name = "Leaves"
 	p.amount = 96
-	p.lifetime = 9.0
-	p.preprocess = 6.0
+	# P8.1-05：叶子实际落地时间 2.4—4.8s（见 wind_ui.md A.2），原 lifetime 9 会让叶片
+	# 落地后继续在地下停留 4—6s 无效模拟；截到 5.0 并把预热的粒子同步减半。
+	p.lifetime = 5.0
+	p.preprocess = 3.0
 	p.emitting = false
 	p.position = pos
-	p.visibility_aabb = AABB(Vector3(-14, -14, -14), Vector3(28, 18, 28))
+	# P8.1-05：强风横向输运明显加长（clear 1.4m → strong_wind 7m），AABB 同步放大，
+	# 否则粒子一旦离开原始视锥就会被整批剔除（视觉上像叶子突然消失）。
+	p.visibility_aabb = AABB(Vector3(-18, -14, -18), Vector3(36, 20, 36))
 	var pm := ParticleProcessMaterial.new()
 	pm.direction = Vector3(0.12, 1.0, 0.06)
-	pm.spread = 70.0
+	# 强风方向更集中，叶片才会成片顺风走，而不是向四周乱飞。
+	pm.spread = 50.0
 	pm.initial_velocity_min = 0.05
 	pm.initial_velocity_max = 0.32
 	pm.gravity = Vector3(0.10, -0.55, 0.05)
@@ -915,8 +921,11 @@ static func leaves(parent: Node3D, pos: Vector3) -> Dictionary:
 	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_SPHERE
 	pm.emission_sphere_radius = 3.6
 	var grad := Gradient.new()
-	grad.offsets = PackedFloat32Array([0.0, 0.12, 0.82, 1.0])
-	grad.colors = PackedColorArray([Color(1, 1, 1, 0.0), Color(1, 1, 1, 0.95), Color(1, 1, 1, 0.85), Color(1, 1, 1, 0.0)])
+	# P8.1-05：offset 0.55 起 alpha 就开始收，保证 clear（落 4.83s/寿命 5s）在接地前
+	# 已淡到接近透明，不出现“叶堆埋进地面”的硬残留；强风（2.4—2.5s 落地）正好在
+	# offset 0.5 附近开始淡出，观感自然。
+	grad.offsets = PackedFloat32Array([0.0, 0.12, 0.55, 1.0])
+	grad.colors = PackedColorArray([Color(1, 1, 1, 0.0), Color(1, 1, 1, 0.95), Color(1, 1, 1, 0.30), Color(1, 1, 1, 0.0)])
 	var gt := GradientTexture1D.new()
 	gt.gradient = grad
 	pm.color_ramp = gt
