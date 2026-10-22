@@ -124,6 +124,33 @@ var _weather_wind_dir_smooth := Vector2(0.0, -1.0)
 var _wind_leaf_cache: Dictionary = {}
 var _wind_firefly_lifetime := -1.0
 var _wind_firefly_emitting := false
+# P8.2-03：强风 CPU 分段计时（--p82windprof 开启；默认关闭时每个 section 只多一次 bool 判断）。
+# section: 0=风向/阵风平滑 1=落叶粒子参数 2=冬季叶色/门控 3=萤火抑制 4=秋千受迫摆
+const P82_WIND_SECTION_NAMES := ["wind_dir", "leaf_params", "winter_leaf_gate", "firefly_suppress", "swing"]
+var _p82windcpu := false
+# P8.2-03：把三项优化临时关掉（=优化前路径），用于同一 build 内交替 A/B 归因（--p82windcpu --impls new,off,legacy）。
+var _p82opt_off := false
+var _p82prof_on := false
+var _p82prof_t := 0
+var _p82prof_us: Array = [0, 0, 0, 0, 0]
+var _p82prof_last: Array = [0, 0, 0, 0, 0]
+var _p82prof_calls: Array = [0, 0, 0, 0, 0]
+# P8.2-03：稳态天气下风场输入逐帧不变，纯函数每帧新建 Dictionary 属纯开销；
+# 这些缓存只在输入变化超过"写入阈值"时失效重算，视觉输出与逐帧重算等价。
+var _p82_leaf_lp: Dictionary = {}
+var _p82_leaf_wv := -999.0
+var _p82_leaf_wd := Vector2(0.0, -1.0)
+var _p82_leaf_lp_valid := false
+var _p82_ff_act: Dictionary = {}
+var _p82_ff_weather_f := -999.0
+var _p82_ff_act_valid := false
+var _p82_ff_ratio_w := -1.0
+var _p82_ff_box_w := Vector3(999.0, 999.0, 999.0)
+var _p82_ff_speed_w := -1.0
+var _p82_ff_albedo_w := Color(-1.0, -1.0, -1.0, -1.0)
+# 秋千：复用目标/弹簧输出容器（每帧 3 个临时容器的分配是测量到的第二热点）。
+var _p82_swing_tg: Dictionary = {"roll": 0.0, "pitch": 0.0, "acc": 0.0, "gust": 1.0, "tr": 0.0}
+var _p82_swing_out: Array = [0.0, 0.0]
 
 # ---- 天文 / 主题 ----
 var _astro: Dictionary = {}
@@ -359,6 +386,9 @@ func _ready() -> void:
 	_p81windperf = "--p81windperf" in OS.get_cmdline_args() or "--p81windperf" in OS.get_cmdline_user_args()
 	# 同 build A/B：--p81windperf-legacy 让本次运行走旧实现，用于同机位对照。
 	_p81wind_legacy = "--p81windperf-legacy" in OS.get_cmdline_args() or "--p81windperf-legacy" in OS.get_cmdline_user_args()
+	# P8.2-03：强风 CPU 分段采样（--p82windcpu 多轮交替 A/B；--p82windprof 只开分段计时）。
+	_p82windcpu = "--p82windcpu" in OS.get_cmdline_args() or "--p82windcpu" in OS.get_cmdline_user_args()
+	_p82prof_on = _p82windcpu or "--p82windprof" in OS.get_cmdline_args() or "--p82windprof" in OS.get_cmdline_user_args()
 	_shots = "--shots" in OS.get_cmdline_args() or "--shots" in OS.get_cmdline_user_args() or _p7shots or _p8shots or _p8moon or _p8seasons or _p8weather or _p8wfx or _p8eco or _p81treebird or _p81white or _p81snow or _p81wind
 	_transition = "--transition" in OS.get_cmdline_args() or "--transition" in OS.get_cmdline_user_args()
 	_selftest = "--selftest" in OS.get_cmdline_args() or "--selftest" in OS.get_cmdline_user_args()
@@ -368,11 +398,11 @@ func _ready() -> void:
 	# 岛民自主开门会引入真实竞态，故自测时不创建岛民；岛民自身由 P7-V4 专用探针覆盖。
 	if _selftest:
 		_no_villager = true
-	if _perf or _p8perf or _p81windperf:
+	if _perf or _p8perf or _p81windperf or _p82windcpu:
 		DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
 	# 读取用户设置：菜单、时钟、画质、音量、窗口模式共用同一份数据。
 	# 自动化运行（截图/性能/自测/转场）使用默认设置，保证结果可复现且不受玩家配置影响。
-	var automation := _shots or _perf or _selftest or _transition or _p7shots or _p8shots or _p8moon or _p8seasons or _p8weather or _p8wfx or _p8eco or _p8perf or _p81treebird or _p81white or _p81snow or _p81wind or _p81windperf
+	var automation := _shots or _perf or _selftest or _transition or _p7shots or _p8shots or _p8moon or _p8seasons or _p8weather or _p8wfx or _p8eco or _p8perf or _p81treebird or _p81white or _p81snow or _p81wind or _p81windperf or _p82windcpu
 	_settings = Settings.defaults() if automation else Settings.load_settings()
 	_setup_time_api()
 	_time_source = String(_settings.get("time_source", "sim"))
@@ -431,6 +461,8 @@ func _ready() -> void:
 		_run_p81wind()
 	elif _p81windperf:
 		_run_p81windperf()
+	elif _p82windcpu:
+		_run_p82windcpu()
 	elif _p8seasons:
 		_run_p8seasonshots()
 	elif _p8weather:
@@ -1018,6 +1050,8 @@ func _apply_season_visuals() -> void:
 	# 秋叶：随季节权重开关与密度；颜色取 drift_color（枯黄→暖橙→冬白）。
 	# P8.1-05：冬季（canopy_keep=0 的裸树）不得继续产叶——用冬季权重做门控，
 	# 发射量与叶色一起收；只在“开→关”跃迁帧 restart 清残留，绝不每帧重启（F9）。
+	if _p82prof_on:
+		_p82p_begin()
 	var leaf_fall := clampf(float(v.get("leaf_fall", 0.0)), 0.0, 1.0)
 	var leaf_winter_w := float(_season_weights[3]) if _season_weights.size() > 3 else 0.0
 	var leaf_fall_eff := leaf_fall * wind_leaf_gate(leaf_winter_w)
@@ -1036,6 +1070,8 @@ func _apply_season_visuals() -> void:
 			var dc: Color = v.get("drift_color", Color(0.95, 0.52, 0.18))
 			var lc := wind_leaf_tint(dc, leaf_winter_w)
 			lmat.albedo_color = Color(lc.r, lc.g, lc.b, 0.92)
+	if _p82prof_on:
+		_p82p_end(2)
 	# 花瓣只在春季飘（其余季节淡出/停发），避免与秋叶、冬雪同时出现。
 	var petal_entry: Dictionary = _fx.get("petals", {})
 	var petals := petal_entry.get("node", null) as GPUParticles3D
@@ -1434,6 +1470,13 @@ static func firefly_wind_activity(ratio: float) -> Dictionary:
 
 ## 秋千风致目标角（S2/S3/S6）：阵风包络 × 水平风加速度 → 侧倾/前后摆目标（已夹紧）。
 static func swing_wind_targets(wv: float, wd: Vector2, t: float) -> Dictionary:
+	var out: Dictionary = {}
+	swing_wind_targets_into(out, wv, wd, t)
+	return out
+
+## P8.2-03：热路径版本——写入调用方复用的 Dictionary，避免每帧新建 5 键容器（测量热点）。
+## 数学与 swing_wind_targets 完全一致（后者只是包一层新容器）。
+static func swing_wind_targets_into(out: Dictionary, wv: float, wd: Vector2, t: float) -> void:
 	var w := clampf(wv, 0.0, 1.0)
 	var dir := wd
 	if dir.length_squared() < 0.0001:
@@ -1442,13 +1485,11 @@ static func swing_wind_targets(wv: float, wd: Vector2, t: float) -> Dictionary:
 	var tr := smoothstep(WIND_SWING_TR0, WIND_SWING_TR1, w)
 	var gust := wind_gust(t, tr)
 	var acc := (2.2 * w + 0.8 * tr) * gust
-	return {
-		"roll": clampf(atan2(dir.x * acc, 9.8), -0.18, 0.42),
-		"pitch": clampf(-atan2(dir.y * acc, 9.8), -0.45, 0.45),
-		"acc": acc,
-		"gust": gust,
-		"tr": tr,
-	}
+	out["roll"] = clampf(atan2(dir.x * acc, 9.8), -0.18, 0.42)
+	out["pitch"] = clampf(-atan2(dir.y * acc, 9.8), -0.45, 0.45)
+	out["acc"] = acc
+	out["gust"] = gust
+	out["tr"] = tr
 
 ## 秋千 idle 基础姿态：与 P8.1-04 旧公式逐字符一致，S1 回归的基准。
 static func swing_idle_rot(t: float) -> Vector2:
@@ -1456,11 +1497,34 @@ static func swing_idle_rot(t: float) -> Vector2:
 
 ## 半隐式欧拉弹簧-阻尼一步（S1/S4）：返回 [新角度, 新角速度]。
 static func swing_spring_step(x: float, v: float, target: float, dt: float) -> Array:
+	var out: Array = [0.0, 0.0]
+	swing_spring_step_into(out, x, v, target, dt)
+	return out
+
+## P8.2-03：热路径版本——复用调用方传入的 2 元素 Array，避免每帧两次 Array 分配。
+static func swing_spring_step_into(out: Array, x: float, v: float, target: float, dt: float) -> void:
 	var step := clampf(dt, 0.0, 0.05)
 	var a := SWING_W0 * SWING_W0 * (target - x) - 2.0 * SWING_ZETA_C * SWING_W0 * v
 	v += a * step
 	x += v * step
-	return [x, v]
+	out[0] = x
+	out[1] = v
+
+## P8.2-03：分段计时原语（µs）。只在 _p82prof_on 时被调用；不分配容器、不建对象。
+func _p82p_begin() -> void:
+	_p82prof_t = Time.get_ticks_usec()
+
+func _p82p_end(idx: int) -> void:
+	var d := Time.get_ticks_usec() - _p82prof_t
+	_p82prof_us[idx] += d
+	_p82prof_last[idx] = d
+	_p82prof_calls[idx] += 1
+
+func _p82p_reset() -> void:
+	for i in range(P82_WIND_SECTION_NAMES.size()):
+		_p82prof_us[i] = 0
+		_p82prof_last[i] = 0
+		_p82prof_calls[i] = 0
 
 ## 每帧推进天气视觉：平滑风、室内判定、粒子跟随/密度/颜色、共享 shader uniform。
 ## 这里不改变天气状态，也不新建权威时间；所有参数都来自 _weather_* 投影。
@@ -1468,6 +1532,8 @@ func _update_weather_fx(delta: float) -> void:
 	if _weather_fx.is_empty():
 		return
 	var advancing := _mode == Mode.PLAYING and (not _paused or _time_source == "real")
+	if _p82prof_on:
+		_p82p_begin()
 	_weather_visual_wind = lerpf(_weather_visual_wind, clampf(_weather_wind, 0.0, 1.0), 1.0 - exp(-1.6 * delta))
 	var target_dir := _weather_wind_dir
 	if target_dir.length_squared() < 0.0001:
@@ -1475,6 +1541,8 @@ func _update_weather_fx(delta: float) -> void:
 	target_dir = target_dir.normalized()
 	var smoothed := _weather_wind_dir_smooth.lerp(target_dir, 1.0 - exp(-0.9 * delta))
 	_weather_wind_dir_smooth = smoothed.normalized() if smoothed.length_squared() > 0.0001 else target_dir
+	if _p82prof_on:
+		_p82p_end(0)
 	_weather_gloom = clampf(_weather_cloud * 0.62 + _weather_storm * 0.5 - 0.06, 0.0, 1.0)
 	# 相机在小屋实体盒内 → 室内程度 0→1（平滑），降水随之淡出，避免雨雪穿过屋顶盖在室内画面上
 	var indoor_target := 1.0 if _camera_inside_cottage() else 0.0
@@ -1516,6 +1584,8 @@ func _update_weather_fx(delta: float) -> void:
 	# 落叶随风：秋叶的方向/横漂跟着同一套风场（不再固定 (0.12,1,0.06)）
 	# P8.1-05：强风时加大横向输运、下落与自旋（F2/F3）；只写 ProcessMaterial 属性，
 	# 不新建节点、不重建/不重启粒子系统（F5/F9），参数变化小于阈值时跳过写入。
+	if _p82prof_on:
+		_p82p_begin()
 	var leaf_wind: Dictionary = _fx.get("leaves", {})
 	var leaf_pm := leaf_wind.get("pm", null) as ParticleProcessMaterial
 	if leaf_pm != null:
@@ -1525,7 +1595,16 @@ func _update_weather_fx(delta: float) -> void:
 			leaf_pm.direction = Vector3(wd.x * wv * 1.6, 1.0, wd.y * wv * 1.6).normalized()
 			leaf_pm.gravity = Vector3(wd.x * wv * 0.55, -0.55 - 0.10 * wv, wd.y * wv * 0.55)
 		else:
-			var lp := wind_leaf_params(wv, wd)
+			# P8.2-03：稳定风场下 wv/风向逐帧几乎不变，wind_leaf_params 每帧重建 Dictionary
+			# 是纯开销（测量热点之一）。仅当输入变化超过 0.0005（=direction/gravity 的写入
+			# 阈值本身）时重算；因为下游写入本来就按同一阈值过滤，视觉输出逐帧等价。
+			if not _p82_leaf_lp_valid or _p82opt_off or absf(wv - _p82_leaf_wv) > 0.0005 \
+					or wd.distance_squared_to(_p82_leaf_wd) > 0.00000025:
+				_p82_leaf_lp = wind_leaf_params(wv, wd)
+				_p82_leaf_wv = wv
+				_p82_leaf_wd = wd
+				_p82_leaf_lp_valid = true
+			var lp: Dictionary = _p82_leaf_lp
 			var dir_v: Vector3 = lp["direction"]
 			var grav_v: Vector3 = lp["gravity"]
 			var prev_dir: Vector3 = _wind_leaf_cache.get("dir", Vector3(999.0, 999.0, 999.0))
@@ -1542,6 +1621,8 @@ func _update_weather_fx(delta: float) -> void:
 				leaf_pm.angular_velocity_max = amx
 			_wind_leaf_cache["dir"] = dir_v
 			_wind_leaf_cache["grav"] = grav_v
+	if _p82prof_on:
+		_p82p_end(1)
 	# 闪电（雷暴/台风）：只影响视觉，不推进权威时间；模拟暂停时亮度冻结
 	_update_lightning(delta, advancing)
 
@@ -2046,6 +2127,8 @@ func _update_lighting() -> void:
 			(bhm as StandardMaterial3D).albedo_color = Color(1.30 * lampf, 0.83 * lampf, 0.40 * lampf, 1.0)
 	# 萤火（C1 修复：原写法按 ShaderMaterial 写 amount_ratio，但实际材质是 StandardMaterial3D，
 	# 赋值恒为 null，夜间粒子从未发射；改为直接驱动 GPUParticles3D 的 emitting / amount_ratio）
+	if _p82prof_on:
+		_p82p_begin()
 	var ff: Dictionary = _fx.get("fireflies", {})
 	if ff.has("node"):
 		var fnode: GPUParticles3D = ff["node"] as GPUParticles3D
@@ -2066,23 +2149,44 @@ func _update_lighting() -> void:
 				var weather_f := firefly_wind_ratio(1.0, _weather_rain, _weather_snow, _weather_wind, _weather_storm)
 				var ratio := firefly_wind_ratio(ffi, _weather_rain, _weather_snow, _weather_wind, _weather_storm)
 				# 活动范围/速度/亮度只跟天气有关；可见量（amount_ratio）再乘 fireflyI。
-				var act := firefly_wind_activity(weather_f)
-				fnode.emitting = ratio > 0.02
-				fnode.amount_ratio = ratio
+				# P8.2-03：稳定天气下 weather_f 逐帧不变，activity Dictionary 只在变化>0.0005 时重建；
+				# 节点/材质属性也只在发射态或数值真的变化时写（原先逐帧无条件写 4 个属性=测量热点）。
+				if not _p82_ff_act_valid or _p82opt_off or absf(weather_f - _p82_ff_weather_f) > 0.0005:
+					_p82_ff_act = firefly_wind_activity(weather_f)
+					_p82_ff_weather_f = weather_f
+					_p82_ff_act_valid = true
+				var act: Dictionary = _p82_ff_act
+				var emitting_now := ratio > 0.02
+				if _p82opt_off or emitting_now != _wind_firefly_emitting or absf(ratio - _p82_ff_ratio_w) > 0.002:
+					fnode.emitting = emitting_now
+					fnode.amount_ratio = ratio
+					_p82_ff_ratio_w = ratio
 				var fpm := fnode.process_material as ParticleProcessMaterial
 				if fpm != null:
-					fpm.emission_box_extents = act["box_extents"]
+					var box: Vector3 = act["box_extents"]
+					if _p82opt_off or box.distance_squared_to(_p82_ff_box_w) > 0.000004:
+						fpm.emission_box_extents = box
+						_p82_ff_box_w = box
 				# 速度在 GPUParticles3D 节点上（ProcessMaterial 无 speed_scale）。
-				fnode.speed_scale = float(act["speed_scale"])
+				var spd := float(act["speed_scale"])
+				if _p82opt_off or absf(spd - _p82_ff_speed_w) > 0.002:
+					fnode.speed_scale = spd
+					_p82_ff_speed_w = spd
 				var fmat := ff.get("mat", null) as StandardMaterial3D
 				if fmat != null:
-					fmat.albedo_color = act["albedo"]
+					var ab: Color = act["albedo"]
+					if _p82opt_off or absf(ab.r - _p82_ff_albedo_w.r) > 0.002 or absf(ab.g - _p82_ff_albedo_w.g) > 0.002 \
+							or absf(ab.b - _p82_ff_albedo_w.b) > 0.002:
+						fmat.albedo_color = ab
+						_p82_ff_albedo_w = ab
 				# 低 ratio 时缩短寿命=真正减少在飞粒子；只在跨过 0.05 变化时写，避免每帧重启风险。
 				var life: float = act["lifetime"]
 				if absf(life - _wind_firefly_lifetime) > 0.05:
 					_wind_firefly_lifetime = life
 					fnode.lifetime = life
-				_wind_firefly_emitting = fnode.emitting
+				_wind_firefly_emitting = emitting_now
+	if _p82prof_on:
+		_p82p_end(3)
 	# 特效
 	if _ripples != null:
 		_ripples.update(get_process_delta_time(), _sun_alt)
@@ -4530,6 +4634,8 @@ func _update_props(delta: float) -> void:
 	# P8.1-05：idle 正弦保留为“无风基准姿态”，强风下叠加顺风侧倾/前后摆的
 	# 弹簧-阻尼响应（S2/S4）；wind≈0 时逐字退回旧公式（S1 回归误差<1e-6）。
 	# 几何（吊点/绳长/座椅尺寸）一律不碰（S5）。
+	if _p82prof_on:
+		_p82p_begin()
 	if _swing_pivot != null:
 		var idle := swing_idle_rot(_frame_t)
 		if _p81wind_legacy or _weather_visual_wind <= 0.0005:
@@ -4540,18 +4646,31 @@ func _update_props(delta: float) -> void:
 			_swing_pivot.rotation.x = idle.x
 			_swing_pivot.rotation.z = idle.y
 		else:
-			var tg := swing_wind_targets(_weather_visual_wind, _weather_wind_dir_smooth, _frame_t)
 			var dt_step := clampf(delta, 0.0, 0.05)
-			var sp := swing_spring_step(_swing_pitch, _swing_pitch_v, float(tg["pitch"]), dt_step)
-			_swing_pitch = sp[0]
-			_swing_pitch_v = sp[1]
-			var sr := swing_spring_step(_swing_roll, _swing_roll_v, float(tg["roll"]), dt_step)
-			_swing_roll = sr[0]
-			_swing_roll_v = sr[1]
+			if _p82opt_off:
+				# 优化前路径（每帧新建 3 个临时容器）：同一 build 内交替 A/B 归因用，数学与纯函数一致。
+				var tg0 := swing_wind_targets(_weather_visual_wind, _weather_wind_dir_smooth, _frame_t)
+				var sp0 := swing_spring_step(_swing_pitch, _swing_pitch_v, float(tg0["pitch"]), dt_step)
+				_swing_pitch = sp0[0]
+				_swing_pitch_v = sp0[1]
+				var sr0 := swing_spring_step(_swing_roll, _swing_roll_v, float(tg0["roll"]), dt_step)
+				_swing_roll = sr0[0]
+				_swing_roll_v = sr0[1]
+			else:
+				# P8.2-03：复用目标/弹簧容器（每帧 3 个临时容器分配=第二热点），数学与纯函数逐字一致。
+				swing_wind_targets_into(_p82_swing_tg, _weather_visual_wind, _weather_wind_dir_smooth, _frame_t)
+				swing_spring_step_into(_p82_swing_out, _swing_pitch, _swing_pitch_v, float(_p82_swing_tg["pitch"]), dt_step)
+				_swing_pitch = _p82_swing_out[0]
+				_swing_pitch_v = _p82_swing_out[1]
+				swing_spring_step_into(_p82_swing_out, _swing_roll, _swing_roll_v, float(_p82_swing_tg["roll"]), dt_step)
+				_swing_roll = _p82_swing_out[0]
+				_swing_roll_v = _p82_swing_out[1]
 			_swing_pivot.rotation = Vector3(
 				clampf(idle.x + _swing_pitch, -0.62, 0.62),
 				0.0,
 				clampf(idle.y + _swing_roll, -0.18, 0.42))
+	if _p82prof_on:
+		_p82p_end(4)
 	# 立体水花
 	if _splash != null:
 		_splash.update(delta)
@@ -6420,6 +6539,13 @@ func _run_p81wind() -> void:
 	_time_source = "sim"
 	await get_tree().create_timer(1.0).timeout
 	var dir := P81_05_EVIDENCE_DIR
+	# P8.2-03：取证目录可覆盖，避免 P8.2 复跑把新截图写进 P8.1 冻结证据（--windshotsout）。
+	var dir_override := _cmdline_value("--windshotsout")
+	if dir_override != "":
+		dir = dir_override
+		if not dir.ends_with("/"):
+			dir += "/"
+		DirAccess.make_dir_recursive_absolute(dir)
 	# 1) 秋季落叶：同日期/机位，晴天 vs 强风（唯一变量是天气）。
 	_p8_wfx_apply(2026, 10, 20, 16, 30, "clear", 0.0)
 	_p81_camera_leaf()
@@ -6545,6 +6671,237 @@ func _run_p81windperf() -> void:
 	print("[P81WIND PERF] q2 summary new_frame_ms=%.3f legacy_frame_ms=%.3f delta_ms=%+.3f gate<=+0.3 new_cpu_ms=%.3f legacy_cpu_ms=%.3f" % [
 		new_ms, old_ms, new_ms - old_ms, new_cpu, old_cpu])
 	print("[P81WIND PERF] done")
+	get_tree().quit()
+
+# ============================================================
+# P8.2-03：强风 CPU 分段采样（--p82windcpu）
+# 固定 q2 / 大树机位（_p8_camera_tree）/ 日期 2026-10-20 22:00 / paused（模拟时钟冻结）/
+# VSync 关 / Engine.max_fps=0；配合 --fixed-fps 60 时 delta 固定，结果可复现。
+# 阶段：calm（clear，且风场强制归零=真无风基线，用于走无风早退分支）/
+#       wind（strong_wind）/ typhoon（台风）。
+# 每阶段做 new / legacy 同 build A/B；轮次顺序奇偶交替，消除热机/漂移偏置。
+# 墙钟帧间隔 frame_us（headless=dummy renderer 隔离 CPU 侧，窗口=含渲染交叉验证）；
+# 分段 sec_* 为 GDScript Time.get_ticks_usec 差值（仅 prof 段），逐帧写 CSV 供离线统计。
+# ============================================================
+const P82_WIND_EVIDENCE_DIR := "D:/休闲小岛幻境/开发产物/p82/evidence/03_wind"
+const P82_WIND_ROUNDS := 9
+const P82_WIND_FRAMES := 120
+const P82_WIND_SETTLE := 30
+
+func _p82_settle(n: int) -> void:
+	for i in range(n):
+		await get_tree().process_frame
+
+## 逐帧采样：frame_us=相邻两帧起点的墙钟间隔；sec_us=该帧 5 个 section 的 µs。
+func _p82_sample(n: int, with_prof: bool, zero_wind: bool) -> Dictionary:
+	var frame_us: Array = []
+	var tp_us: Array = []
+	var sec_us: Array = []
+	var prev_t := Time.get_ticks_usec()
+	for i in range(n):
+		await get_tree().process_frame
+		if zero_wind:
+			# calm 基线：把投影风清零，模拟真正无风的稳态（否则 clear 的 0.08 会让秋千走受迫摆分支）。
+			_weather_wind = 0.0
+			_weather_visual_wind = 0.0
+		var t := Time.get_ticks_usec()
+		frame_us.append(t - prev_t)
+		prev_t = t
+		tp_us.append(int(Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0))
+		if with_prof:
+			sec_us.append(_p82prof_last.duplicate())
+	return {"frame_us": frame_us, "tp_us": tp_us, "sec_us": sec_us}
+
+func _p82_mean(arr: Array) -> float:
+	if arr.is_empty():
+		return 0.0
+	var s := 0.0
+	for v in arr:
+		s += float(v)
+	return s / float(arr.size())
+
+func _p82_stat(arr: Array, pct: float) -> float:
+	if arr.is_empty():
+		return 0.0
+	var a := arr.duplicate()
+	a.sort()
+	var idx := int(round(pct * float(a.size() - 1)))
+	return float(a[clampi(idx, 0, a.size() - 1)])
+
+func _p82_median(arr: Array) -> float:
+	return _p82_stat(arr, 0.5)
+
+## 应用阶段天气并跳到稳态（风/风向平滑直接对齐目标：测稳态成本，不含收敛帧）。
+func _p82phase_apply(type_id: String, accum: float) -> bool:
+	_p8_wfx_apply(2026, 10, 20, 22, 0, type_id, accum)
+	var got := String(_weather_state.get("type", ""))
+	if got != type_id:
+		push_warning("[P82WINDCPU] weather type not applied want=%s got=%s" % [type_id, got])
+		return false
+	_weather_visual_wind = clampf(_weather_wind, 0.0, 1.0)
+	var td := _weather_wind_dir
+	if td.length_squared() < 0.0001:
+		td = Vector2(0.0, -1.0)
+	_weather_wind_dir_smooth = td.normalized()
+	_p8_camera_tree()
+	return true
+
+func _run_p82windcpu() -> void:
+	_mode = Mode.PLAYING
+	_started = true
+	_paused = true
+	_menu.instant_finish()
+	_blending = ""
+	_hud.set_hud_visible(false, false)
+	_auto_orbit = false
+	_shot_beam_lock = false
+	_time_source = "sim"
+	Engine.max_fps = 0
+	DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
+	await get_tree().create_timer(1.0).timeout
+	_apply_quality(2)
+	# 预热：走一次完整天气应用 + 相机机位，避免首批 shader/材质写入混进采样。
+	_p82phase_apply("clear", 0.0)
+	await _p82_settle(60)
+	var out_dir := _cmdline_value("--out")
+	if out_dir == "":
+		out_dir = P82_WIND_EVIDENCE_DIR
+	DirAccess.make_dir_recursive_absolute(out_dir)
+	var headless := DisplayServer.get_name() == "headless"
+	var mode_tag := "headless" if headless else "window"
+	var label := _cmdline_value("--label")
+	if label == "":
+		label = "run"
+	# impl 列表：默认 new/legacy（优化 vs P8.1 旧实现）；传 --impls new,off,legacy 可把优化前路径
+	# 也拉进来做同一 build 内交替 A/B（off=优化前代码，用于净归因）。
+	var impls: Array = ["new", "legacy"]
+	var impls_arg := _cmdline_value("--impls")
+	if impls_arg != "":
+		impls = impls_arg.split(",", false)
+	var unix := int(Time.get_unix_time_from_system())
+	var csv_path := "%s/p82windcpu_%s_%s_%d.csv" % [out_dir, mode_tag, label, unix]
+	var phases: Array = [
+		{"tag": "calm", "type": "clear", "accum": 0.0, "zero_wind": true},
+		{"tag": "wind", "type": "strong_wind", "accum": 120.0, "zero_wind": false},
+		{"tag": "typhoon", "type": "typhoon", "accum": 120.0, "zero_wind": false},
+	]
+	print("[P82WINDCPU] begin mode=%s quality=%d rounds=%d frames=%d settle=%d fixed_fps=%s vp=%s out=%s" % [
+		mode_tag, _quality, P82_WIND_ROUNDS, P82_WIND_FRAMES, P82_WIND_SETTLE,
+		_cmdline_value("--fixed-fps"), str(get_viewport().get_visible_rect().size), csv_path])
+	# ---- 1) A/B 墙钟采样（prof off，避免计时开销污染 frame_us） ----
+	var ab := {}
+	var ab_rows: Array = []
+	for r in range(P82_WIND_ROUNDS):
+		var order: Array = phases.duplicate()
+		if r % 2 == 1:
+			order.reverse()
+		for ph in order:
+			# impl 顺序也按轮次奇偶翻转：消除"同一阶段内某 impl 总排在最前"的位置偏置。
+			var impl_order: Array = []
+			for ii in range(impls.size()):
+				impl_order.append(ii)
+			if r % 2 == 1:
+				impl_order.reverse()
+			for impl_i in impl_order:
+				var impl_tag := String(impls[int(impl_i)])
+				_p81wind_legacy = impl_tag == "legacy"
+				_p82opt_off = impl_tag == "off"
+				if not _p82phase_apply(String(ph["type"]), float(ph["accum"])):
+					continue
+				await _p82_settle(P82_WIND_SETTLE)
+				var st := await _p82_sample(P82_WIND_FRAMES, false, bool(ph.get("zero_wind", false)))
+				var key := "%s|%s" % [String(ph["tag"]), impl_tag]
+				if not ab.has(key):
+					ab[key] = {"frame_us": [], "tp_us": []}
+				var fu: Array = ab[key]["frame_us"]
+				var tp: Array = ab[key]["tp_us"]
+				for i in range(P82_WIND_FRAMES):
+					fu.append(int(st["frame_us"][i]))
+					tp.append(int(st["tp_us"][i]))
+				ab_rows.append([r, String(ph["tag"]), impl_tag, st["frame_us"], st["tp_us"]])
+	_p81wind_legacy = false
+	_p82opt_off = false
+	# ---- 2) prof 段：每 phase × impl 采样一次，逐帧记 5 个 section ----
+	var prof := {}
+	var prof_rows: Array = []
+	for ph in phases:
+		for impl_i in range(impls.size()):
+			var impl_tag := String(impls[impl_i])
+			_p81wind_legacy = impl_tag == "legacy"
+			_p82opt_off = impl_tag == "off"
+			if not _p82phase_apply(String(ph["type"]), float(ph["accum"])):
+				continue
+			await _p82_settle(P82_WIND_SETTLE)
+			_p82p_reset()
+			var st := await _p82_sample(P82_WIND_FRAMES, true, bool(ph.get("zero_wind", false)))
+			prof["%s|%s" % [String(ph["tag"]), impl_tag]] = st["sec_us"]
+			prof_rows.append([String(ph["tag"]), impl_tag, st["sec_us"]])
+	_p81wind_legacy = false
+	_p82opt_off = false
+	# ---- 3) 写 CSV（采样结束后一次性写，避免字符串格式化的开销混进 frame_us） ----
+	var fa := FileAccess.open(csv_path, FileAccess.WRITE)
+	if fa != null:
+		fa.store_line("round,phase,impl,prof,frame_idx,frame_us,tp_us,sec_wind_dir_us,sec_leaf_params_us,sec_winter_leaf_us,sec_firefly_us,sec_swing_us")
+		for row in ab_rows:
+			var rtag = row[0]
+			var ptag = row[1]
+			var itag = row[2]
+			var fu2: Array = row[3]
+			var tp2: Array = row[4]
+			for i in range(fu2.size()):
+				fa.store_line("%d,%s,%s,0,%d,%d,%d,,,,," % [rtag, ptag, itag, i, int(fu2[i]), int(tp2[i])])
+		for row in prof_rows:
+			var ptag2 = row[0]
+			var itag2 = row[1]
+			var secs: Array = row[2]
+			for i in range(secs.size()):
+				var sv: Array = secs[i]
+				fa.store_line("-1,%s,%s,1,%d,0,0,%d,%d,%d,%d,%d" % [
+					ptag2, itag2, i, int(sv[0]), int(sv[1]), int(sv[2]), int(sv[3]), int(sv[4])])
+		fa.close()
+	# ---- 4) 汇总打印（每阶段 median/P95；section 中位 µs） ----
+	for ph in phases:
+		var tag := String(ph["tag"])
+		for impl_tag in impls:
+			var key := "%s|%s" % [tag, String(impl_tag)]
+			if not ab.has(key):
+				continue
+			var fu3: Array = ab[key]["frame_us"]
+			var tp3: Array = ab[key]["tp_us"]
+			print("[P82WINDCPU] ab phase=%s impl=%s n=%d frame_us_med=%d frame_us_p95=%d frame_us_mean=%.1f tp_us_med=%.1f tp_us_p95=%.1f" % [
+				tag, String(impl_tag), fu3.size(), int(_p82_median(fu3)), int(_p82_stat(fu3, 0.95)), _p82_mean(fu3),
+				_p82_median(tp3), _p82_stat(tp3, 0.95)])
+		var kn := "%s|new" % tag
+		for other in impls:
+			var otag := String(other)
+			if otag == "new":
+				continue
+			var ko := "%s|%s" % [tag, otag]
+			if ab.has(kn) and ab.has(ko):
+				print("[P82WINDCPU] ab-delta phase=%s vs=%s frame_us_med_delta=%+.1f frame_us_p95_delta=%+.1f" % [
+					tag, otag,
+					_p82_median(ab[kn]["frame_us"]) - _p82_median(ab[ko]["frame_us"]),
+					_p82_stat(ab[kn]["frame_us"], 0.95) - _p82_stat(ab[ko]["frame_us"], 0.95)])
+	for ph in phases:
+		var tag2 := String(ph["tag"])
+		for impl_tag in impls:
+			var key2 := "%s|%s" % [tag2, String(impl_tag)]
+			if not prof.has(key2):
+				continue
+			var line := ""
+			var sum_med := 0
+			var n := 120
+			for si in range(P82_WIND_SECTION_NAMES.size()):
+				var col: Array = []
+				for row2 in prof[key2]:
+					col.append(int(row2[si]))
+				n = col.size()
+				var med := int(_p82_median(col))
+				sum_med += med
+				line += " %s=%d" % [String(P82_WIND_SECTION_NAMES[si]), med]
+			print("[P82WINDCPU] sec phase=%s impl=%s n=%d sum_med_us=%d%s" % [tag2, String(impl_tag), n, sum_med, line])
+	print("[P82WINDCPU] csv=%s" % csv_path)
+	print("[P82WINDCPU] done")
 	get_tree().quit()
 
 func _run_p81treebird_shots() -> void:
