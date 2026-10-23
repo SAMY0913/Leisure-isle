@@ -110,6 +110,10 @@ static func build(parent: Node3D, include_winter: bool = false) -> Dictionary:
     # main.gd 显式传 true（world 27 点 + cottage 14 = 41）。
     var perches: Array[Dictionary] = _build_perches(big, dock_info, lighthouse, lamps, include_winter)
 
+    # P2-B v2: 门前土地（六点 Γ 形台面 + 3x3 农田 + 围栏 + 石板小径 + 外缘三段式）。
+    # 只改 world.gd 本身；不触碰 main.gd / cottage.gd / project.godot。
+    var front_yard: Dictionary = _build_front_yard(root, lamps)
+
     return {
         "root": root,
         "terrain": terrain,
@@ -128,7 +132,8 @@ static func build(parent: Node3D, include_winter: bool = false) -> Dictionary:
         "sailboat": sail_info["node"],
         "sailboat_path": sail_info["path"],
         "sailboat_speed": sail_info["speed"],
-        "grass_count": int(grass_counts[0]) + int(grass_counts[1]),
+        # 后置过滤会在台面/走道/小径内移除一部分草实例，返回真实剩余数量。
+        "grass_count": int(grass_counts[0]) + int(grass_counts[1]) - int(front_yard["filter"]["removed_grass"]),
         "sail_routes": sail_routes,
         "sail_dock_pos": sail_anchor,
         "sail_dock_heading": sail_heading,
@@ -160,6 +165,7 @@ static func build(parent: Node3D, include_winter: bool = false) -> Dictionary:
         "rock_stats": rock_stats,
         "flower_stats": flower_stats,
         "winter_bloom": winter_bloom,
+        "front_yard": front_yard,
     }
 
 # ================================================================= layout ===
@@ -1090,14 +1096,10 @@ static func _scatter_flowers(root: Node3D) -> Dictionary:
 static func _winter_blooms(root: Node3D) -> Dictionary:
     var rng := RandomNumberGenerator.new()
     rng.seed = 8102
-    # world XZ anchors (front lawn, checked against _in_porch / path clearance).
-    var spots := [
-        Vector2(0.123, 8.716),
-        Vector2(1.285, 9.089),
-        Vector2(1.968, 8.250),
-        Vector2(1.014, 9.906),
-        Vector2(-0.309, 9.687),
-    ]
+    # P2-B v2 / U5：用户明确不要屋前这五株冬季红花（P2-A 权威记录 = 删除）。
+    # 只删锚点：函数、两个节点名、返回结构（stems/heads/base）与 rng.seed=8102 全部保留，
+    # base 为空 => main.gd 的季节循环写 0 次、主菜单 selftest 的 winter_ok 仍然成立。
+    var spots := []
     var xforms: Array = []
     var base: Array = []
     for i in range(spots.size()):
@@ -3844,3 +3846,1531 @@ static func _build_perches(big: Dictionary, dock_info: Dictionary, lighthouse: D
                 deg_to_rad(float(winter_slope_deg[i])), 1))
 
     return perches
+
+
+# ============================================================ front yard ====
+# P2-B v2 / S4 —— 门前土地（六点 Γ 形）+ 3x3 农田 + 围栏 + 石板小径 + 外缘三段式。
+#
+# 约定：
+#  * 本段输入坐标一律是“房屋局部帧”（lx 向右、lz 向前 / 离开门廊方向）。节点
+#    FrontYard 的变换 = position (M.HOUSE_X, 0, M.HOUSE_Z)、rotation.y = M.HOUSE_YAW，
+#    因此局部帧与世界帧的换算和 world 其余构件一致（与 P2-A 报告同一坐标帧）。
+#  * 台面高度 pad = max(HL + 0.02, 7.53)，HL = _h(world)：只填不挖。
+#  * 外缘 = 全周圆角草缘（min_run = max(0.20, fill/tan32°)）+ 0.70 m 草肩（32°）+
+#    只在填高 > 0.70 处加低矮木边；不再使用 P0 的 1.8 m 垂直灰基座。
+#  * 后置实例过滤只改写“已经生成”的 MultiMesh 实例变换，不触碰任何
+#    _*_spot / _path_clearance / _h 的判定与调用顺序，也不会改变随机数消费顺序。
+#
+# 本段不是独立系统：全部由 _build_front_yard() 一处调用，返回的 facts 进 build() 字典。
+
+const YARD_PAD_Y := 7.53
+const YARD_PAD_LIFT := 0.02
+const YARD_CELL := 0.15
+const YARD_CORNER_R := 0.45
+const YARD_TAN32 := 0.6248693519093275
+const YARD_SHOULDER_H := 0.70
+const YARD_BANK_ROW := 0.20
+const YARD_BANK_ROW_MAX := 90
+const YARD_TAN36 := 1.0000000000000000
+const YARD_BANK_STEP := 0.18
+const YARD_TIMBER_CAP := 0.70
+const YARD_FARM_C := Vector2(-4.35, 11.70)
+const YARD_FENCE_HALF := 2.71
+const YARD_FENCE_POST_H := 0.80
+const YARD_FENCE_POST_R0 := 0.058
+const YARD_FENCE_POST_R1 := 0.070
+const YARD_FENCE_RAIL_R := 0.045
+const YARD_FENCE_PITCH := 0.70
+const YARD_GATE_W := 1.10
+const YARD_GATE_POST_H := 0.92
+const YARD_BED_CELL := 1.0
+const YARD_BED_RISE := 0.20
+const YARD_BED_CORNER := 0.14
+const YARD_FLOOR_LIFT := 0.006
+const YARD_FLOOR_CORNER := 0.30
+const YARD_WALK_OUTER := 2.65
+const YARD_WALK_INNER := 2.05
+const YARD_SLAB_W := 1.05
+const YARD_SLABS := 6
+const YARD_PATH_FROM := Vector2(-1.60, 5.65)
+const YARD_PATH_GATE := Vector2(-4.35, 8.99)
+const YARD_JUNCTION := Vector2(-2.73, 7.02)
+const YARD_JUNCTION_CLEAR := 0.60
+const YARD_GUTTER_X0 := -6.90
+const YARD_GUTTER_X1 := -1.80
+const YARD_GUTTER_Z0 := 8.20
+const YARD_GUTTER_Z1 := 8.48
+const YARD_GUTTER_DEPTH := 0.05
+const YARD_GRASS_N := 2200
+const YARD_POLY_PTS := [
+    Vector2(-7.70, 3.28), Vector2(4.43, 3.28), Vector2(4.43, 5.15),
+    Vector2(-1.45, 5.15), Vector2(-1.45, 14.75), Vector2(-7.70, 14.75),
+]
+
+# ------------------------------------------------------- frame helpers ----
+static func _yard_l2w(lx: float, lz: float) -> Vector2:
+    var c := cos(M.HOUSE_YAW)
+    var s := sin(M.HOUSE_YAW)
+    return Vector2(M.HOUSE_X + c * lx + s * lz, M.HOUSE_Z - s * lx + c * lz)
+
+static func _yard_w2l(x: float, z: float) -> Vector2:
+    var c := cos(M.HOUSE_YAW)
+    var s := sin(M.HOUSE_YAW)
+    var dx := x - M.HOUSE_X
+    var dz := z - M.HOUSE_Z
+    return Vector2(dx * c - dz * s, dx * s + dz * c)
+
+static func _yard_h_l(lx: float, lz: float) -> float:
+    var w := _yard_l2w(lx, lz)
+    return _h(w.x, w.y)
+
+static func _yard_v3(p: Vector2, y: float) -> Vector3:
+    var w := _yard_l2w(p.x, p.y)
+    return Vector3(w.x, y, w.y)
+
+## 局部向量 → 世界向量（不含平移）。
+static func _yard_dir(lv: Vector2) -> Vector3:
+    var c := cos(M.HOUSE_YAW)
+    var s := sin(M.HOUSE_YAW)
+    return Vector3(c * lv.x - s * lv.y, 0.0, s * lv.x + c * lv.y)
+
+## P2-A 的台面规则：只填不挖。
+static func _yard_pad_y(lx: float, lz: float) -> float:
+    return maxf(_yard_h_l(lx, lz) + YARD_PAD_LIFT, YARD_PAD_Y)
+
+static func _yard_pad_y_world(x: float, z: float) -> float:
+    var l := _yard_w2l(x, z)
+    return _yard_pad_y(l.x, l.y)
+
+# --------------------------------------------------------- 2D polygon ----
+static func _yard_seg_dist_pt(p: Vector2, a: Vector2, b: Vector2) -> float:
+    var ab := b - a
+    var l2 := ab.length_squared()
+    if l2 < 0.000000000001:
+        return p.distance_to(a)
+    var t := clampf((p - a).dot(ab) / l2, 0.0, 1.0)
+    return p.distance_to(a + ab * t)
+
+static func _yard_seg_isect(a: Vector2, b: Vector2, p: Vector2, q: Vector2) -> Vector2:
+    var r := b - a
+    var s := q - p
+    var den := r.x * s.y - r.y * s.x
+    if absf(den) < 0.000000000001:
+        return p
+    var t := ((p - a).x * s.y - (p - a).y * s.x) / den
+    return a + r * t
+
+## 逆时针圆角矩形。r_bl / r_br / r_tr / r_tl 为四角半径（0 = 直角）。
+static func _yard_round_rect(x0: float, x1: float, z0: float, z1: float,
+        r_bl: float, r_br: float, r_tr: float, r_tl: float, seg: int) -> PackedVector2Array:
+    var pts := PackedVector2Array()
+    var radii := [r_bl, r_br, r_tr, r_tl]
+    var cs := [Vector2(x0, z0), Vector2(x1, z0), Vector2(x1, z1), Vector2(x0, z1)]
+    var start_a := [PI, -PI * 0.5, 0.0, PI * 0.5]
+    for i in range(4):
+        var r: float = radii[i]
+        var corner: Vector2 = cs[i]
+        if r <= 0.0001:
+            pts.append(corner)
+            continue
+        # 圆心：从角点沿两条边各退 r
+        var inward: Vector2 = Vector2.ZERO
+        match i:
+            0: inward = Vector2(1.0, 1.0)
+            1: inward = Vector2(-1.0, 1.0)
+            2: inward = Vector2(-1.0, -1.0)
+            3: inward = Vector2(1.0, -1.0)
+        var c := corner + inward * r
+        var a0: float = start_a[i]
+        var count := maxi(3, seg)
+        for k in range(count + 1):
+            var ang: float = a0 + (PI * 0.5) * float(k) / float(count)
+            pts.append(c + Vector2(cos(ang), sin(ang)) * r)
+    return pts
+
+## Sutherland–Hodgman：subject 被凸多边形 clipper 裁剪（都按逆时针）。
+static func _yard_clip_poly(subject: PackedVector2Array, clipper: PackedVector2Array) -> PackedVector2Array:
+    var out := subject
+    var n := clipper.size()
+    for i in range(n):
+        if out.size() == 0:
+            break
+        var a := clipper[i]
+        var b := clipper[(i + 1) % n]
+        var inp := out
+        out = PackedVector2Array()
+        for j in range(inp.size()):
+            var pp := inp[j]
+            var qq := inp[(j + 1) % inp.size()]
+            var dp := (b - a).cross(pp - a)
+            var dq := (b - a).cross(qq - a)
+            if dp >= 0.0:
+                out.append(pp)
+                if dq < 0.0:
+                    out.append(_yard_seg_isect(a, b, pp, qq))
+            elif dq >= 0.0:
+                out.append(_yard_seg_isect(a, b, pp, qq))
+    return out
+
+static func _yard_poly_area(pts: PackedVector2Array) -> float:
+    var s := 0.0
+    for i in range(pts.size()):
+        var pp := pts[i]
+        var qq := pts[(i + 1) % pts.size()]
+        s += pp.x * qq.y - qq.x * pp.y
+    return absf(s) * 0.5
+
+static func _yard_ring_len(ring: PackedVector2Array) -> float:
+    var s := 0.0
+    for i in range(ring.size()):
+        s += ring[i].distance_to(ring[(i + 1) % ring.size()])
+    return s
+
+static func _yard_pt_in_convex(p: Vector2, poly: PackedVector2Array) -> bool:
+    for i in range(poly.size()):
+        var a := poly[i]
+        var b := poly[(i + 1) % poly.size()]
+        if (b - a).cross(p - a) < -0.000001:
+            return false
+    return true
+
+## Γ 形台面轮廓（两个圆角矩形的并集，各自凸）。pad 为外扩量（过滤用）。
+static func _yard_pad_polys(pad: float = 0.0) -> Array:
+    var r1 := _yard_round_rect(-1.45 - pad, 4.43 + pad, 3.28 - pad, 5.15 + pad,
+        0.0, 0.0, YARD_CORNER_R + pad, 0.0, 8)
+    var r2 := _yard_round_rect(-7.70 - pad, -1.45 + pad, 3.28 - pad, 14.75 + pad,
+        0.0, 0.0, YARD_CORNER_R + pad, YARD_CORNER_R + pad, 8)
+    return [r1, r2]
+
+static func _yard_pad_contains(lx: float, lz: float, pad: float = 0.0) -> bool:
+    for poly in _yard_pad_polys(pad):
+        if _yard_pt_in_convex(Vector2(lx, lz), poly):
+            return true
+    return false
+
+static func _yard_pad_contains_world(x: float, z: float, pad: float = 0.0) -> bool:
+    var l := _yard_w2l(x, z)
+    return _yard_pad_contains(l.x, l.y, pad)
+
+## 台面边界环（Γ 形 + 三个外凸圆角），逆时针，按 step 采样。
+static func _yard_ring(step: float) -> PackedVector2Array:
+    var pts := PackedVector2Array()
+    var rounded := [false, false, true, false, true, true]
+    var n := YARD_POLY_PTS.size()
+    var ein: Array = []
+    var eout: Array = []
+    for i in range(n):
+        var v: Vector2 = YARD_POLY_PTS[i]
+        var nxt: Vector2 = YARD_POLY_PTS[(i + 1) % n]
+        var prv: Vector2 = YARD_POLY_PTS[(i + n - 1) % n]
+        if rounded[i]:
+            var d0 := (v - prv).normalized()
+            var d1 := (nxt - v).normalized()
+            ein.append(v - d0 * YARD_CORNER_R)
+            eout.append(v + d1 * YARD_CORNER_R)
+        else:
+            ein.append(v)
+            eout.append(v)
+    for i in range(n):
+        if rounded[i]:
+            var v: Vector2 = YARD_POLY_PTS[i]
+            var prv2: Vector2 = YARD_POLY_PTS[(i + n - 1) % n]
+            var d0 := (v - prv2).normalized()
+            var d1: Vector2 = (YARD_POLY_PTS[(i + 1) % n] - v).normalized()
+            var c: Vector2 = v - d0 * YARD_CORNER_R + d1 * YARD_CORNER_R
+            var a0: float = (ein[i] - c).angle()
+            var a1: float = (eout[i] - c).angle()
+            var da := wrapf(a1 - a0, -PI, PI)
+            var m := maxi(2, int(ceil(absf(da) * YARD_CORNER_R / maxf(step, 0.02))))
+            for k in range(m + 1):
+                var ang: float = a0 + da * float(k) / float(m)
+                pts.append(c + Vector2(cos(ang), sin(ang)) * YARD_CORNER_R)
+        else:
+            pts.append(ein[i])
+        var a: Vector2 = eout[i]
+        var b: Vector2 = ein[(i + 1) % n]
+        var seg := a.distance_to(b)
+        var cnt := maxi(1, int(ceil(seg / maxf(step, 0.02))))
+        for k in range(1, cnt):
+            pts.append(a.lerp(b, float(k) / float(cnt)))
+    return pts
+
+static func _yard_in_gutter(lx: float, lz: float) -> bool:
+    return lx > YARD_GUTTER_X0 - 0.02 and lx < YARD_GUTTER_X1 + 0.02 \
+        and lz > YARD_GUTTER_Z0 - 0.02 and lz < YARD_GUTTER_Z1 + 0.02
+
+# ----------------------------------------------------------- mesh utils ----
+## 写一个三角形。a/b/c 从外侧看逆时针（右手法线 = 外向）；Godot 4 前向面是顺时针，
+## 因此实际写入顺序为 a, c, b。
+static func _yard_tri(st: SurfaceTool, a: Vector3, b: Vector3, c: Vector3,
+        na: Vector3, nb: Vector3, nc: Vector3, ca: Color, cb: Color, cc: Color) -> void:
+    var g := (b - a).cross(c - a)
+    if g.length_squared() < 0.000000000001:
+        return
+    st.set_normal(na)
+    st.set_color(ca)
+    st.set_uv(Vector2(a.x, a.z) * 0.09)
+    st.add_vertex(a)
+    st.set_normal(nc)
+    st.set_color(cc)
+    st.set_uv(Vector2(c.x, c.z) * 0.09)
+    st.add_vertex(c)
+    st.set_normal(nb)
+    st.set_color(cb)
+    st.set_uv(Vector2(b.x, b.z) * 0.09)
+    st.add_vertex(b)
+
+## 顶面三角形：自动保证右手法线朝上。
+static func _yard_tri_up(st: SurfaceTool, a: Vector3, b: Vector3, c: Vector3,
+        na: Vector3, nb: Vector3, nc: Vector3, ca: Color, cb: Color, cc: Color) -> void:
+    if (b - a).cross(c - a).y < 0.0:
+        _yard_tri(st, a, c, b, na, nc, nb, ca, cc, cb)
+    else:
+        _yard_tri(st, a, b, c, na, nb, nc, ca, cb, cc)
+
+static func _yard_finish(st: SurfaceTool, parent: Node3D, node_name: String,
+        mat: Material) -> MeshInstance3D:
+    var am: ArrayMesh = st.commit()
+    var mi := MeshInstance3D.new()
+    mi.name = node_name
+    mi.mesh = am
+    mi.material_override = mat
+    mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+    parent.add_child(mi)
+    return mi
+
+## 台面顶点：高度、法线、颜色。只填不挖。
+static func _yard_top_info(p: Vector2) -> Dictionary:
+    var w := _yard_l2w(p.x, p.y)
+    var h := _h(w.x, w.y)
+    var y := maxf(h + YARD_PAD_LIFT, YARD_PAD_Y)
+    var e := 0.18
+    var yx0 := maxf(_yard_h_l(p.x - e, p.y) + YARD_PAD_LIFT, YARD_PAD_Y)
+    var yx1 := maxf(_yard_h_l(p.x + e, p.y) + YARD_PAD_LIFT, YARD_PAD_Y)
+    var yz0 := maxf(_yard_h_l(p.x, p.y - e) + YARD_PAD_LIFT, YARD_PAD_Y)
+    var yz1 := maxf(_yard_h_l(p.x, p.y + e) + YARD_PAD_LIFT, YARD_PAD_Y)
+    var nl := Vector3(-(yx1 - yx0) / (2.0 * e), 1.0, -(yz1 - yz0) / (2.0 * e)).normalized()
+    var nw := Basis(Vector3.UP, M.HOUSE_YAW) * nl
+    var col := _terrain_color(w.x, w.y, y, 1.0, nw.y)
+    return {"pos": _yard_v3(p, y), "nrm": nw, "col": col, "fill": y - h, "h": h, "y": y}
+
+
+# ------------------------------------------------------------- pad top ----
+static func _yard_build_pad(node: Node3D) -> Dictionary:
+    var st := SurfaceTool.new()
+    st.begin(Mesh.PRIMITIVE_TRIANGLES)
+    # 与 Terrain 同一套材质（顶点色 + 地面细节贴图），避免台面看起来像混凝土板
+    var mat := M.terrain_material()
+    var polys := _yard_pad_polys(0.0)
+    var rects := [Rect2(-1.45, 3.28, 5.88, 1.87), Rect2(-7.70, 3.28, 6.25, 11.47)]
+    var area := 0.0
+    var tris := 0
+    var fill_max := -99.0
+    var cut_max := 0.0
+    var fence_ymin := 999.0
+    var fence_ymax := -999.0
+    var verts_low := 0
+    var verts_all := 0
+    for ri in range(rects.size()):
+        var rect: Rect2 = rects[ri]
+        var poly: PackedVector2Array = polys[ri]
+        var nx := int(ceil(rect.size.x / YARD_CELL))
+        var nz := int(ceil(rect.size.y / YARD_CELL))
+        var dx: float = rect.size.x / float(nx)
+        var dz: float = rect.size.y / float(nz)
+        for iz in range(nz):
+            for ix in range(nx):
+                var ax: float = rect.position.x + dx * float(ix)
+                var az: float = rect.position.y + dz * float(iz)
+                if _yard_in_gutter(ax + dx * 0.5, az + dz * 0.5):
+                    continue
+                var cellpoly := PackedVector2Array([Vector2(ax, az), Vector2(ax + dx, az),
+                    Vector2(ax + dx, az + dz), Vector2(ax, az + dz)])
+                var clipped := _yard_clip_poly(cellpoly, poly)
+                if clipped.size() < 3:
+                    continue
+                area += _yard_poly_area(clipped)
+                var ic := _yard_top_info(Vector2(ax + dx * 0.5, az + dz * 0.5))
+                for k in range(clipped.size()):
+                    var p0 := clipped[k]
+                    var p1 := clipped[(k + 1) % clipped.size()]
+                    var i0 := _yard_top_info(p0)
+                    var i1 := _yard_top_info(p1)
+                    _yard_tri_up(st, i0["pos"], i1["pos"], ic["pos"], i0["nrm"], i1["nrm"],
+                        ic["nrm"], i0["col"], i1["col"], ic["col"])
+                    tris += 1
+                    var fm: float = i0["fill"]
+                    fill_max = maxf(fill_max, fm)
+                    cut_max = maxf(cut_max, -fm)
+                    verts_all += 1
+                    if fm < 0.06:
+                        verts_low += 1
+                    var pv: Vector3 = i0["pos"]
+                    var lp := _yard_w2l(pv.x, pv.z)
+                    if absf(lp.x - YARD_FARM_C.x) <= YARD_FENCE_HALF \
+                            and absf(lp.y - YARD_FARM_C.y) <= YARD_FENCE_HALF:
+                        fence_ymin = minf(fence_ymin, pv.y)
+                        fence_ymax = maxf(fence_ymax, pv.y)
+    _yard_finish(st, node, "FrontYardPad", mat)
+    return {
+        "area": area, "tris": tris, "fill_max": fill_max, "cut_max": cut_max,
+        "fence_box_amp": (fence_ymax - fence_ymin) if fence_ymax > -900.0 else -1.0,
+        "fence_box_ymin": fence_ymin, "fence_box_ymax": fence_ymax,
+        "near_low_share": float(verts_low) / maxf(1.0, float(verts_all)),
+    }
+
+# ------------------------------------------------------------- outer edge ----
+## 外缘三段式：全周圆角草缘（min_run=max(0.20, fill/tan32°)）→ 0.70 m 草肩（32°）→
+## 只在填高 > 0.70 处补低矮木边。贴墙边（lz≈3.28）不做草缘（缝隙藏在台基/挑檐后）。
+static func _yard_build_edge(node: Node3D) -> Dictionary:
+    # 外缘 = 三段式：
+    #  ①台面边缘 0.20 m 圆角草缘（由台面本体与外缘共用边线保证，无独立台唇）
+    #  ②草肩：32° 斜坡，坡高 ≤ 0.70 m；坡面以下贴着原地形（yy = max(坡面, 地形-0.02)）
+    #    所以凡是可见的填方面，坡度都恰好是 32°，地形高于坡面的地方由地形本身接管
+    #  ③仅在填高 > 0.70 m 的边界段，在台面边缘加一道低矮木边（高度 = fill-0.70 ≤ 0.70）
+    # 不再使用 P0 的 1.8 m 垂直灰基座。
+    var st := SurfaceTool.new()
+    st.begin(Mesh.PRIMITIVE_TRIANGLES)
+    var tst := SurfaceTool.new()
+    tst.begin(Mesh.PRIMITIVE_TRIANGLES)
+    var ring := _yard_ring(YARD_BANK_STEP)
+    var n := ring.size()
+    if n < 3:
+        return {"samples": n, "tris": 0, "timber_len": 0.0, "timber_hmax": 0.0}
+    var outs := _yard_outs(ring)
+    var row_max := YARD_BANK_ROW_MAX
+    var pos_rows: Array = []
+    var col_rows: Array = []
+    var envs: Array = []
+    var fills: Array = []
+    var shoulder_max := 0.0
+    for i in range(n):
+        var pp := ring[i]
+        var nout: Vector2 = outs[i]
+        var hp := _yard_h_l(pp.x, pp.y)
+        var pad_p := maxf(hp + YARD_PAD_LIFT, YARD_PAD_Y)
+        var fill := pad_p - hp
+        fills.append(fill)
+        var timber := fill > YARD_TIMBER_CAP
+        var sh_t := 0.0
+        if timber:
+            sh_t = clampf(fill - YARD_TIMBER_CAP, 0.0, YARD_TIMBER_CAP)
+        shoulder_max = maxf(shoulder_max, minf(maxf(fill - sh_t, 0.0), YARD_SHOULDER_H))
+        envs.append({"p": pp, "out": nout, "hp": hp, "pad": pad_p, "fill": fill,
+            "timber": timber, "sh": sh_t, "base": pad_p - sh_t,
+            "wall": pp.y < 3.31})
+        var pl: Array = []
+        var cl: Array = []
+        var wall_side := pp.y < 3.31
+        var base_y := pad_p - sh_t
+        var sh_visible := minf(fill - sh_t, YARD_SHOULDER_H)
+        sh_visible = maxf(sh_visible, 0.0)
+        var run_sh := maxf(YARD_BANK_ROW, sh_visible / YARD_TAN32)
+        # 沿外法线逐行下坡：前段固定 32°（草肩），之后按 36° 收口，直到坡面碰到原地形。
+        # 原地形本身约 30° 下坡，32° 的坡面几乎与地形平行、永远落不了地，所以坡脚必须
+        # 略陡于 32°；36° 封顶保证任何可见填方坡面都没有竖直面、也没有挡土墙式的立面。
+        var landed := false
+        var yv := base_y
+        for r in range(row_max + 1):
+            var d := YARD_BANK_ROW * float(r)
+            var q := pp + nout * d
+            var wq := _yard_l2w(q.x, q.y)
+            var hq := _h(wq.x, wq.y)
+            var pos3 := Vector3.ZERO
+            if wall_side:
+                # 贴墙一侧没有可见外缘（被房屋勒脚/台基遮住）：全部点塌缩，避免任何面
+                pos3 = _yard_v3(pp, pad_p)
+            else:
+                if r == 0:
+                    yv = base_y
+                elif not landed:
+                    var ny := 0.0
+                    if d <= run_sh:
+                        ny = base_y - d * YARD_TAN32
+                    else:
+                        ny = yv - YARD_BANK_ROW * YARD_TAN36
+                    if ny <= hq + 0.02:
+                        ny = hq - 0.02
+                        landed = true
+                    yv = ny
+                else:
+                    # 已落地：剩余行贴在地形下 2 cm（被地形遮住），只是为了让所有采样
+                    # 保持同样的行数，便于三角化。
+                    yv = hq - 0.02
+                pos3 = Vector3(wq.x, yv, wq.y)
+            pl.append(pos3)
+            cl.append(_yard_bank_color(pos3.x, pos3.z, hq, pad_p - pos3.y, fill))
+        pos_rows.append(pl)
+        col_rows.append(cl)
+    # 顶点法线：沿边界切线 × 沿坡向
+    var nrm_rows: Array = []
+    for i in range(n):
+        var arr: Array = pos_rows[i]
+        var nrm: Array = []
+        for r in range(arr.size()):
+            var a: Vector3 = pos_rows[(i + n - 1) % n][r]
+            var b: Vector3 = pos_rows[(i + 1) % n][r]
+            var tan_along := b - a
+            var tan_slope := Vector3.ZERO
+            if r + 1 < arr.size():
+                tan_slope = (arr[r + 1] as Vector3) - (arr[r] as Vector3)
+            elif r > 0:
+                tan_slope = (arr[r] as Vector3) - (arr[r - 1] as Vector3)
+            var nv := tan_along.cross(tan_slope)
+            if nv.length_squared() < 0.0000001:
+                nv = tan_along.cross(Vector3.UP)
+            if nv.length_squared() < 0.0000001:
+                nv = Vector3.UP
+            nv = nv.normalized()
+            if nv.y < 0.0:
+                nv = -nv
+            nrm.append(nv)
+        nrm_rows.append(nrm)
+    var tris := 0
+    var max_step := 0.0
+    var max_step_visible := 0.0
+    var max_slope_visible := 0.0
+    for i in range(n):
+        var j := (i + 1) % n
+        var hidden_i := bool(envs[i]["wall"])
+        var hidden_j := bool(envs[j]["wall"])
+        for r in range(row_max):
+            var a: Vector3 = pos_rows[i][r]
+            var b: Vector3 = pos_rows[j][r]
+            var c: Vector3 = pos_rows[j][r + 1]
+            var d: Vector3 = pos_rows[i][r + 1]
+            var st_ab := maxf(absf(a.y - d.y), absf(b.y - c.y))
+            max_step = maxf(max_step, st_ab)
+            if not hidden_i and not hidden_j:
+                # 只有四个角都明显高于原地形时，这一段才是“看得见的填方坡面”
+                var va: float = a.y - _h(a.x, a.z)
+                var vb: float = b.y - _h(b.x, b.z)
+                var vc: float = c.y - _h(c.x, c.z)
+                var vd: float = d.y - _h(d.x, d.z)
+                if va > 0.03 and vb > 0.03 and vc > 0.03 and vd > 0.03:
+                    max_step_visible = maxf(max_step_visible, st_ab)
+                    max_slope_visible = maxf(max_slope_visible,
+                        rad_to_deg(atan2(st_ab, YARD_BANK_ROW)))
+            _yard_tri_up(st, a, b, c, nrm_rows[i][r], nrm_rows[j][r], nrm_rows[j][r + 1],
+                col_rows[i][r], col_rows[j][r], col_rows[j][r + 1])
+            _yard_tri_up(st, a, c, d, nrm_rows[i][r], nrm_rows[j][r + 1], nrm_rows[i][r + 1],
+                col_rows[i][r], col_rows[j][r + 1], col_rows[i][r + 1])
+            tris += 2
+    # 木边：只在 fill > 0.70 的连续边界段，贴在台面边缘（不是坡脚），高 = fill-0.70
+    var timber_len := 0.0
+    var timber_hmax := 0.0
+    var timber_segs := 0
+    for i in range(n):
+        var j2 := (i + 1) % n
+        var ta: Dictionary = envs[i]
+        var tb: Dictionary = envs[j2]
+        if not (bool(ta["timber"]) and bool(tb["timber"])):
+            continue
+        var seg_len := ring[j2].distance_to(ring[i])
+        timber_len += seg_len
+        timber_segs += 1
+        timber_hmax = maxf(timber_hmax, maxf(float(ta["sh"]), float(tb["sh"])))
+        var pa: Vector2 = ta["p"]
+        var pb: Vector2 = tb["p"]
+        var oa: Vector2 = ta["out"]
+        var ob: Vector2 = tb["out"]
+        var th := 0.07
+        var ia := pa + oa * 0.02
+        var ib := pb + ob * 0.02
+        var oa2 := pa + oa * (0.02 + th)
+        var ob2 := pb + ob * (0.02 + th)
+        var topa := _yard_v3(ia, float(ta["pad"]) + 0.012)
+        var topb := _yard_v3(ib, float(tb["pad"]) + 0.012)
+        var bota := _yard_v3(ia, float(ta["base"]) - 0.03)
+        var botb := _yard_v3(ib, float(tb["base"]) - 0.03)
+        var topa2 := _yard_v3(oa2, float(ta["pad"]) + 0.012)
+        var topb2 := _yard_v3(ob2, float(tb["pad"]) + 0.012)
+        var bota2 := _yard_v3(oa2, float(ta["base"]) - 0.03)
+        var botb2 := _yard_v3(ob2, float(tb["base"]) - 0.03)
+        var grain := _fbm(pa.x * 1.7 + 3.0, pa.y * 1.7 - 5.0)
+        var col_t := M.C_WOOD_LIGHT.lerp(M.C_WOOD, 0.34 + 0.20 * grain)
+        var col_b := col_t.darkened(0.10)
+        var nw := _yard_dir(oa).normalized()
+        var nin := -nw
+        _yard_tri(tst, topa, topb, botb, nw, nw, nw, col_t, col_t, col_b)
+        _yard_tri(tst, topa, botb, bota, nw, nw, nw, col_t, col_b, col_b)
+        _yard_tri(tst, topa2, topb2, botb2, nin, nin, nin, col_t, col_t, col_b)
+        _yard_tri(tst, topa2, botb2, bota2, nin, nin, nin, col_t, col_b, col_b)
+        _yard_tri(tst, topa, topa2, topb2, Vector3.UP, Vector3.UP, Vector3.UP,
+            col_t.lightened(0.06), col_t.lightened(0.06), col_t.lightened(0.06))
+        _yard_tri(tst, topa, topb2, topb, Vector3.UP, Vector3.UP, Vector3.UP,
+            col_t.lightened(0.06), col_t.lightened(0.06), col_t.lightened(0.06))
+    # 木边前面的短立柱：把连续的深色立面打断成一格一格的木栅，读起来是“干垒木边”
+    # 而不是一道墙；柱高只到台面 +0.03，不抢围栏的视觉高度。
+    var post_step := 4
+    var posts := 0
+    for i2 in range(n):
+        if not bool(envs[i2]["timber"]):
+            continue
+        if i2 % post_step != 0:
+            continue
+        var pe: Dictionary = envs[i2]
+        var pp2: Vector2 = pe["p"]
+        var no2: Vector2 = pe["out"]
+        var q2 := pp2 + no2 * 0.035
+        var w2 := _yard_l2w(q2.x, q2.y)
+        var ph := float(pe["sh"]) + 0.16
+        var pm := MeshInstance3D.new()
+        pm.name = "TimberPost%d" % posts
+        var cyl := CylinderMesh.new()
+        cyl.top_radius = 0.045
+        cyl.bottom_radius = 0.050
+        cyl.height = ph
+        cyl.radial_segments = 8
+        cyl.rings = 1
+        pm.mesh = cyl
+        pm.position = Vector3(w2.x, float(pe["pad"]) - float(pe["sh"]) + ph * 0.5 - 0.02, w2.y)
+        var pc := M.C_WOOD_LIGHT.lerp(M.C_WOOD, 0.30)
+        pm.material_override = M.toon_material(pc, {"bands": 3, "rim": 0.10, "outline": 0.02})
+        node.add_child(pm)
+        posts += 1
+    var tim_mat := M.toon_material(Color.WHITE, {"vertex_color": true, "bands": 3,
+        "rim": 0.12, "outline": 0.02})
+    _yard_finish(st, node, "FrontYardEdge", M.terrain_material())
+    _yard_finish(tst, node, "FrontYardTimber", tim_mat)
+    # 落地误差：草肩最后一行与原地形的高差（应当 ≤ 0，即被地形接管）
+    var land_err := 0.0
+    var land_at := {}
+    for i in range(n):
+        if bool(envs[i]["wall"]):
+            continue
+        var vp: Vector3 = pos_rows[i][row_max]
+        var hq2 := _h(vp.x, vp.z)
+        var le := vp.y - hq2
+        if le > land_err:
+            land_err = le
+            land_at = {"i": i, "lz": ring[i].y, "lx": ring[i].x,
+                "fill": float(fills[i]), "y": vp.y, "h": hq2}
+    var hist := {"le002": 0.0, "p002_010": 0.0, "p010_055": 0.0, "p055_070": 0.0, "gt070": 0.0}
+    var fill_max := 0.0
+    for i in range(n):
+        var seg_len2 := ring[(i + 1) % n].distance_to(ring[i])
+        var f: float = fills[i]
+        fill_max = maxf(fill_max, f)
+        if f <= 0.02:
+            hist["le002"] = float(hist["le002"]) + seg_len2
+        elif f <= 0.10:
+            hist["p002_010"] = float(hist["p002_010"]) + seg_len2
+        elif f <= 0.55:
+            hist["p010_055"] = float(hist["p010_055"]) + seg_len2
+        elif f <= 0.70:
+            hist["p055_070"] = float(hist["p055_070"]) + seg_len2
+        else:
+            hist["gt070"] = float(hist["gt070"]) + seg_len2
+    return {"samples": n, "tris": tris, "timber_len": timber_len,
+        "timber_hmax": timber_hmax, "timber_segs": timber_segs, "timber_posts": posts,
+        "shoulder_hmax": shoulder_max, "max_step": max_step,
+        "max_step_visible": max_step_visible, "max_slope_visible": max_slope_visible,
+        "land_err": land_err, "land_at": land_at,
+        "fill_hist": hist, "fill_max": fill_max, "perimeter": _yard_ring_len(ring)}
+
+
+## 外缘“是否真的落到地形”的独立审计：不使用建网格时被 clamp 过的行值，而是沿外法线
+## 以 0.10 m 步进外推同一条坡面公式（32° 草肩 → 45° 收口），找它与原地形首次相交处。
+static func _yard_landing_audit() -> Dictionary:
+    var ring := _yard_ring(YARD_BANK_STEP)
+    var outs := _yard_outs(ring)
+    var n := ring.size()
+    var samples := 0
+    var landed := 0
+    var max_d := 0.0
+    var max_err := 0.0
+    for i in range(n):
+        var pp: Vector2 = ring[i]
+        var nout: Vector2 = outs[i]
+        var hp := _yard_h_l(pp.x, pp.y)
+        var pad_p := maxf(hp + YARD_PAD_LIFT, YARD_PAD_Y)
+        var fill := pad_p - hp
+        if fill < 0.18:
+            continue
+        samples += 1
+        var sh_t := 0.0
+        if fill > YARD_TIMBER_CAP:
+            sh_t = clampf(fill - YARD_TIMBER_CAP, 0.0, YARD_TIMBER_CAP)
+        var sh_vis := minf(fill - sh_t, YARD_TIMBER_CAP)
+        var run_sh := maxf(0.20, sh_vis / YARD_TAN32)
+        var y0 := pad_p - sh_t
+        var d := 0.20
+        var hit := false
+        while d <= 24.0:
+            var yy := 0.0
+            if d <= run_sh:
+                yy = y0 - d * YARD_TAN32
+            else:
+                yy = y0 - run_sh * YARD_TAN32 - (d - run_sh) * YARD_TAN36
+            var q := pp + nout * d
+            var wq := _yard_l2w(q.x, q.y)
+            var hq := _h(wq.x, wq.y)
+            if yy <= hq:
+                hit = true
+                max_d = maxf(max_d, d)
+                max_err = maxf(max_err, hq - yy)
+                break
+            d += 0.10
+        if hit:
+            landed += 1
+    return {"samples": samples, "landed": landed, "max_d": max_d, "max_err": max_err,
+        "ok": samples > 0 and landed == samples and max_d <= 24.0 and max_err <= 0.12}
+
+
+## 外缘每个采样点的外法线（2D，局部帧）。
+static func _yard_outs(ring: PackedVector2Array) -> Array:
+    var n := ring.size()
+    var outs: Array = []
+    for i in range(n):
+        var prv := ring[(i + n - 1) % n]
+        var nxt := ring[(i + 1) % n]
+        var t := nxt - prv
+        if t.length_squared() < 0.000001:
+            t = Vector2(1.0, 0.0)
+        t = t.normalized()
+        outs.append(Vector2(t.y, -t.x))
+    return outs
+
+
+## 草肩/草坡的顶点色：与 _terrain_color() 的草地配方一致（不沿用路面/岩石/沙滩分支，
+## 否则下坡那一圈会被染成土黄或沙色，读作挡墙）。
+static func _yard_bank_color(x: float, z: float, h: float, dpad: float, fill: float) -> Color:
+    var m1 := _fbm(x * 0.055 + 3.0, z * 0.055 - 7.0)
+    var m2 := _fbm(x * 0.21 - 31.7, z * 0.21 + 12.3)
+    var m3 := _vnoise(x * 0.73 + 5.1, z * 0.73 - 8.9)
+    var grass := M.C_GRASS.lerp(M.C_GRASS_LIGHT, clampf(m1 * 1.5 - 0.05, 0.0, 1.0))
+    grass = grass.lerp(M.C_GRASS_DARK, clampf(m2 * 0.42, 0.0, 1.0))
+    grass = grass.lerp(Color("b5b98a"), smoothstep(0.55, 0.92, m1) * 0.34)
+    grass = grass.lerp(M.C_GRASS_LIGHT, m3 * 0.10)
+    var k := clampf(dpad / maxf(fill, 0.25), 0.0, 1.0)
+    grass = grass.lerp(M.C_SOIL.lerp(Color("8a6c50"), 0.35), k * 0.10)
+    return grass * (0.99 - 0.05 * k)
+
+
+## 草肩/草坡上的短草：让外缘不是“光溜溜一片绿皮”，同时保留 32° 坡面的干净轮廓。
+static func _yard_build_bank_grass(node: Node3D) -> Dictionary:
+    var rng := RandomNumberGenerator.new()
+    rng.seed = 771123
+    var ring := _yard_ring(YARD_BANK_STEP)
+    var n := ring.size()
+    var outs := _yard_outs(ring)
+    var xf: Array = []
+    var col: Array = []
+    var tries := 0
+    var target := 2800
+    while xf.size() < target and tries < target * 14:
+        tries += 1
+        var i := rng.randi_range(0, n - 1)
+        var pp: Vector2 = ring[i]
+        var nout: Vector2 = outs[i]
+        var hp := _yard_h_l(pp.x, pp.y)
+        var pad_p := maxf(hp + YARD_PAD_LIFT, YARD_PAD_Y)
+        var fill := pad_p - hp
+        if fill < 0.18:
+            continue
+        var sh_t := 0.0
+        if fill > YARD_TIMBER_CAP:
+            sh_t = clampf(fill - YARD_TIMBER_CAP, 0.0, YARD_TIMBER_CAP)
+        # 上段（贴台面 0..1.6 m）加密：这一段是最先被看到的“坡面”，不能是光滑一片
+        var d := rng.randf_range(0.03, 4.6)
+        if rng.randf() < 0.62:
+            d = rng.randf_range(0.03, 1.60)
+        var q := pp + nout * d
+        var wq := _yard_l2w(q.x, q.y)
+        var hq := _h(wq.x, wq.y)
+        # 坡面分两段：先 32° 草肩，越过 run_sh 后按 45° 继续下行（与 _yard_build_edge 逐行下坡一致）。
+        # 旧写法只用 32° 平面外推，45° 段的草被 yy-hq<0.03 系统性拒绝，形成 8.19m 裸坡带（A 审 D1）。
+        var sh_vis := minf(fill - sh_t, YARD_TIMBER_CAP)
+        var run_sh := maxf(0.20, sh_vis / YARD_TAN32)
+        var yy := 0.0
+        if d <= run_sh:
+            yy = (pad_p - sh_t) - d * YARD_TAN32
+        else:
+            yy = (pad_p - sh_t) - run_sh * YARD_TAN32 - (d - run_sh) * YARD_TAN36
+        yy = maxf(yy, hq - 0.02)
+        if yy - hq < 0.03:
+            continue        # 坡面已经落到地形以下：那里本来就有全岛的草
+        var s := 0.60 + rng.randf() * 0.55
+        var sy := 0.42 + rng.randf() * 0.50
+        var basis := Basis(Vector3.UP, rng.randf_range(0.0, TAU)).scaled(Vector3(s, sy, s))
+        xf.append(Transform3D(basis, Vector3(wq.x, yy - 0.010, wq.y)))
+        var c2 := M.C_GRASS.lerp(M.C_GRASS_DARK, 0.30 + rng.randf() * 0.38)
+        c2 = c2.lerp(M.C_GRASS_LIGHT, rng.randf() * 0.20)
+        col.append(c2)
+    M.multis(node, "FrontYardBankGrass", _tuft_mesh(3, 0.30, 0.56), xf, col,
+        M.grass_material(Color(0.86, 0.97, 0.83), 0.30))
+    return {"bank_grass": xf.size(), "bank_grass_tries": tries}
+
+
+static func _yard_build_floor(node: Node3D) -> void:
+    # 外圈走道 = 围栏内 2.05~2.65 m 的环形带（不是整块铺地）：九格之间的草地露出来，
+    # 与参考图 “草台 + 独立土床” 的层次一致。
+    var st := SurfaceTool.new()
+    st.begin(Mesh.PRIMITIVE_TRIANGLES)
+    var c := YARD_FARM_C
+    var r_out := YARD_WALK_OUTER
+    var r_in := YARD_WALK_INNER
+    var outer := _yard_round_rect(c.x - r_out, c.x + r_out, c.y - r_out, c.y + r_out,
+        0.30, 0.30, 0.30, 0.30, 6)
+    var inner := PackedVector2Array()
+    var k_scale := r_in / r_out
+    for pp in outer:
+        inner.append(c + (pp - c) * k_scale)
+    var cy := _yard_pad_y(c.x, c.y) + YARD_FLOOR_LIFT
+    for k in range(outer.size()):
+        var k2 := (k + 1) % outer.size()
+        var oa := _yard_v3(outer[k], cy)
+        var ob := _yard_v3(outer[k2], cy)
+        var ia := _yard_v3(inner[k], cy)
+        var ib := _yard_v3(inner[k2], cy)
+        var coa := _yard_floor_color(oa)
+        var cob := _yard_floor_color(ob)
+        var cia := _yard_floor_color(ia)
+        var cib := _yard_floor_color(ib)
+        _yard_tri_up(st, oa, ob, ib, Vector3.UP, Vector3.UP, Vector3.UP, coa, cob, cib)
+        _yard_tri_up(st, oa, ib, ia, Vector3.UP, Vector3.UP, Vector3.UP, coa, cib, cia)
+    _yard_finish(st, node, "FrontYardWalkway", M.toon_material(Color.WHITE,
+        {"vertex_color": true, "bands": 3, "rim": 0.02}))
+
+
+static func _yard_floor_color(p: Vector3) -> Color:
+    # 走道色 = _terrain_color() 里“土路”那一支的同一配方，保证与既有的主路/支路土色一致
+    var m2 := _fbm(p.x * 0.21 - 31.7, p.z * 0.21 + 12.3)
+    var m3 := _vnoise(p.x * 0.73 + 5.1, p.z * 0.73 - 8.9)
+    var soil := M.C_SOIL.lerp(Color("8a6c50"), m2 * 0.55)
+    soil = soil.lerp(Color("5d4736"), m3 * 0.35)
+    return soil * 0.90
+
+
+static func _yard_build_gutter(node: Node3D) -> void:
+    var st := SurfaceTool.new()
+    st.begin(Mesh.PRIMITIVE_TRIANGLES)
+    var y0 := _yard_pad_y(0.5 * (YARD_GUTTER_X0 + YARD_GUTTER_X1),
+        0.5 * (YARD_GUTTER_Z0 + YARD_GUTTER_Z1)) - YARD_GUTTER_DEPTH
+    var y1 := y0 + YARD_GUTTER_DEPTH + 0.002
+    var corners := [
+        Vector2(YARD_GUTTER_X0, YARD_GUTTER_Z0), Vector2(YARD_GUTTER_X1, YARD_GUTTER_Z0),
+        Vector2(YARD_GUTTER_X1, YARD_GUTTER_Z1), Vector2(YARD_GUTTER_X0, YARD_GUTTER_Z1),
+    ]
+    var floor_col := M.C_STONE_DARK.lerp(M.C_SAND, 0.22).darkened(0.10)
+    var wall_col := M.C_STONE.lerp(M.C_STONE_DARK, 0.45)
+    # 槽底
+    for k in range(4):
+        var a := _yard_v3(corners[k], y0)
+        var b := _yard_v3(corners[(k + 1) % 4], y0)
+        var c3 := _yard_v3(Vector2(0.5 * (YARD_GUTTER_X0 + YARD_GUTTER_X1),
+            0.5 * (YARD_GUTTER_Z0 + YARD_GUTTER_Z1)), y0)
+        _yard_tri_up(st, a, b, c3, Vector3.UP, Vector3.UP, Vector3.UP, floor_col, floor_col, floor_col)
+    # 四壁（内法线朝槽心）
+    for k in range(4):
+        var pa: Vector2 = corners[k]
+        var pb: Vector2 = corners[(k + 1) % 4]
+        var mid: Vector2 = (pa + pb) * 0.5
+        var centre := Vector2(0.5 * (YARD_GUTTER_X0 + YARD_GUTTER_X1),
+            0.5 * (YARD_GUTTER_Z0 + YARD_GUTTER_Z1))
+        var inward := _yard_dir((centre - mid).normalized())
+        var va := _yard_v3(pa, y0)
+        var vb := _yard_v3(pb, y0)
+        var ta := _yard_v3(pa, y1)
+        var tb := _yard_v3(pb, y1)
+        _yard_tri(st, va, vb, tb, inward, inward, inward, wall_col, wall_col, wall_col)
+        _yard_tri(st, va, tb, ta, inward, inward, inward, wall_col, wall_col, wall_col)
+    _yard_finish(st, node, "FrontYardGutter", M.toon_material(Color.WHITE,
+        {"vertex_color": true, "bands": 3, "rim": 0.02}))
+
+
+# ----------------------------------------------------------- 3x3 beds ----
+## 九块土床：1.0 x 1.0、抬升 0.20、圆角 0.14，位置 = 田心 + IsleFarm.slot_offset()
+## （只复用 P1 数据层的格距/索引，本段不读写任何作物状态）。
+static func _yard_build_beds(node: Node3D, farm_probe: Object) -> Dictionary:
+    var st := SurfaceTool.new()
+    st.begin(Mesh.PRIMITIVE_TRIANGLES)
+    var tops: Array = []
+    var centers_local: Array = []
+    var centers_world: Array = []
+    var index_map: Array = []
+    for j in range(3):
+        for i in range(3):
+            var idx: int = farm_probe.slot_index(i, j)
+            var off: Vector2 = farm_probe.slot_offset(idx)
+            var c := YARD_FARM_C + off
+            centers_local.append(c)
+            index_map.append({"index": idx, "i": i, "j": j, "local": c})
+            var base_p := _yard_pad_y(c.x, c.y) + YARD_FLOOR_LIFT
+            var top_p := base_p + YARD_BED_RISE
+            tops.append(top_p)
+            var cw := _yard_l2w(c.x, c.y)
+            centers_world.append(Vector2(cw.x, cw.y))
+            # 底环 / 顶环（顶面内收 0.02，形成很轻的倒角）
+            var rb := _yard_round_rect(c.x - 0.50, c.x + 0.50, c.y - 0.50, c.y + 0.50,
+                YARD_BED_CORNER, YARD_BED_CORNER, YARD_BED_CORNER, YARD_BED_CORNER, 5)
+            var rt := _yard_round_rect(c.x - 0.48, c.x + 0.48, c.y - 0.48, c.y + 0.48,
+                YARD_BED_CORNER + 0.02, YARD_BED_CORNER + 0.02,
+                YARD_BED_CORNER + 0.02, YARD_BED_CORNER + 0.02, 5)
+            var grain := _fbm(c.x * 0.9 + 11.0, c.y * 0.9 - 4.0)
+            # 备注：toon + 天光会把反照率显著提亮，这里取明显偏暗的原始色，
+            # 渲染后才是参考图里那种深棕壤土（与 world.gd:2034 旧菜地同一色系）。
+            var wall_col := Color(0.300, 0.192, 0.104).lerp(Color(0.242, 0.150, 0.080), grain)
+            var top_col := Color(0.268, 0.168, 0.086).lerp(Color(0.222, 0.136, 0.070), 0.35 + 0.35 * grain)
+            for k in range(rb.size()):
+                var k2 := (k + 1) % rb.size()
+                var ba := _yard_v3(rb[k], base_p)
+                var bb := _yard_v3(rb[k2], base_p)
+                var ta := _yard_v3(rt[k], top_p)
+                var tb := _yard_v3(rt[k2], top_p)
+                var mid: Vector2 = (rb[k] + rb[k2]) * 0.5
+                var nwall := _yard_dir((mid - c).normalized()).normalized()
+                _yard_tri(st, ba, tb, bb, nwall, nwall, nwall, wall_col, wall_col.darkened(0.06), wall_col)
+                _yard_tri(st, ba, ta, tb, nwall, nwall, nwall, wall_col, wall_col, wall_col)
+            var c3 := _yard_v3(c, top_p)
+            for k in range(rt.size()):
+                var k3 := (k + 1) % rt.size()
+                _yard_tri_up(st, _yard_v3(rt[k], top_p), _yard_v3(rt[k3], top_p), c3,
+                    Vector3.UP, Vector3.UP, Vector3.UP, top_col, top_col, top_col)
+    _yard_finish(st, node, "FrontYardBeds", M.toon_material(Color.WHITE,
+        {"vertex_color": true, "bands": 3, "rim": 0.05, "outline": 0.02}))
+    var spread := 0.0
+    if tops.size() > 1:
+        var mn: float = tops[0]
+        var mx: float = tops[0]
+        for v in tops:
+            mn = minf(mn, v)
+            mx = maxf(mx, v)
+        spread = mx - mn
+    return {"bed_top_spread": spread, "bed_top_y": tops[0] if tops.size() > 0 else 0.0,
+        "centers_local": centers_local, "centers_world": centers_world, "index_map": index_map}
+
+# -------------------------------------------------------------- fence ----
+## 浅木圆木围栏：5.42 见方、柱高 0.80（门柱 0.92）、柱距 0.70、两道圆头横杆
+## +0.34 / +0.64，门洞 1.10 朝房屋侧（lz 近边），无门扇、无交互。
+static func _yard_build_fence(node: Node3D) -> Dictionary:
+    var c := YARD_FARM_C
+    var h := YARD_FENCE_HALF
+    var x0 := c.x - h
+    var x1 := c.x + h
+    var z0 := c.y - h
+    var z1 := c.y + h
+    var gate_half := YARD_GATE_W * 0.5
+    # 四条边：[起点, 终点]
+    var edges := [
+        [Vector2(x0, z0), Vector2(x1, z0)],
+        [Vector2(x1, z0), Vector2(x1, z1)],
+        [Vector2(x1, z1), Vector2(x0, z1)],
+        [Vector2(x0, z1), Vector2(x0, z0)],
+    ]
+    var posts: Array = []
+    for e in range(edges.size()):
+        var a: Vector2 = edges[e][0]
+        var b: Vector2 = edges[e][1]
+        var L := a.distance_to(b)
+        var spans := maxi(1, int(round(L / YARD_FENCE_PITCH)))
+        for k in range(spans + 1):
+            if k == 0 and e > 0:
+                continue
+            var t := float(k) / float(spans)
+            var p := a.lerp(b, t)
+            if e == 0 and absf(p.x - c.x) < gate_half + 0.005:
+                continue
+            posts.append(p)
+    # 门柱：精确落在门洞两端（比普通柱高）
+    var gate_posts: Array = [Vector2(c.x - gate_half, z0), Vector2(c.x + gate_half, z0)]
+    posts.append(gate_posts[0])
+    posts.append(gate_posts[1])
+    # 柱体
+    var post_mesh := CylinderMesh.new()
+    post_mesh.top_radius = YARD_FENCE_POST_R0
+    post_mesh.bottom_radius = YARD_FENCE_POST_R1
+    post_mesh.height = YARD_FENCE_POST_H
+    post_mesh.radial_segments = 10
+    post_mesh.rings = 2
+    var gate_mesh := CylinderMesh.new()
+    gate_mesh.top_radius = 0.062
+    gate_mesh.bottom_radius = 0.076
+    gate_mesh.height = YARD_GATE_POST_H
+    gate_mesh.radial_segments = 10
+    gate_mesh.rings = 2
+    var post_xf: Array = []
+    var post_col: Array = []
+    var gate_xf: Array = []
+    var gate_col: Array = []
+    for p in posts:
+        var base := _yard_pad_y(p.x, p.y) + YARD_FLOOR_LIFT
+        var is_gate := gate_posts.has(p)
+        var hh := YARD_GATE_POST_H if is_gate else YARD_FENCE_POST_H
+        var cw := _yard_l2w(p.x, p.y)
+        var col := M.C_WOOD_LIGHT.lerp(M.C_WOOD, 0.22).lerp(M.C_WOOD_DARK, 0.10)
+        if is_gate:
+            gate_xf.append(Transform3D(Basis(Vector3.UP, _fbm(p.x, p.y) * 6.28), Vector3(cw.x, base + hh * 0.5, cw.y)))
+            gate_col.append(col)
+        else:
+            post_xf.append(Transform3D(Basis(Vector3.UP, _fbm(p.x + 3.0, p.y - 2.0) * 6.28), Vector3(cw.x, base + hh * 0.5, cw.y)))
+        post_col.append(col)
+    var post_mat := M.toon_material(Color.WHITE, {"vertex_color": true, "bands": 3, "rim": 0.05, "outline": 0.025})
+    M.multis(node, "FrontYardFencePosts", post_mesh, post_xf, post_col, post_mat)
+    M.multis(node, "FrontYardGatePosts", gate_mesh, gate_xf, gate_col, post_mat)
+    # 横杆：逐跨圆柱（圆头），两道
+    var rail_mesh := CylinderMesh.new()
+    rail_mesh.top_radius = YARD_FENCE_RAIL_R
+    rail_mesh.bottom_radius = YARD_FENCE_RAIL_R
+    rail_mesh.height = 1.0
+    rail_mesh.radial_segments = 8
+    rail_mesh.rings = 1
+    var rail_xf: Array = []
+    var rail_col: Array = []
+    var rail_count := 0
+    var gate_rails_skipped := 0
+    for e in range(edges.size()):
+        var a2: Vector2 = edges[e][0]
+        var b2: Vector2 = edges[e][1]
+        var L2 := a2.distance_to(b2)
+        var spans2 := maxi(1, int(round(L2 / YARD_FENCE_PITCH)))
+        var pts: Array = []
+        for k in range(spans2 + 1):
+            if k == 0 and e > 0:
+                continue
+            var t2 := float(k) / float(spans2)
+            var p2 := a2.lerp(b2, t2)
+            if e == 0 and absf(p2.x - c.x) < gate_half - 0.005:
+                continue
+            pts.append(p2)
+        for k in range(pts.size() - 1):
+            var qa: Vector2 = pts[k]
+            var qb: Vector2 = pts[k + 1]
+            var seg_len := qa.distance_to(qb)
+            if seg_len < 0.10 or seg_len > 1.45:
+                continue
+            # 近边（z0）且横跨门洞的段：整段跳过，否则两道横杆会把 1.10 m 门洞封住
+            if e == 0 and absf(qa.y - z0) < 0.01 and absf(qb.y - z0) < 0.01:
+                var x_lo := minf(qa.x, qb.x)
+                var x_hi := maxf(qa.x, qb.x)
+                if x_hi > c.x - gate_half - 0.02 and x_lo < c.x + gate_half + 0.02:
+                    gate_rails_skipped += 2
+                    continue
+            var wa := _yard_l2w(qa.x, qa.y)
+            var wb := _yard_l2w(qb.x, qb.y)
+            var dir := Vector3(wb.x - wa.x, 0.0, wb.y - wa.y).normalized()
+            var basis := Basis(Quaternion(Vector3.UP, dir))
+            var base_a := _yard_pad_y(qa.x, qa.y) + YARD_FLOOR_LIFT
+            var base_b := _yard_pad_y(qb.x, qb.y) + YARD_FLOOR_LIFT
+            for lvl in [0.34, 0.64]:
+                var ya: float = base_a + float(lvl)
+                var yb: float = base_b + float(lvl)
+                var mid := Vector3(0.5 * (wa.x + wb.x), 0.5 * (ya + yb), 0.5 * (wa.y + wb.y))
+                # 必须用 scaled_local：Basis.scaled() 缩放的是“世界行”，对已旋转的基
+                # 会变成竖直轴的缩放，圆柱长度恒为 1.0 m（D 组复核发现的 B1 阻断）。
+                var bs := basis.scaled_local(Vector3(1.0, seg_len, 1.0))
+                rail_xf.append(Transform3D(bs, mid))
+                var rc := M.C_WOOD_LIGHT.lerp(M.C_WOOD, 0.18 + 0.16 * _fbm(qa.x + lvl, qa.y))
+                rail_col.append(rc)
+                rail_count += 1
+    M.multis(node, "FrontYardFenceRails", rail_mesh, rail_xf, rail_col,
+        M.toon_material(Color.WHITE, {"vertex_color": true, "bands": 3, "rim": 0.05, "outline": 0.02}))
+    var gate_world_a := _yard_l2w(c.x - gate_half, z0)
+    var gate_world_b := _yard_l2w(c.x + gate_half, z0)
+    var gate_center := _yard_l2w(c.x, z0)
+    return {"post_count": posts.size(), "gate_post_count": gate_xf.size(),
+        "rail_count": rail_count, "gate_rails_skipped": gate_rails_skipped,
+        "gate_w": YARD_GATE_W,
+        "gate_center_world": gate_center, "gate_span_world": [gate_world_a, gate_world_b],
+        "posts_local": posts}
+
+# ------------------------------------------------------- gate walkway ----
+## 贴地石板小径：门阶前缘 (-1.60,5.65) → 围栏门洞 (-4.35,8.99)，长 ≈ 4.326 m。
+## 与既有花园支路交叉处 ±0.60 m 不铺我方石板（不覆盖、不复制、不移动原石板）。
+static func _yard_build_slabs(node: Node3D) -> Dictionary:
+    var a := YARD_PATH_FROM
+    var b := YARD_PATH_GATE
+    var total := a.distance_to(b)
+    var dir := (b - a).normalized()
+    var rng := RandomNumberGenerator.new()
+    rng.seed = 90210
+    var mesh := CylinderMesh.new()
+    mesh.top_radius = 1.0
+    mesh.bottom_radius = 1.0
+    mesh.height = 1.0
+    mesh.radial_segments = 6
+    mesh.rings = 1
+    var xf: Array = []
+    var col: Array = []
+    var placed: Array = []
+    var skipped := 0
+    var clear := YARD_JUNCTION_CLEAR
+    for k in range(YARD_SLABS):
+        var t := (float(k) + 0.5) / float(YARD_SLABS)
+        var p := a.lerp(b, t)
+        if p.distance_to(YARD_JUNCTION) < clear:
+            skipped += 1
+            continue
+        var gy := _yard_pad_y(p.x, p.y) + YARD_FLOOR_LIFT
+        var w := _yard_l2w(p.x, p.y)
+        var sc := 0.30 + rng.randf() * 0.055
+        var sy := 0.05 + rng.randf() * 0.012
+        var yaw := rng.randf_range(0.0, TAU)
+        var basis := Basis(Vector3.UP, yaw).scaled(Vector3(sc, sy, sc * (0.72 + rng.randf() * 0.18)))
+        xf.append(Transform3D(basis, Vector3(w.x, gy + sy * 0.5, w.y)))
+        col.append(M.C_STONE.lerp(M.C_SAND, 0.35 + rng.randf() * 0.25).lerp(M.C_STONE_DARK, rng.randf() * 0.25))
+        placed.append(p)
+    M.multis(node, "FrontYardSlabs", mesh, xf, col,
+        M.toon_material(Color.WHITE, {"vertex_color": true, "bands": 3, "rim": 0.06, "outline": 0.012}))
+    var drop := 0.0
+    if placed.size() > 1:
+        drop = _yard_pad_y(placed[0].x, placed[0].y) - _yard_pad_y(placed[placed.size() - 1].x, placed[placed.size() - 1].y)
+    return {"slab_count": xf.size(), "skipped_at_junction": skipped,
+        "length_m": total, "drop_m": drop,
+        "slope_pct": 100.0 * absf(drop) / maxf(total, 0.001),
+        "on_pad": _yard_pad_contains(a.x, a.y, -0.02) and _yard_pad_contains(b.x, b.y, -0.02),
+        "from_world": _yard_l2w(a.x, a.y), "to_world": _yard_l2w(b.x, b.y)}
+
+# --------------------------------------------------------- pad grass ----
+## 台面上的短草：避免"剃头圈"（W25）。只铺在台面本体、避走道/槽/围栏内；
+## 用独立 RNG（不触碰全岛散布的随机流）。
+static func _yard_build_pad_grass(node: Node3D, walkway_half: float) -> Dictionary:
+    var rng := RandomNumberGenerator.new()
+    rng.seed = 880301
+    var xf: Array = []
+    var col: Array = []
+    var c := YARD_FARM_C
+    var tries := 0
+    while xf.size() < YARD_GRASS_N and tries < YARD_GRASS_N * 14:
+        tries += 1
+        var p := Vector2(rng.randf_range(-7.70, 4.43), rng.randf_range(3.28, 14.75))
+        if not _yard_pad_contains(p.x, p.y, -0.14):
+            continue
+        if _yard_in_gutter(p.x, p.y):
+            continue
+        # 走道环（WALK_INNER..WALK_OUTER）是土色铺装带，短草落在上面会变成“路面长草”
+        var adx := absf(p.x - c.x)
+        var adz := absf(p.y - c.y)
+        var mbox := maxf(adx, adz)
+        if mbox >= YARD_WALK_INNER - 0.06 and mbox <= walkway_half + 0.06:
+            continue
+        if _yard_bed_footprint(p.x, p.y, 0.02):
+            continue
+        if _yard_seg_dist_pt(p, YARD_PATH_FROM, YARD_PATH_GATE) < 0.48:
+            continue
+        if p.y < 3.34:
+            continue
+        var gy := _yard_pad_y(p.x, p.y) + YARD_FLOOR_LIFT
+        var w := _yard_l2w(p.x, p.y)
+        var s := 0.70 + rng.randf() * 0.55
+        var sy := 0.34 + rng.randf() * 0.26
+        var basis := Basis(Vector3.UP, rng.randf_range(0.0, TAU)).scaled(Vector3(s, sy, s))
+        xf.append(Transform3D(basis, Vector3(w.x, gy - 0.008, w.y)))
+        var col2 := M.C_GRASS.lerp(M.C_GRASS_DARK, 0.28 + rng.randf() * 0.40)
+        col2 = col2.lerp(M.C_GRASS_LIGHT, rng.randf() * 0.22)
+        col.append(col2)
+    M.multis(node, "FrontYardGrass", _tuft_mesh(3, 0.34, 0.62), xf, col,
+        M.grass_material(Color(0.86, 0.97, 0.83), 0.35))
+    return {"pad_grass": xf.size(), "pad_grass_tries": tries}
+
+
+# ================================================ 后置实例过滤（不改散布） ====
+# 只在所有散布对象“已经生成之后”改写实际实例变换/裁剪实例，绝不改动
+# _grass_spot / _bush_spot / _rock_clearance_ok / _path_clearance / _h 的返回值、
+# 调用顺序或随机数消费顺序 —— 因此不会让全岛随机散布重掷。
+static func _yard_is_grass_node(nm: String) -> bool:
+    return nm == "GrassNear" or nm == "GrassFar" or nm == "Clover"
+
+static func _yard_is_flower_node(nm: String) -> bool:
+    return nm.begins_with("FlowerStems_") or nm.begins_with("FlowerHeads_")
+
+static func _yard_is_bush_node(nm: String) -> bool:
+    return nm == "Bushes"
+
+static func _yard_is_rock_node(nm: String) -> bool:
+    return nm.begins_with("Rocks_")
+
+## 单个实例的处置：keep / remove / seat（座到台面并压低）。
+## 九格土床占位（含 pad 净距）：供后置过滤判断“不能有草”的位置。
+static func _yard_bed_footprint(lx: float, lz: float, pad: float) -> bool:
+    var c := YARD_FARM_C
+    for j in range(3):
+        for i in range(3):
+            var off: Vector2 = FARM_SCRIPT.new().slot_offset(j * 3 + i)
+            var bc := c + off
+            if absf(lx - bc.x) <= 0.50 + pad and absf(lz - bc.y) <= 0.50 + pad:
+                return true
+    return false
+
+
+static func _yard_instance_plan(lx: float, lz: float, kind: String) -> Dictionary:
+    if kind == "flower":
+        if _yard_pad_contains(lx, lz, 0.25):
+            return {"act": "remove"}
+        return {"act": "keep"}
+    if kind == "bush" or kind == "rock":
+        if _yard_pad_contains(lx, lz, 0.35):
+            return {"act": "remove"}
+        return {"act": "keep"}
+    # 草 / 三叶草
+    if not _yard_pad_contains(lx, lz, 0.0):
+        return {"act": "keep"}
+    var c := YARD_FARM_C
+    var adx := absf(lx - c.x)
+    var adz := absf(lz - c.y)
+    # 外圈走道环（2.05~2.65）与土床占位是硬净空；九格之间的草地保留（参考图的绿台）
+    if adx <= YARD_WALK_OUTER + 0.02 and adz <= YARD_WALK_OUTER + 0.02 \
+            and maxf(adx, adz) >= YARD_WALK_INNER - 0.02:
+        return {"act": "remove"}          # 外圈走道
+    if _yard_bed_footprint(lx, lz, 0.03):
+        return {"act": "remove"}          # 土床占位（含 3 cm 净距）
+    if _yard_in_gutter(lx, lz):
+        return {"act": "remove"}          # 排水槽
+    if _yard_seg_dist_pt(Vector2(lx, lz), YARD_PATH_FROM, YARD_PATH_GATE) < 0.50:
+        return {"act": "remove"}          # 石板小径
+    var h := _yard_h_l(lx, lz)
+    var pad := maxf(h + YARD_PAD_LIFT, YARD_PAD_Y)
+    var fill := pad - h
+    if fill <= 0.05:
+        # 贴平近段：保留低草，不整条剃掉
+        return {"act": "seat", "sy": 0.30, "y": pad - 0.005}
+    var mbox := maxf(absf(lx - c.x), absf(lz - c.y))
+    if mbox <= YARD_FENCE_HALF + 0.02:
+        # 围栏内 = 草台 + 独立土床：草保持接近全高（参考图里土床之间是茂密的草，
+        # 不是剃平的绿地），只是把根重新坐到台面标高上。
+        return {"act": "seat", "sy": 0.50, "y": pad - 0.006}
+    if mbox <= YARD_FENCE_HALF + 0.42:
+        # 围栏外侧一圈：略微降低，避免草尖顶穿下横杆（下横杆在 +0.34 m）
+        return {"act": "seat", "sy": 0.62, "y": pad - 0.006}
+    return {"act": "seat", "sy": 0.90, "y": pad - 0.006}
+
+static func _yard_apply_scatter_filter(root: Node3D) -> Dictionary:
+    var stats := {"nodes": 0, "kept": 0, "removed": 0, "seated": 0,
+        "removed_grass": 0, "removed_clover": 0, "by_node": {}}
+    var found := root.find_children("*", "MultiMeshInstance3D", true, false)
+    for child in found:
+        var node := child as MultiMeshInstance3D
+        if node == null or node.multimesh == null:
+            continue
+        var nm := str(node.name)
+        var kind := ""
+        if _yard_is_grass_node(nm):
+            kind = "grass"
+        elif _yard_is_flower_node(nm):
+            kind = "flower"
+        elif _yard_is_bush_node(nm):
+            kind = "bush"
+        elif _yard_is_rock_node(nm):
+            kind = "rock"
+        else:
+            continue
+        var mm := node.multimesh
+        var count := mm.instance_count
+        if count <= 0:
+            continue
+        var xfs: Array = []
+        var cols: Array = []
+        var act_counts := {"keep": 0, "remove": 0, "seat": 0}
+        for i in range(count):
+            var t := mm.get_instance_transform(i)
+            var col := Color.WHITE
+            if mm.use_colors:
+                col = mm.get_instance_color(i)
+            var wpos := t.origin
+            var l := _yard_w2l(wpos.x, wpos.z)
+            var plan := _yard_instance_plan(l.x, l.y, kind)
+            var act := str(plan["act"])
+            act_counts[act] = int(act_counts[act]) + 1
+            if act == "keep":
+                xfs.append(t)
+                cols.append(col)
+            elif act == "seat":
+                var b := t.basis
+                var sy: float = plan["sy"]
+                var nb := Basis(b.x * 1.0, b.y * sy, b.z * 1.0)
+                xfs.append(Transform3D(nb, Vector3(wpos.x, float(plan["y"]), wpos.z)))
+                cols.append(col)
+                stats["seated"] = int(stats["seated"]) + 1
+            else:
+                if kind == "grass":
+                    if nm == "Clover":
+                        stats["removed_clover"] = int(stats["removed_clover"]) + 1
+                    else:
+                        stats["removed_grass"] = int(stats["removed_grass"]) + 1
+        var kept: int = xfs.size()
+        # 统计口径：即使该节点没有实例被改动，也要记入 by_node / kept / removed，
+        # 否则未受影响的花/灌木节点会从审计统计里消失（曾导致 by_node 只剩 9 个节点）。
+        stats["nodes"] = int(stats["nodes"]) + 1
+        stats["kept"] = int(stats["kept"]) + kept
+        stats["removed"] = int(stats["removed"]) + (count - kept)
+        stats["by_node"][nm] = {"kind": kind, "kept": kept, "removed": count - kept, "seat": int(act_counts["seat"])}
+        if kept == count:
+            continue
+        # 安全重建：先缩小 instance_count（截尾），再写回保留/改写的实例。
+        mm.instance_count = kept
+        for i in range(kept):
+            mm.set_instance_transform(i, xfs[i])
+            if mm.use_colors:
+                mm.set_instance_color(i, cols[i])
+    return stats
+
+# -------------------------------------------------- path / lamp metrics ----
+## 到“路面边缘”的有符号净距（p 为世界 XZ）。i0..i1 为 _path_segs 的段索引区间。
+static func _yard_path_edge_dist(x: float, z: float, i0: int, i1: int) -> float:
+    var best := 1.0e9
+    var seg_i := i0
+    while seg_i < i1 and seg_i * 2 + 1 < _path_segs.size():
+        var a := _path_segs[seg_i * 2]
+        var b := _path_segs[seg_i * 2 + 1]
+        var w := _path_widths[seg_i] if seg_i < _path_widths.size() else 0.5
+        var d := _yard_seg_dist_pt(Vector2(x, z), a, b) - w * 0.5
+        best = minf(best, d)
+        seg_i += 1
+    return best
+
+## 围栏盒（±YARD_FENCE_HALF）边界的局部采样点，用于“围栏到道路”的距离统计。
+static func _yard_fence_ring(step: float = 0.15) -> PackedVector2Array:
+    var c := YARD_FARM_C
+    var h := YARD_FENCE_HALF
+    var out := PackedVector2Array()
+    var n := maxi(2, int(ceil(2.0 * h / step)))
+    for i in range(n):
+        var t := float(i) / float(n)
+        out.append(Vector2(c.x + lerpf(-h, h, t), c.y - h))   # 近边（门侧）
+        out.append(Vector2(c.x + h, c.y + lerpf(-h, h, t)))   # 右（东）边
+        out.append(Vector2(c.x + lerpf(h, -h, t), c.y + h))   # 远边
+        out.append(Vector2(c.x - h, c.y + lerpf(h, -h, t)))   # 左（西）边
+    return out
+
+
+static func _yard_min_path_dist_on_ring(i0: int, i1: int, step: float = 0.20) -> float:
+    var ring := _yard_ring(step)
+    var best := 1.0e9
+    for lp in ring:
+        var w := _yard_l2w(lp.x, lp.y)
+        best = minf(best, _yard_path_edge_dist(w.x, w.y, i0, i1))
+    return best
+
+static func _yard_lamp_metrics(lamps: Array) -> Dictionary:
+    var out := {}
+    for entry in lamps:
+        if not (entry is Array) or (entry as Array).size() < 4:
+            continue
+        var info: Dictionary = entry[3]
+        var base: Vector3 = info.get("base", Vector3.ZERO)
+        var nm := ""
+        for k in info.keys():
+            if str(k) == "name":
+                nm = str(info[k])
+        var l := _yard_w2l(base.x, base.z)
+        var in_pad := _yard_pad_contains(l.x, l.y, 0.0)
+        var pad_y := _yard_pad_y(l.x, l.y)
+        var ring := _yard_ring(0.25)
+        var best := 1.0e9
+        for lp in ring:
+            best = minf(best, lp.distance_to(l))
+        var rec := {"local": l, "in_pad": in_pad, "pad_y": pad_y,
+            "base_y": base.y, "buried": pad_y - base.y,
+            "dist_to_pad_edge": best, "world": Vector2(base.x, base.z)}
+        if nm != "":
+            out[nm] = rec
+        else:
+            out["lamp_%d" % out.size()] = rec
+    return out
+
+
+# ================================================= front yard builder ====
+const FARM_SCRIPT := preload("res://scripts/isle_farm.gd")
+
+## 门前土地总入口：Γ 形台面 → 走道/土床 → 围栏 → 石板小径 → 外缘三段式 →
+## 排水槽 → 台面短草 → 后置实例过滤。返回可审计的 facts（写入 build() 字典）。
+static func _build_front_yard(root: Node3D, lamps: Array) -> Dictionary:
+    var node := Node3D.new()
+    node.name = "FrontYard"
+    # 顶点全部由 _yard_v3() 直接给出世界坐标（与 _h 采样同一帧），节点保持恒等变换，
+    # 避免“局部网格 + 父节点旋转”带来的二次变换错误。方向一致性由 _yard_l2w() 的
+    # cos/sin(M.HOUSE_YAW) 保证，探针会用 M.HOUSE_YAW 反算复核。
+    node.set_meta("yard_frame", {"house_x": M.HOUSE_X, "house_z": M.HOUSE_Z,
+        "house_yaw": M.HOUSE_YAW, "vertices": "world"})
+    root.add_child(node)
+    var farm_probe: Object = FARM_SCRIPT.new()
+    var gutter_d := {"x0": YARD_GUTTER_X0, "x1": YARD_GUTTER_X1,
+        "z0": YARD_GUTTER_Z0, "z1": YARD_GUTTER_Z1, "depth": YARD_GUTTER_DEPTH}
+    _yard_build_gutter(node)
+    var pad := _yard_build_pad(node)
+    var floor_half := 2.65
+    _yard_build_floor(node)
+    var beds := _yard_build_beds(node, farm_probe)
+    var fence := _yard_build_fence(node)
+    var walk := _yard_build_slabs(node)
+    var edge := _yard_build_edge(node)
+    edge["land_meas"] = _yard_landing_audit()
+    var bank_grass := _yard_build_bank_grass(node)
+    var grass := _yard_build_pad_grass(node, floor_half)
+    var filt := _yard_apply_scatter_filter(root)
+    # ---------------- 填方体积（0.25 m 采样，只统计台面内） ----------------
+    var vol_fill := 0.0
+    var vol_cut := 0.0
+    var sx := -7.70
+    while sx <= 4.43:
+        var sz := 3.28
+        while sz <= 14.75:
+            if _yard_pad_contains(sx, sz, 0.0):
+                var hh := _yard_h_l(sx, sz)
+                var pp := maxf(hh + YARD_PAD_LIFT, YARD_PAD_Y)
+                var f := pp - hh
+                if f > 0.0:
+                    vol_fill += f * 0.0625
+                else:
+                    vol_cut += -f * 0.0625
+            sz += 0.25
+        sx += 0.25
+    # ---------------- 与房屋/门廊/踏步的关系 ----------------
+    var pad_near_min := 99.0
+    var pad_near_max := -99.0
+    var xx := -7.70
+    while xx <= 4.43:
+        var yy := _yard_pad_y(xx, 3.28)
+        pad_near_min = minf(pad_near_min, yy)
+        pad_near_max = maxf(pad_near_max, yy)
+        xx += 0.25
+    var deck_bottom := 8.166
+    var deck_gap_min := 99.0
+    var deck_gap_max := -99.0
+    xx = -2.90
+    while xx <= 2.90:
+        var zz2 := 3.32
+        while zz2 <= 4.70:
+            var yy2 := _yard_pad_y(xx, zz2)
+            deck_gap_min = minf(deck_gap_min, deck_bottom - yy2)
+            deck_gap_max = maxf(deck_gap_max, deck_bottom - yy2)
+            zz2 += 0.10
+        xx += 0.20
+    var step_top := 7.9456
+    var step_front_min := 99.0
+    var step_front_max := -99.0
+    xx = -1.10
+    while xx <= 1.10:
+        var yy3 := _yard_pad_y(xx, 5.60)
+        step_front_min = minf(step_front_min, yy3)
+        step_front_max = maxf(step_front_max, yy3)
+        xx += 0.10
+    # ---------------- 与既有道路的关系 ----------------
+    var layout_ok := _path_segs.size() >= 30 and _path_widths.size() >= 15
+    if layout_ok:
+        var door := M.door_approach()
+        layout_ok = _path_segs[0].distance_to(Vector2(door.x, door.z)) < 0.001
+    # 注意口径：fence_to_* 必须从**围栏盒**（±YARD_FENCE_HALF）采样；
+    # _yard_min_path_dist_on_ring() 采的是台面边界环，那是 pad_to_*。
+    var fence_to_main := 1.0e9
+    var fence_to_spur := 1.0e9
+    for lp in _yard_fence_ring(0.15):
+        var wf := _yard_l2w(lp.x, lp.y)
+        fence_to_main = minf(fence_to_main, _yard_path_edge_dist(wf.x, wf.y, 0, 4))
+        fence_to_spur = minf(fence_to_spur, _yard_path_edge_dist(wf.x, wf.y, 4, 11))
+    var pad_to_main := 1.0e9
+    var pad_to_spur := 1.0e9
+    var ring_all := _yard_ring(0.15)
+    for lp in ring_all:
+        var w2 := _yard_l2w(lp.x, lp.y)
+        pad_to_main = minf(pad_to_main, _yard_path_edge_dist(w2.x, w2.y, 0, 4))
+        pad_to_spur = minf(pad_to_spur, _yard_path_edge_dist(w2.x, w2.y, 4, 11))
+    # 路面是否被抬起（>0.09 会埋掉石板路面）
+    var path_raise := -99.0
+    var pi := 0
+    while pi < 15 and pi * 2 + 1 < _path_segs.size():
+        var pa := _path_segs[pi * 2]
+        var pb := _path_segs[pi * 2 + 1]
+        var steps := maxi(1, int(ceil(pa.distance_to(pb) / 0.20)))
+        for k in range(steps + 1):
+            var q := pa.lerp(pb, float(k) / float(steps))
+            var lq := _yard_w2l(q.x, q.y)
+            if _yard_pad_contains(lq.x, lq.y, 0.0):
+                var hq := _yard_h_l(lq.x, lq.y)
+                var pq := maxf(hq + YARD_PAD_LIFT, YARD_PAD_Y)
+                path_raise = maxf(path_raise, pq - hq)
+        pi += 1
+    # ---------------- 九格索引 ↔ 世界 ----------------
+    var slot_rows: Array = []
+    for row in beds["index_map"]:
+        var c: Vector2 = row["local"]
+        var w3 := _yard_l2w(c.x, c.y)
+        slot_rows.append({"index": row["index"], "i": row["i"], "j": row["j"],
+            "local": c, "world": w3,
+            "terrain": _yard_h_l(c.x, c.y),
+            "deck": _yard_pad_y(c.x, c.y) + YARD_FLOOR_LIFT})
+    # ---------------- 围栏是否全在台面内 ----------------
+    var posts_out := 0
+    for pl in fence["posts_local"]:
+        if not _yard_pad_contains(pl.x, pl.y, -0.05):
+            posts_out += 1
+    # 修：门洞中心 facts 里存的是世界坐标，_yard_pad_contains 要局部坐标（A 审核实的假红旗）。
+    var gate_wc: Vector2 = fence["gate_center_world"]
+    var gate_wl := _yard_w2l(gate_wc.x, gate_wc.y)
+    var gate_ok := _yard_pad_contains(gate_wl.x, gate_wl.y, 0.0)
+    var gate_local := YARD_PATH_GATE
+    gate_ok = gate_ok and _yard_pad_contains(gate_local.x, gate_local.y, 0.0)
+    # ---------------- 外缘最小草缘宽度 ----------------
+    var checks := {
+        "pad_contains_gate": gate_ok,
+        "fence_posts_outside": posts_out,
+        "bed_top_spread": beds["bed_top_spread"],
+        "bed_flat_ok": float(beds["bed_top_spread"]) <= 0.002,
+        "timber_hmax": edge["timber_hmax"],
+        "timber_ok": float(edge["timber_hmax"]) <= YARD_TIMBER_CAP + 0.0005,
+        "path_raise_max": path_raise,
+        "path_not_buried": path_raise <= 0.0905,
+        "path_layout_ok": layout_ok,
+        "walkway_on_pad": walk["on_pad"],
+        "pad_fill_max": pad["fill_max"],
+        "pad_cut_max": pad["cut_max"],
+        "no_excavation_off_mound": float(pad["cut_max"]) <= 0.17,
+    }
+    var facts := {
+        "node": node,
+        "polygon_local": YARD_POLY_PTS,
+        "polygon_world": _yard_poly_world(),
+        "pad_y": YARD_PAD_Y,
+        "pad_lift": YARD_PAD_LIFT,
+        "farm_center_local": YARD_FARM_C,
+        "farm_center_world": _yard_l2w(YARD_FARM_C.x, YARD_FARM_C.y),
+        "grid_pitch": farm_probe.GRID_PITCH,
+        "slot_count": farm_probe.SLOT_COUNT,
+        "area": pad["area"],
+        "tris": pad["tris"],
+        "fill_max": pad["fill_max"],
+        "cut_max": pad["cut_max"],
+        "fill_volume": vol_fill,
+        "cut_volume": vol_cut,
+        "fence_box_amp": pad["fence_box_amp"],
+        "near_strip_low_share": pad["near_low_share"],
+        "edge": edge,
+        "bank_grass": bank_grass,
+        "beds": beds,
+        "slots": slot_rows,
+        "fence": fence,
+        "walkway": walk,
+        "gutter": gutter_d,
+        "pad_grass": grass,
+        "filter": filt,
+        "house_contact": {
+            "pad_near_edge_y": [pad_near_min, pad_near_max],
+            "wall_outer_lz": 3.10,
+            "pad_near_lz": 3.28,
+            "porch_deck_bottom": deck_bottom,
+            "deck_gap": [deck_gap_min, deck_gap_max],
+            "bottom_step_top": step_top,
+            "pad_at_step_front": [step_front_min, step_front_max],
+            "step_front_drop": step_top - 0.5 * (step_front_min + step_front_max),
+        },
+        "paths": {
+            "layout_ok": layout_ok,
+            "fence_to_main_edge": fence_to_main,
+            "fence_to_spur_edge": fence_to_spur,
+            "pad_to_main_edge": pad_to_main,
+            "pad_to_spur_edge": pad_to_spur,
+            "path_raise_max": path_raise,
+        },
+        "lamps": _yard_lamp_metrics(lamps),
+        "checks": checks,
+        "min_run_note": "min_run = max(0.20, min(fill,0.70)/tan32°)；fill>0.70 的段另加低矮木边",
+    }
+    return facts
+
+## 六点 Γ 形轮廓的世界坐标（顺序与 YARD_POLY_PTS 一致）。
+static func _yard_poly_world() -> Array:
+    var out: Array = []
+    for p in YARD_POLY_PTS:
+        out.append(_yard_l2w(p.x, p.y))
+    return out
