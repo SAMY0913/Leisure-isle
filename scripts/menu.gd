@@ -128,6 +128,8 @@ var _res_confirm_dim: ColorRect
 var _res_confirm_panel: PanelContainer
 var _res_confirm_label: Label
 var _res_confirm_open: bool = false
+## P7-FINALIZE：显示变更（分辨率/窗口模式）12s 确认期间不落盘，避免"未确认就被持久化"。
+var _display_pending: bool = false
 var _res_confirm_t: float = 0.0
 var _res_prev: Dictionary = {}
 var _res_kind: String = ""
@@ -1248,6 +1250,7 @@ func _apply_display_change(kind: String, prev: Dictionary) -> void:
     _res_prev = prev.duplicate(true)
     _res_confirm_t = CONFIRM_SECONDS
     _res_confirm_open = true
+    _display_pending = true
     _res_confirm_dim.visible = true
     _res_confirm_panel.visible = true
     var what := "分辨率" if kind == "resolution" else "窗口模式"
@@ -1258,16 +1261,20 @@ func _apply_display_change(kind: String, prev: Dictionary) -> void:
 
 func _confirm_keep() -> void:
     _res_confirm_open = false
+    _display_pending = false
     _res_confirm_dim.visible = false
     _res_confirm_panel.visible = false
     _res_prev = {}
     _res_kind = ""
+    # 确认后才允许主循环把这组显示设置落盘。
+    settings_changed.emit(get_settings())
 
 func _confirm_revert() -> void:
     if not _res_confirm_open and _res_prev.is_empty():
         return
     var old: Dictionary = _res_prev.duplicate(true)
     _res_confirm_open = false
+    _display_pending = false
     _res_confirm_dim.visible = false
     _res_confirm_panel.visible = false
     _res_prev = {}
@@ -1278,10 +1285,16 @@ func _confirm_revert() -> void:
     _set_settings_visuals()
     settings_changed.emit(old)
 
+## 供 main 判断：当前是否有“尚未确认”的分辨率/窗口模式变更（有则不落盘）。
+func display_confirm_pending() -> bool:
+    return _display_pending
+
+
 ## 取消未确认的显示变更：回退到变更前（open/close 时调用，保证状态一致）。
 func _cancel_res_confirm() -> void:
     if _res_confirm_open or not _res_prev.is_empty():
         _confirm_revert()
+    _display_pending = false
     _res_confirm_open = false
     _res_confirm_dim.visible = false
     _res_confirm_panel.visible = false

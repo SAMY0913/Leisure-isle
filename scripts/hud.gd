@@ -17,6 +17,10 @@ signal datetime_jump_requested(year: int, month: int, day: int, hour: int, minut
 signal weather_auto_requested(enabled: bool)
 signal weather_type_requested(type_id: String)
 
+# P6：钓鱼入口（玩家点击 → main 让岛民自主去岸边钓鱼）。HUD 只发请求与展示状态，
+# 钓鱼状态的唯一权威在岛民状态机（isle_villager.gd），HUD 不持有任何游戏状态。
+signal fishing_toggle_requested
+
 const ScrubberCtl := preload("res://scripts/ui_time_scrubber.gd")
 ## P8 日历：把“年月日时分”离散编辑量换算成主时钟秒数（isle_calendar 为纯函数模块，不持有时钟）。
 const CalendarCtl := preload("res://scripts/isle_calendar.gd")
@@ -130,6 +134,64 @@ var _weather_type_buttons: Dictionary = {}
 var _weather_types_sig: String = ""
 var _weather_mode_ui: String = ""
 var _weather_active_ui: String = ""
+
+
+# ---- P5 背包（只读共享库存；显示顺序只属于 UI，绝不写回库存）----
+## 显示名与规范物品顺序复用 isle_crops.gd 的作物目录，不另造一套映射。
+const CropsCtl := preload("res://scripts/isle_crops.gd")
+## P6 鱼类目录（显示名/规范顺序复用同一纯函数模块，不在 HUD 里另造映射）。
+const FishCtl := preload("res://scripts/isle_fish.gd")
+## 五种子 / 五作物产物（目录本身沿用 isle_crops.gd，不另造映射）。
+const BAG_SEED_IDS := ["seed_wheat", "seed_corn", "seed_watermelon", "seed_tomato", "seed_kale"]
+const BAG_PRODUCE_IDS := ["wheat", "corn", "watermelon", "tomato", "kale"]
+const BAG_COLUMNS := 2
+## P7-FINALIZE（本轮用户要求）：单体扁平列表；「整理」后的规范顺序固定为
+## **作物产物 → 鱼 → 种子**；同类别内部按作物/鱼类目录顺序（稳定目录序，不依赖数量/字典序）。
+## 面板初始显示顺序故意采用 种子 → 作物 → 鱼（与整理后不同），
+## 这样「整理」按钮有真实、可观察的重排效果（不是重建同一顺序的空操作）。
+## 分类只做显示筛选，不改库存、不改数量、不引入格子容量概念（既有无容量/不限量堆叠原则不变）。
+## P7-FINALIZE：分类菜单顺序与新的「整理」顺序一致（作物 → 鱼 → 种子），全部在最前。
+const BAG_FILTER_ORDER := ["all", "produce", "fish", "seed"]
+const BAG_FILTER_LABELS := {"all": "全部", "produce": "作物", "seed": "种子", "fish": "鱼"}
+const BAG_ICON_SIZE := 34.0
+## 背包胶囊按钮固定在左下角时间胶囊（-66..-32）正上方，两者不重叠。
+const BAG_PILL_TOP := -108.0
+const BAG_PILL_BOTTOM := -74.0
+const BAG_PANEL_BOTTOM := -120.0
+## P6 钓鱼入口：与背包胶囊同一行（y -108..-74），放在背包右侧；该行整体在时间/天气胶囊之上、
+## 在背包面板底边（-120）之下，因此不与左下时间/天气显示或展开的背包面板重叠。
+const FISH_PILL_LEFT := 204.0
+const FISH_PILL_RIGHT := 366.0
+## 钓鱼阶段文字（只读投影，不参与任何状态推进）。
+const FISH_STATUS_LEFT := 376.0
+const FISH_STATUS_RIGHT := 800.0
+var _bag_pill: Button
+var _bag_panel: PanelContainer
+var _bag_open: bool = false
+# P7.2：单一扁平网格（所有物品格同属一张表，节点顺序即显示顺序）。
+var _bag_grid: GridContainer
+var _bag_cells: Dictionary = {}
+var _bag_count_labels: Dictionary = {}
+var _bag_name_labels: Dictionary = {}
+var _bag_sorted: bool = false
+var _bag_sort_count: int = 0
+
+# P7-UX / P7.2：只显示已获得物品（Minecraft / WoW 式），未获得过的物品格整格隐藏，空背包给提示。
+var _bag_empty_note: Label           # 背包内没有任何可显示物品时的提示
+var _bag_shown_ids: Array = []       # 当前可见物品 ID（变化时重排面板高度）
+# P7.2：分类次级菜单（全部/作物/种子/鱼），只与「数量 > 0」叠加，不改任何权威状态。
+var _bag_filter: String = "all"
+var _bag_filter_menu_open: bool = false
+var _bag_filter_panel: PanelContainer
+var _bag_filter_btn: Button
+var _bag_filter_buttons: Dictionary = {}   # filter_id -> Button
+
+# ---- P6 钓鱼入口（按钮 + 阶段文字；只读 main 传入的 fishing 快照）----
+var _fish_pill: Button
+var _fish_status: Label
+var _fish_active_ui: bool = false
+var _fish_phase_ui: String = ""
+var _fish_rounds_ui: int = -1
 
 func _ready() -> void:
 	layer = 5
@@ -269,7 +331,7 @@ func _build() -> void:
 	keys.custom_minimum_size = Vector2(400, 0)
 	_hint.add_child(keys)
 	_hint_keys = keys
-	var keys2 := _mk_label("F2 截图 · F3 性能 · F11 全屏", 11, Color(0.72, 0.66, 0.56, 0.85), 2)
+	var keys2 := _mk_label("B 背包 · F2 截图 · F3 性能 · F11 全屏", 11, Color(0.72, 0.66, 0.56, 0.85), 2)
 	keys2.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	keys2.custom_minimum_size = Vector2(400, 0)
 	_hint.add_child(keys2)
@@ -368,6 +430,10 @@ func _build() -> void:
 	_build_time_console()
 	# ---- P8 collapsible weather console ----
 	_build_weather_console()
+	# ---- P5 背包入口与面板 ----
+	_build_backpack()
+	# ---- P6 钓鱼入口（玩家主动发起岛民自主钓鱼）----
+	_build_fishing()
 
 func _build_time_console() -> void:
 	# 折叠态：左下角一枚小胶囊，随时可展开，不长期遮挡画面
@@ -610,6 +676,8 @@ func _toggle_weather_panel() -> void:
 	_weather_panel.visible = _weather_open
 	_weather_idle = 0.0
 	if _weather_open:
+		if _bag_open:
+			_collapse_backpack()
 		_refresh_weather(_data)
 
 func toggle_weather_panel() -> void:
@@ -814,6 +882,8 @@ func update_all(d: Dictionary) -> void:
 	_refresh_time_display()
 	_refresh_day_length_note(d)
 	_refresh_weather(d)
+	_refresh_backpack(d)
+	_refresh_fishing(d)
 	if _almanac_open:
 		_refresh_almanac()
 
@@ -972,6 +1042,9 @@ func _toggle_time_panel() -> void:
 	_time_panel.visible = _time_open
 	_time_idle = 0.0
 	if _time_open:
+		# P5：与背包面板互斥，避免左下角两块面板互相遮挡。
+		if _bag_open:
+			_collapse_backpack()
 		_refresh_time_display()
 		_seed_cal_draft(false)
 	else:
@@ -1236,8 +1309,8 @@ func set_fly_hints(active: bool) -> void:
 		_hint_keys.text = ("空格 暂停 · Tab 天文历 · T 时间 · H 隐藏界面" if active
 			else "空格 暂停 · Tab 天文历 · T 时间 · C 自动运镜 · H 隐藏界面")
 	if _hint_keys2 != null:
-		_hint_keys2.text = ("F2 截图 · F3 性能 · F11 全屏 · F 退出自由视角" if active
-			else "F2 截图 · F3 性能 · F11 全屏")
+		_hint_keys2.text = ("B 背包 · F2 截图 · F3 性能 · F11 全屏 · F 退出自由视角" if active
+			else "B 背包 · F2 截图 · F3 性能 · F11 全屏")
 
 func show_toast(text: String) -> void:
 	_toast.text = text
@@ -1313,6 +1386,8 @@ func set_hud_visible(v: bool, animate: bool = true) -> void:
 			_collapse_weather_panel()
 		if _perf_panel != null:
 			_perf_panel.visible = false
+		if _bag_open:
+			_collapse_backpack()
 		hide_hover_hint()
 	elif _perf_open and _perf_panel != null:
 		_perf_panel.visible = true
@@ -1351,3 +1426,544 @@ func _process(delta: float) -> void:
 		var sz := _hover_label.get_combined_minimum_size()
 		_hover_label.size = sz
 		_hover_label.position = (mp + Vector2(18, 16)).clamp(Vector2(8, 8), vs - sz - Vector2(8, 8))
+
+# ============================================================
+# P5：背包（只读全岛共享库存；一键整理只改显示顺序）
+# ============================================================
+## 左下角入口胶囊：固定在时间胶囊正上方；点击与 B 键走同一个开关函数。
+func _build_backpack() -> void:
+	_bag_pill = _mk_button("背包  B", 14, _toggle_backpack)
+	_bag_pill.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+	_bag_pill.offset_left = 34.0
+	_bag_pill.offset_right = 196.0
+	_bag_pill.offset_top = BAG_PILL_TOP
+	_bag_pill.offset_bottom = BAG_PILL_BOTTOM
+	_bag_pill.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	_root.add_child(_bag_pill)
+
+	# 展开态：背包面板（与时间/天气面板同风格，只读共享库存）
+	_bag_panel = PanelContainer.new()
+	_bag_panel.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+	_bag_panel.offset_left = 34.0
+	_bag_panel.offset_right = 506.0
+	_bag_panel.offset_top = BAG_PANEL_BOTTOM
+	_bag_panel.offset_bottom = BAG_PANEL_BOTTOM
+	_bag_panel.add_theme_stylebox_override("panel", _panel_style(Color(0.045, 0.055, 0.075, 0.88)))
+	_bag_panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	_bag_panel.visible = false
+	_root.add_child(_bag_panel)
+
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 8)
+	_bag_panel.add_child(v)
+
+	var header := HBoxContainer.new()
+	v.add_child(header)
+	var ttl := _mk_label("背包 · BAG", 15, ACCENT, 3)
+	ttl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	header.add_child(ttl)
+	var close_top := _mk_button("关闭 ✕", 12, _toggle_backpack)
+	close_top.custom_minimum_size = Vector2(76, 28)
+	header.add_child(close_top)
+
+	# P7-FINALIZE：移除"共享库存 / 只显示已获得 / B 键开关"说明性小字（用户要求界面整洁）。
+	# 空背包只保留一句必要状态提示，不解释规则。
+
+	# 空背包提示（没有任何已获得物品时显示，有物品时隐藏）。
+	_bag_empty_note = _mk_label("背包是空的", 11, Color(0.78, 0.72, 0.62, 0.92), 2)
+	_bag_empty_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_bag_empty_note.custom_minimum_size = Vector2(408, 0)
+	_bag_empty_note.visible = false
+	v.add_child(_bag_empty_note)
+
+	# 单一扁平列表——所有物品格放进同一张网格，顺序即显示顺序。
+	# 初始顺序 = 种子 → 作物 → 鱼（故意不是整理后的规范顺序，便于验证「整理」真实生效）。
+	_bag_grid = GridContainer.new()
+	_bag_grid.name = "BagGrid"
+	_bag_grid.columns = BAG_COLUMNS
+	_bag_grid.add_theme_constant_override("h_separation", 8)
+	_bag_grid.add_theme_constant_override("v_separation", 8)
+	v.add_child(_bag_grid)
+	for raw_id in _bag_default_ids():
+		var item_id := String(raw_id)
+		var cell := _make_bag_cell(item_id)
+		_bag_grid.add_child(cell)
+		_bag_cells[item_id] = cell
+
+	var footer := HBoxContainer.new()
+	footer.add_theme_constant_override("separation", 8)
+	v.add_child(footer)
+	var sort_btn := _mk_button("整理", 13, sort_backpack)
+	sort_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	sort_btn.custom_minimum_size = Vector2(0, 34)
+	footer.add_child(sort_btn)
+	# P7.2：分类入口（次级菜单）。默认「全部」，只筛选显示，不改库存与顺序语义。
+	_bag_filter_btn = _mk_button("分类：全部", 13, toggle_bag_filter_menu)
+	_bag_filter_btn.custom_minimum_size = Vector2(112, 34)
+	footer.add_child(_bag_filter_btn)
+	var close_btn := _mk_button("关闭", 13, _toggle_backpack)
+	close_btn.custom_minimum_size = Vector2(76, 34)
+	footer.add_child(close_btn)
+
+	# P7.2：次级分类菜单——按用户要求单独做成一个可展开的小面板，而不是把物品拆成多个标题组。
+	_bag_filter_panel = PanelContainer.new()
+	_bag_filter_panel.name = "BagFilterMenu"
+	_bag_filter_panel.add_theme_stylebox_override("panel", _panel_style(Color(0.06, 0.07, 0.095, 0.96)))
+	_bag_filter_panel.visible = false
+	v.add_child(_bag_filter_panel)
+	var fv := VBoxContainer.new()
+	fv.add_theme_constant_override("separation", 6)
+	_bag_filter_panel.add_child(fv)
+	var fgrid := GridContainer.new()
+	fgrid.columns = BAG_FILTER_ORDER.size()
+	fgrid.add_theme_constant_override("h_separation", 6)
+	fv.add_child(fgrid)
+	for raw_f in BAG_FILTER_ORDER:
+		var fid := String(raw_f)
+		var fb := _mk_button(String(BAG_FILTER_LABELS[fid]), 12, Callable(self, "_on_bag_filter_selected").bind(fid))
+		fb.custom_minimum_size = Vector2(0, 30)
+		fb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		fgrid.add_child(fb)
+		_bag_filter_buttons[fid] = fb
+	_apply_bag_filter_style()
+
+
+# ============================================================
+# P6：钓鱼入口（玩家主动发起；状态投影自 main 传入的 fishing 快照）
+# ============================================================
+## 钓鱼按钮与背包胶囊同一行、在背包右侧；不遮挡左下时间/天气显示，也不与 B 键背包冲突。
+func _build_fishing() -> void:
+	_fish_pill = _mk_button("钓鱼", 14, _on_fishing_pressed)
+	_fish_pill.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+	_fish_pill.offset_left = FISH_PILL_LEFT
+	_fish_pill.offset_right = FISH_PILL_RIGHT
+	_fish_pill.offset_top = BAG_PILL_TOP
+	_fish_pill.offset_bottom = BAG_PILL_BOTTOM
+	_fish_pill.alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_fish_pill.tooltip_text = "让岛民去码头自主钓鱼"
+	_root.add_child(_fish_pill)
+	_apply_fishing_style(false)
+
+	_fish_status = _mk_label("", 11, Color(0.86, 0.80, 0.70, 0.82), 3)
+	_fish_status.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+	_fish_status.offset_left = FISH_STATUS_LEFT
+	_fish_status.offset_right = FISH_STATUS_RIGHT
+	_fish_status.offset_top = BAG_PILL_TOP - 1.0
+	_fish_status.offset_bottom = BAG_PILL_BOTTOM + 1.0
+	_fish_status.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_fish_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	_fish_status.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_fish_status.text = ""
+	_root.add_child(_fish_status)
+
+
+## 与真实鼠标点击同一路径：Button.pressed → 本函数 → fishing_toggle_requested。
+func _on_fishing_pressed() -> void:
+	fishing_toggle_requested.emit()
+
+
+## 探针用：模拟玩家点击钓鱼按钮（等价于真实点击，走同一个 pressed 信号）。
+func press_fishing_button() -> void:
+	_fish_pill.pressed.emit()
+
+
+func _apply_fishing_style(active: bool) -> void:
+	if _fish_pill == null:
+		return
+	if active:
+		_fish_pill.add_theme_stylebox_override("normal", _btn_style(Color(0.20, 0.13, 0.09, 0.90), Color(1.0, 0.76, 0.48, 0.65)))
+		_fish_pill.add_theme_color_override("font_color", ACCENT)
+	else:
+		_fish_pill.add_theme_stylebox_override("normal", _btn_style(Color(0.06, 0.075, 0.10, 0.72), Color(1.0, 0.9, 0.74, 0.18)))
+		_fish_pill.add_theme_color_override("font_color", CREAM)
+
+
+## 只读投影 main 的 fishing 快照：按钮文案 + 阶段文字 + 已钓条数。不推进任何状态。
+func _refresh_fishing(d: Dictionary) -> void:
+	var f: Dictionary = d.get("fishing", {})
+	var active: bool = bool(f.get("active", false))
+	var phase: String = String(f.get("phase", ""))
+	var rounds: int = int(f.get("rounds", 0))
+	var label: String = String(f.get("label", ""))
+	if _fish_pill != null:
+		var want: String = "停止钓鱼" if active else "钓鱼"
+		if _fish_pill.text != want:
+			_fish_pill.text = want
+			_fish_pill.tooltip_text = "停止岛民钓鱼" if active else "让岛民去码头自主钓鱼"
+	if active != _fish_active_ui:
+		_fish_active_ui = active
+		_apply_fishing_style(active)
+	if _fish_status != null:
+		var text: String = ""
+		if active:
+			text = label
+			if rounds > 0:
+				text += " · 已钓 %d 条" % rounds
+		if _fish_status.text != text:
+			_fish_status.text = text
+		_fish_phase_ui = phase
+		_fish_rounds_ui = rounds
+
+
+## 只读视图（供探针验证入口存在、按钮状态、阶段文字与几何不遮挡）。
+func fishing_ui_state() -> Dictionary:
+	var rect := Rect2()
+	if _fish_pill != null:
+		rect = _fish_pill.get_global_rect()
+	var time_rect := Rect2()
+	if _time_pill != null:
+		time_rect = _time_pill.get_global_rect()
+	var weather_rect := Rect2()
+	if _weather_pill != null:
+		weather_rect = _weather_pill.get_global_rect()
+	var status_rect := Rect2()
+	if _fish_status != null:
+		status_rect = _fish_status.get_global_rect()
+	var overlaps_time: bool = rect.size.y > 0.0 and rect.intersects(time_rect)
+	var overlaps_weather: bool = rect.size.y > 0.0 and rect.intersects(weather_rect)
+	return {
+		"exists": _fish_pill != null,
+		"text": _fish_pill.text if _fish_pill != null else "",
+		"active": _fish_active_ui,
+		"phase": _fish_phase_ui,
+		"rounds": _fish_rounds_ui,
+		"status_text": _fish_status.text if _fish_status != null else "",
+		"rect": rect,
+		"status_rect": status_rect,
+		"overlaps_time": overlaps_time,
+		"overlaps_weather": overlaps_weather,
+	}
+
+
+## P7-FINALIZE：用户指定的「整理」规范显示顺序 = **作物产物 → 鱼 → 种子**。
+## 同类别内部使用稳定目录顺序（作物目录 / 鱼类目录），不依赖数量或字典迭代顺序。
+func _bag_canonical_ids() -> Array:
+	var ids: Array = []
+	ids.append_array(BAG_PRODUCE_IDS)
+	ids.append_array(FishCtl.all_ids())
+	ids.append_array(BAG_SEED_IDS)
+	return ids
+
+
+## 面板初始显示顺序 = 种子 → 作物 → 鱼（故意与「整理」后不同）。
+## 这样「整理」是真实可见的重排，而不是把同一顺序再应用一遍的空操作。
+func _bag_default_ids() -> Array:
+	var ids: Array = []
+	ids.append_array(BAG_SEED_IDS)
+	ids.append_array(BAG_PRODUCE_IDS)
+	ids.append_array(FishCtl.all_ids())
+	return ids
+
+
+## P7.2：物品所属分类（只用于显示筛选，不写入库存/农田等任何权威状态）。
+func _bag_item_category(item_id: String) -> String:
+	if item_id.begins_with("seed_"):
+		return "seed"
+	if FishCtl.has_fish(item_id):
+		return "fish"
+	return "produce"
+
+
+## P7.2：展开/收起次级分类菜单（只改 UI 可见性；筛选结果由 _bag_filter 决定）。
+func toggle_bag_filter_menu() -> void:
+	_bag_filter_menu_open = not _bag_filter_menu_open
+	if _bag_filter_panel != null:
+		_bag_filter_panel.visible = _bag_filter_menu_open
+	if _bag_open:
+		_fit_bag_panel()
+		call_deferred("_fit_bag_panel")
+
+
+## P7.2：选择分类（全部/作物/种子/鱼）。按钮与探针共用同一入口，测到的就是玩家路径。
+func set_bag_filter(filter_id: String) -> bool:
+	if not BAG_FILTER_LABELS.has(filter_id):
+		return false
+	_on_bag_filter_selected(filter_id)
+	return true
+
+
+func _on_bag_filter_selected(filter_id: String) -> void:
+	_bag_filter = filter_id if BAG_FILTER_LABELS.has(filter_id) else "all"
+	_apply_bag_filter_style()
+	_refresh_backpack(_data)
+	if _bag_open:
+		_fit_bag_panel()
+		call_deferred("_fit_bag_panel")
+
+
+## 选中项高亮 + 「分类：xxx」按钮文案（纯视觉，不影响任何数据）。
+func _apply_bag_filter_style() -> void:
+	for raw in _bag_filter_buttons.keys():
+		var fid := String(raw)
+		var b := _bag_filter_buttons[fid] as Button
+		if b == null:
+			continue
+		var on: bool = fid == _bag_filter
+		b.add_theme_stylebox_override("normal", _btn_style(
+			Color(0.20, 0.13, 0.09, 0.90) if on else Color(0.06, 0.075, 0.10, 0.72),
+			Color(1.0, 0.76, 0.48, 0.65) if on else Color(1.0, 0.9, 0.74, 0.18)))
+		b.add_theme_color_override("font_color", ACCENT if on else CREAM)
+	if _bag_filter_btn != null:
+		_bag_filter_btn.text = "分类：%s" % String(BAG_FILTER_LABELS.get(_bag_filter, "全部"))
+		_bag_filter_btn.tooltip_text = "按分类筛选（只影响显示，不改库存）"
+
+
+## 单个物品格：干净的空白图标位 + 名称 + 数量（本阶段不做任何图标素材）。
+func _make_bag_cell(item_id: String) -> Control:
+	var cell := PanelContainer.new()
+	cell.set_meta("item_id", item_id)
+	cell.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(1.0, 0.93, 0.82, 0.05)
+	sb.corner_radius_top_left = 8
+	sb.corner_radius_top_right = 8
+	sb.corner_radius_bottom_left = 8
+	sb.corner_radius_bottom_right = 8
+	sb.border_width_left = 1
+	sb.border_width_top = 1
+	sb.border_width_right = 1
+	sb.border_width_bottom = 1
+	sb.border_color = Color(1.0, 0.9, 0.74, 0.14)
+	sb.content_margin_left = 10.0
+	sb.content_margin_right = 10.0
+	sb.content_margin_top = 7.0
+	sb.content_margin_bottom = 7.0
+	cell.add_theme_stylebox_override("panel", sb)
+
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	cell.add_child(row)
+
+	# 图标占位：本阶段统一留空，后续补贴图时只替换这一个空 Panel 的内容。
+	var icon := PanelContainer.new()
+	icon.custom_minimum_size = Vector2(BAG_ICON_SIZE, BAG_ICON_SIZE)
+	icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var isb := StyleBoxFlat.new()
+	isb.bg_color = Color(1.0, 0.93, 0.82, 0.04)
+	isb.corner_radius_top_left = 6
+	isb.corner_radius_top_right = 6
+	isb.corner_radius_bottom_left = 6
+	isb.corner_radius_bottom_right = 6
+	isb.border_width_left = 1
+	isb.border_width_top = 1
+	isb.border_width_right = 1
+	isb.border_width_bottom = 1
+	isb.border_color = Color(1.0, 0.9, 0.74, 0.22)
+	icon.add_theme_stylebox_override("panel", isb)
+	row.add_child(icon)
+
+	var name_l := _mk_label(_bag_item_name(item_id), 13, CREAM, 2)
+	name_l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	name_l.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	row.add_child(name_l)
+	_bag_name_labels[item_id] = name_l
+
+	var cnt := _mk_label("×0", 12, DIM, 2)
+	cnt.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	cnt.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	cnt.custom_minimum_size = Vector2(38, 0)
+	row.add_child(cnt)
+	_bag_count_labels[item_id] = cnt
+	return cell
+
+
+## 物品显示名：复用 isle_crops.gd 的作物目录（种子=作物名+“种子”，产物=作物名）。
+func _bag_item_name(item_id: String) -> String:
+	var crop_id := item_id.trim_prefix("seed_")
+	if CropsCtl.has_crop(crop_id):
+		if item_id.begins_with("seed_"):
+			return CropsCtl.display_name(crop_id) + "种子"
+		return CropsCtl.display_name(crop_id)
+	# P6：鱼类显示名复用 isle_fish.gd 的同一份目录（未知 ID 原样返回，便于诊断）。
+	if FishCtl.has_fish(item_id):
+		return FishCtl.display_name(item_id)
+	return item_id
+
+
+## 只读主循环传入的 inventory_items 快照；不复制库存、不写入任何数据。
+## P7.2：扁平列表下「数量 > 0」+ 分类筛选叠加决定每格可见性；可见顺序 = 网格真实节点顺序。
+func _refresh_backpack(d: Dictionary) -> void:
+	if _bag_count_labels.is_empty():
+		return
+	var items: Dictionary = d.get("inventory_items", {})
+	var shown: Array = []
+	if _bag_grid != null:
+		for child in _bag_grid.get_children():
+			var cell := child as Control
+			if cell == null or not cell.has_meta("item_id"):
+				continue
+			var item_id := String(cell.get_meta("item_id"))
+			var lbl := _bag_count_labels.get(item_id) as Label
+			if lbl == null:
+				continue
+			var cnt := int(items.get(item_id, 0))
+			var text := "×%d" % cnt
+			if lbl.text != text:
+				lbl.text = text
+			# P7-UX / P7.2：只显示已获得（数量 > 0）且命中当前分类的物品；
+			# 未获得过的物品整格隐藏，与 Minecraft / WoW 背包一致（不显示 ×0 空位）。
+			var want: bool = cnt > 0 and (_bag_filter == "all" or _bag_item_category(item_id) == _bag_filter)
+			if cell.visible != want:
+				cell.visible = want
+			if want:
+				shown.append(item_id)
+	if _bag_empty_note != null:
+		var empty := shown.is_empty()
+		if empty:
+			_bag_empty_note.text = "此分类暂无物品" if _bag_filter != "all" else "背包是空的"
+		if _bag_empty_note.visible != empty:
+			_bag_empty_note.visible = empty
+	var changed := shown != _bag_shown_ids
+	_bag_shown_ids = shown
+	if changed and _bag_open:
+		# 可见格子数量变化会改变面板高度：打开状态下立即重贴时间胶囊上方。
+		_fit_bag_panel()
+		call_deferred("_fit_bag_panel")
+
+
+
+## 把规范显示顺序（作物产物 → 鱼 → 种子）应用到真实节点顺序（仅「整理」触发）。
+func _apply_bag_order() -> void:
+	if _bag_grid == null:
+		return
+	var ids := _bag_canonical_ids()
+	for i in ids.size():
+		_move_bag_cell(String(ids[i]), i)
+
+
+func _move_bag_cell(item_id: String, index: int) -> void:
+	if _bag_grid == null:
+		return
+	var cell := _bag_cells.get(item_id) as Control
+	if cell == null or cell.get_parent() != _bag_grid:
+		return
+	_bag_grid.move_child(cell, index)
+
+
+## 一键整理：只把显示顺序恢复成规范顺序（作物产物 → 鱼 → 种子，用户指定），
+## 绝不改动库存数量、物品 ID、农田数据或权威状态。
+## 初始顺序是 种子 → 作物 → 鱼，因此点击后会产生真实可见的重排。
+func sort_backpack() -> bool:
+	if _bag_grid == null:
+		return false
+	_apply_bag_order()
+	_bag_sorted = true
+	_bag_sort_count += 1
+	_refresh_backpack(_data)
+	if _bag_open:
+		_fit_bag_panel()
+	return true
+
+
+func _toggle_backpack() -> void:
+	if _bag_open:
+		_collapse_backpack()
+	else:
+		open_backpack()
+
+
+func toggle_backpack() -> void:
+	_toggle_backpack()
+
+
+func open_backpack() -> void:
+	if _bag_panel == null:
+		return
+	_bag_open = true
+	_bag_panel.visible = true
+	# 与左下角时间/天气面板互斥，避免两块面板互相遮挡（不改变任何游戏状态）。
+	if _time_open:
+		_collapse_time_panel()
+	if _weather_open:
+		_collapse_weather_panel()
+	# P7-FINALIZE：打开面板不自动"整理"——整理必须由玩家点「整理」触发，
+	# 否则初始顺序与整理后相同，按钮会变成无效果的空操作。
+	_refresh_backpack(_data)
+	_fit_bag_panel()
+	call_deferred("_fit_bag_panel")
+
+
+func close_backpack() -> void:
+	_collapse_backpack()
+
+
+func _collapse_backpack() -> void:
+	_bag_open = false
+	if _bag_panel != null:
+		_bag_panel.visible = false
+
+
+func backpack_open() -> bool:
+	return _bag_open
+
+
+## 面板高度由内容决定：打开时按最小尺寸贴上时间胶囊上方，小窗口下不越出屏幕。
+func _fit_bag_panel() -> void:
+	if _bag_panel == null:
+		return
+	var content_h := _bag_panel.get_combined_minimum_size().y
+	if content_h <= 0.0:
+		content_h = 460.0
+	var vh := 720.0
+	if get_viewport() != null:
+		vh = get_viewport().get_visible_rect().size.y
+	var top := BAG_PANEL_BOTTOM - content_h
+	if vh + top < 12.0:
+		top = 12.0 - vh
+	_bag_panel.offset_top = top
+
+
+## 只读视图（供探针/自检验证显示顺序、筛选与数量；不暴露任何写库存接口）。
+func bag_display_state() -> Dictionary:
+	var order: Array = []
+	var counts: Dictionary = {}
+	var names: Dictionary = {}
+	var visible_order: Array = []
+	if _bag_grid != null:
+		for child in _bag_grid.get_children():
+			var c := child as Control
+			if c == null or not c.has_meta("item_id"):
+				continue
+			var item_id := String(c.get_meta("item_id"))
+			order.append(item_id)
+			var lbl := _bag_count_labels.get(item_id) as Label
+			counts[item_id] = int(lbl.text.trim_prefix("×")) if lbl != null else 0
+			var nl := _bag_name_labels.get(item_id) as Label
+			names[item_id] = nl.text if nl != null else ""
+			if c.visible:
+				visible_order.append(item_id)
+	return {"order": order, "counts": counts, "names": names, "sorted": _bag_sorted,
+		"sort_count": _bag_sort_count, "open": _bag_open,
+		# P7-UX：过滤后的真实可见视图（只含数量 > 0 的物品），供探针断言产品行为。
+		"visible_order": visible_order, "visible_count": visible_order.size(),
+		"empty_visible": _bag_empty_note != null and _bag_empty_note.visible,
+		"filtered": true, "filter_rule": "count>0",
+		# P7.2：单一扁平列表（无任何分组标题）+ 次级分类菜单。
+		"flat": true, "section_count": 0, "grid_columns": BAG_COLUMNS,
+		"filter": _bag_filter, "filter_options": BAG_FILTER_ORDER.duplicate(),
+		"filter_label": String(BAG_FILTER_LABELS.get(_bag_filter, "全部")),
+		"filter_menu_open": _bag_filter_menu_open,
+		"filter_button_text": _bag_filter_btn.text if _bag_filter_btn != null else ""}
+
+
+## 几何信息（验证入口在时间胶囊上方、面板不越出可视区域）。
+func bag_layout_info() -> Dictionary:
+	var vp := Vector2.ZERO
+	if get_viewport() != null:
+		vp = get_viewport().get_visible_rect().size
+	var bag_rect := Rect2()
+	if _bag_pill != null:
+		bag_rect = _bag_pill.get_global_rect()
+	var time_rect := Rect2()
+	if _time_pill != null:
+		time_rect = _time_pill.get_global_rect()
+	var panel_rect := Rect2()
+	if _bag_panel != null:
+		panel_rect = _bag_panel.get_global_rect()
+	var above := bag_rect.size.y > 0.0 and bag_rect.end.y <= time_rect.position.y + 0.5
+	var on_screen := vp.x > 0.0 and vp.y > 0.0 \
+		and panel_rect.position.x >= 0.0 and panel_rect.position.y >= 0.0 \
+		and panel_rect.end.x <= vp.x + 0.5 and panel_rect.end.y <= vp.y + 0.5
+	return {"pill_rect": bag_rect, "time_pill_rect": time_rect, "panel_rect": panel_rect,
+		"pill_above_time": above, "panel_on_screen": on_screen, "viewport": vp,
+		"open": _bag_open, "sorted": _bag_sorted, "sort_count": _bag_sort_count}

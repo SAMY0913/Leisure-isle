@@ -98,8 +98,8 @@ func _probe_counts() -> void:
 	var all: Array = wperches + cperches
 	print("[COUNTS] world=", wperches.size(), " cottage=", cperches.size(), " total=", all.size())
 	_check(cperches.size() == 14, "cottage 栖点仍 14")
-	_check(wperches.size() == 27, "world 栖点 27（旧 16 + 灯塔/码头/花园 6 灯已有 + 冬季 5）实际=" + str(wperches.size()))
-	_check(all.size() == 41, "合并栖点 41")
+	_check(wperches.size() == 26, "world 栖点 26（旧 16 + 灯塔/码头/花园 5 灯（P7.1 删一盏）+ 冬季 5）实际=" + str(wperches.size()))
+	_check(all.size() == 40, "合并栖点 40（14 cottage + 26 world）")
 	_winter_perches = []
 	for p_v in wperches:
 		var p: Dictionary = p_v
@@ -213,13 +213,15 @@ func _probe_winter_bloom() -> void:
 	_check(stems != null and heads != null, "WinterBloom 茎/头节点存在")
 	if stems == null or heads == null:
 		return
-	_check(stems.multimesh.instance_count == 5, "茎 5 实例")
-	_check(heads.multimesh.instance_count == 5, "头 5 实例")
-	_check(base.size() == 5, "base 5 项")
+	# P2-B v2 / U5：用户明确要求删掉屋前这五株冬季红花（world.gd:1108-1113 只删锚点、保留结构与节点名）。
+	# 旧断言写的是"5 实例"，产品删除后应为 0；这里改为断言删除契约成立（节点仍在但零实例）。
+	_check(stems.multimesh.instance_count == 0, "茎 0 实例（冬季红花已按产品要求删除）")
+	_check(heads.multimesh.instance_count == 0, "头 0 实例（同上）")
+	_check(base.is_empty(), "base 为空（季节循环写 0 次）")
 	_check(not stems.visible and not heads.visible, "初始不可见（等季节视觉驱动）")
 	_check(not String(stems.name).begins_with("Flower") and not String(heads.name).begins_with("Flower"), "节点名不以 Flower 开头（不被花系统 find_children 误收）")
 	var same_xf := true
-	for i in range(5):
+	for i in range(mini(stems.multimesh.instance_count, heads.multimesh.instance_count)):
 		if not stems.multimesh.get_instance_transform(i).is_equal_approx(heads.multimesh.get_instance_transform(i)):
 			same_xf = false
 	_check(same_xf, "茎/头每实例 Transform 完全一致（花头不会悬空）")
@@ -303,7 +305,7 @@ func _probe_fx_gating() -> void:
 	var stats0: Dictionary = flock.call("debug_perch_stats") as Dictionary
 	var counts0: Dictionary = flock.call("get_state_counts") as Dictionary
 	print("[FXGATE] setup perches=", int(stats0["perch_count"]), " slots=", int(stats0["total_slots"]), " perched=", int(counts0["perched"]), " teleports=", int(stats0["teleports"]))
-	_check(int(stats0["perch_count"]) == 41, "fx 归一化保留全部 41 点")
+	_check(int(stats0["perch_count"]) == 40, "fx 归一化保留全部 40 点")
 	_check(int(stats0["zones"].get("winter_branch", 0)) == 5, "fx zone 识别 5 个 winter_branch")
 	var tp_base := int(stats0["teleports"])
 

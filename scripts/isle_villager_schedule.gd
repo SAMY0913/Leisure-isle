@@ -28,6 +28,9 @@ const KIND_MIN_REAL := {
     "sit": 10.0,
     "stroll": 6.0,
     "idle": 5.0,
+    # P9 新增两项白天户外生活动作
+    "swing": 8.0,
+    "sea_view": 8.0,
 }
 const KIND_MAX_REAL := {
     "sleep": 7200.0,
@@ -35,6 +38,8 @@ const KIND_MAX_REAL := {
     "sit": 48.0,
     "stroll": 20.0,
     "idle": 14.0,
+    "swing": 22.0,
+    "sea_view": 18.0,
 }
 const KIND_SHARE := {
     "sleep": 4.0,
@@ -42,7 +47,17 @@ const KIND_SHARE := {
     "sit": 2.0,
     "stroll": 3.0,
     "idle": 1.0,
+    "swing": 2.0,
+    "sea_view": 2.0,
 }
+## P9：白天户外窗口的休闲候选（每次决策加权随机，避免固定轮播；时长另有随机化）。
+const OUTDOOR_POOL := [
+    ["stroll", 3.0],
+    ["swing", 2.0],
+    ["sea_view", 2.0],
+    ["idle", 1.0],
+]
+const LEISURE_KINDS := ["swing", "sea_view"]
 ## Ordered intent list per window; repeated entries are consumed in order so a
 ## long window (real-time mode) gets a believable little routine instead of
 ## re-playing the same action every decision.
@@ -173,6 +188,20 @@ func choose(ctx: Dictionary) -> Dictionary:
         # Sleep lasts until the window ends (possibly hours in real-time mode),
         # re-evaluated when the world window changes or the user jumps time.
         var sd := clampf(remain_real, 20.0, 86400.0)
+        # P9 / P7-FINALIZE（C 报告 D7）：预读下一个窗口；若它仍是 sleep（00:00 的
+        # night_before_wake），把后一段睡眠时长接到本次决策里，避免跨 00:00 时
+        # “起床 → 走回床边 → 再躺下”的每日一次抖动。世界窗口切换本身不改写 _act.dur。
+        var next_w := window_for(float(win["end"]) * 60.0 + 1.0, events)
+        var probe_end := float(win["end"])
+        var guard := 0
+        while String(next_w.get("kind", "")) == "sleep" and guard < 4:
+            var add_min := float(next_w["end"]) - float(next_w["start"])
+            if add_min <= 0.0:
+                add_min += 1440.0
+            sd = minf(86400.0, sd + (add_min * 60.0) / rate)
+            probe_end += add_min
+            next_w = window_for(probe_end * 60.0 + 1.0, events)
+            guard += 1
         _last_reason = "window %s -> sleep" % wid
         return {
             "kind": "sleep",
@@ -214,12 +243,15 @@ func choose(ctx: Dictionary) -> Dictionary:
             # 已经在室内区域（餐桌/阁楼）的日程保持原区域，只把户外/门廊改成室内。
             if region_pref != "floor1" and region_pref != "attic":
                 region_pref = "indoor"
-            if kind == "stroll":
+            if kind == "stroll" or LEISURE_KINDS.has(kind):
                 kind = "idle"
         elif (wx_wet or wx_gusty) and region_pref == "outdoor" and not wx_snow_calm:
             region_pref = "porch"
-            if kind == "stroll":
+            if kind == "stroll" or LEISURE_KINDS.has(kind):
                 kind = "sit"
+    # P9：两项户外休闲只在“白天 + 真正能到户外”时成立（天黑/恶劣天气回退到坐着或待着）。
+    if LEISURE_KINDS.has(kind) and (region_pref != "outdoor" or sun_alt <= 1.0):
+        kind = "sit" if region_pref == "porch" else "idle"
     _last_reason = "window %s -> %s (%.1f real s, pref %s)" % [wid, kind, dur, region_pref]
     return {
         "kind": kind,
@@ -231,8 +263,33 @@ func choose(ctx: Dictionary) -> Dictionary:
     }
 
 
+## P9：白天户外窗口的休闲动作加权随机抽取（排除上一次 kind，避免固定轮播）。
+func _pick_outdoor_kind() -> String:
+    var usable: Array = []
+    var total := 0.0
+    for item in OUTDOOR_POOL:
+        var key := String(item[0])
+        if key == _last_kind:
+            continue
+        usable.append(item)
+        total += float(item[1])
+    if usable.is_empty() or total <= 0.0:
+        return "idle"
+    var r := _rng.randf() * total
+    for item in usable:
+        r -= float(item[1])
+        if r <= 0.0:
+            return String(item[0])
+    return String(usable[usable.size() - 1][0])
+
+
 func _next_kind(wkind: String, sun_alt: float) -> String:
     var seq: Array = WINDOW_SEQUENCE.get(wkind, ["idle"])
+    # P9：morning_out / afternoon_out 不再按固定序列播放，改为每次决策加权随机
+    # （stroll / swing / sea_view / idle），配合随机时长避免“固定轮播”。
+    if wkind == "morning_out" or wkind == "afternoon_out":
+        _step += 1
+        return _pick_outdoor_kind()
     var kind := ""
     if _step < seq.size():
         kind = String(seq[_step])

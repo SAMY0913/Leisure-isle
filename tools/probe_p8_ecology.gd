@@ -76,7 +76,10 @@ func _file_text(path: String) -> String:
 func _run_schedule_weather() -> void:
 	# 夏季 10:00 = morning_out（08:30-11:30，户外散步窗口）
 	var clear := _choose_at(2026, 7, 15, 10, 0, _wx("clear", "none", 0.0, 0.18, 0.0))
-	_check(String(clear["kind"]) == "stroll", "clear morning_out kind=stroll", String(clear["kind"]))
+	# P7-FINALIZE：life-fix 在白天户外窗口新增 weighted random 休闲候选（stroll/swing/sea_view/idle）。
+	# 本探针意图是"晴天允许户外活动"，不是固定动作名，因此接受新户外候选集合。
+	var outdoor_ok := ["stroll", "swing", "sea_view", "idle"].has(String(clear["kind"]))
+	_check(outdoor_ok, "clear morning_out kind∈{stroll,swing,sea_view,idle}", String(clear["kind"]))
 	_check(String(clear["region_pref"]) == "outdoor", "clear morning_out pref=outdoor", String(clear["region_pref"]))
 	# 大雨：户外 → 门廊，散步 → 坐
 	var rain := _choose_at(2026, 7, 15, 10, 0, _wx("heavy_rain", "rain", 0.92, 0.58, 0.30))
@@ -94,7 +97,7 @@ func _run_schedule_weather() -> void:
 	# 小雪且风弱：保留少量户外赏雪
 	var snow_calm := _choose_at(2027, 1, 15, 10, 0, _wx("light_snow", "snow", 0.25, 0.25, 0.10))
 	_check(String(snow_calm["region_pref"]) == "outdoor", "light calm snow keeps outdoor", String(snow_calm["region_pref"]))
-	_check(String(snow_calm["kind"]) == "stroll", "light calm snow kind=stroll", String(snow_calm["kind"]))
+	_check(["stroll", "swing", "sea_view", "idle"].has(String(snow_calm["kind"])), "light calm snow kind∈户外候选", String(snow_calm["kind"]))
 	# 大雪（强度 > 0.62）：避雪回门廊
 	var snow_heavy := _choose_at(2027, 1, 15, 10, 0, _wx("heavy_snow", "snow", 0.90, 0.40, 0.20))
 	_check(String(snow_heavy["region_pref"]) == "porch", "heavy snow pref=porch", String(snow_heavy["region_pref"]))
@@ -121,7 +124,7 @@ func _run_schedule_unchanged() -> void:
 	# 不传 weather 键：夏天上午仍是户外散步（保持 P7 原有行为）
 	var plain := _choose_at(2026, 7, 15, 10, 0, {})
 	_check(String(plain["region_pref"]) == "outdoor", "no-weather pref=outdoor", String(plain["region_pref"]))
-	_check(String(plain["kind"]) == "stroll", "no-weather kind=stroll", String(plain["kind"]))
+	_check(["stroll", "swing", "sea_view", "idle"].has(String(plain["kind"])), "no-weather kind∈户外候选", String(plain["kind"]))
 	# 空字典与不传等价
 	var empty := _choose_at(2026, 7, 15, 10, 0, {})
 	_check(String(empty["region_pref"]) == String(plain["region_pref"]), "empty weather same pref")

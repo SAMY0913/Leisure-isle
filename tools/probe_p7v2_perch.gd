@@ -2,7 +2,7 @@ extends SceneTree
 ## P7-V2 task-2 验收探针（headless，不加载 isle.tscn、不开窗口）：
 ##   D:/休闲小岛幻境/引擎/Godot_v4.7.2-stable_win64_console.exe --headless --path D:/休闲小岛幻境/游戏工程 --script res://tools/probe_p7v2_perch.gd
 ## 覆盖（全部基于真实构建出来的网格几何，不看源码常量）：
-##   [COUNTS]  world 栖枝 16 旧 + 6 lamp = 22；cottage 10 旧 + 4 porch_rail = 14；
+##   [COUNTS]  world 栖枝 16 旧 + 5 lamp = 21（P7.1 删门前 GardenLamp1 一盏）；cottage 10 旧 + 4 porch_rail = 14；
 ##             旧栖枝字典契约保持不变（world 旧 16 点仍 5 键，cottage 旧 10 点无 slots）
 ##   [RAIL]    cottage 4 个 porch_rail：找到真实侧/前扶手 BoxMesh，pos 距真实顶面 0.03（±1mm），
 ##             落点在扶手顶面矩形与立柱间自由段内，最近下方实体表面就是扶手顶面（不悬空），
@@ -21,8 +21,8 @@ const World := preload("res://scripts/world.gd")
 const Cottage := preload("res://scripts/cottage.gd")
 
 const DT := 1.0 / 60.0
-const GAP := 0.03            # 栖点相对真实支撑面顶面的脚部间隙（验收 0.02~0.03）
-const FOOT_LIFT := 0.02      # fx.PERCH_FOOT_LIFT：鸟节点原点（脚底）沿法线抬起量
+const GAP := 0.03            # 栖点相对真实支撑面顶面的脚部间隙（作者数据；P9 不再把它当最终脚点）
+const FOOT_CLEARANCE := 0.002  # P9 新契约：鸟侧脚底接地面 = 真实支撑面 + 0~0.005 m（fx.perch_foot_lift）
 const EPS := 0.001
 const BIRD_COUNT := 10
 const STATE_PERCH := 3
@@ -37,8 +37,18 @@ var _cot_aabbs: Array = []
 var _cot_parts: Array = []   # 门廊扶手净空用：未合批实体(粗 AABB) + batch_manifest 部件(精确形状距离)
 var _legs_aabb: AABB = AABB()
 var _legs_mesh: ArrayMesh = null
+var _legs_hip_y := 0.118        # P9：腿网格枢轴（髋）在鸟局部的高度
 var _fx_script: GDScript = null
 var _fx_ok := false
+var _fx_consts: Dictionary = {}
+
+## P9：新脚点 = 栖点 + normal * fx.perch_foot_lift(perch)（按栖点 kind 反补偿作者 gap）
+func _foot_lift(p: Dictionary) -> float:
+	return float(_fx_script.call("perch_foot_lift", p))
+
+## P9：腿网格最低点相对鸟节点的 y 偏移（枢轴在髋后，脚底位于 y = hip - hip = 0）
+func _foot_mesh_floor_y() -> float:
+	return _legs_hip_y + _legs_aabb.position.y
 var _support: Dictionary = {}   # perch id -> {kind, support_top, gap, pos, facing, normal, slope, slots, foot}
 
 func _initialize() -> void:
@@ -69,6 +79,8 @@ func _initialize() -> void:
 	_fx_script = load("res://scripts/fx.gd") as GDScript
 	_fx_ok = _fx_script != null
 	if _fx_ok:
+		_fx_consts = _fx_script.get_script_constant_map()
+		_legs_hip_y = float(_fx_consts.get("BIRD_LEG_HIP_Y", 0.118))
 		_legs_mesh = _fx_script._gull_legs_mesh()
 		_legs_aabb = _legs_mesh.get_aabb()
 	print("[LOAD] cottage_geometry_aabbs=", _cot_aabbs.size(), " fx_ok=", _fx_ok, " gull_legs_aabb=", _legs_aabb)
@@ -334,8 +346,8 @@ func _bird_points(foot: Vector3, n: Vector3, facing: Vector3) -> Array:
 	return out
 
 ## 海鸥腿/趾的真实网格顶点（fx._gull_legs_mesh 的 ArrayMesh 顶点），按鸟基（脚底原点、+Y=normal、
-## +Z=facing）变换到世界：这是比体包围更贴近承载面的部位（站立时腿在 y=0.004..0.123，脚趾前伸到 z≈0.08，
-## 侧向趾尖 x≈±0.057）。用真实顶点避免 AABB 角点虚构导致净空被低估。
+## +Z=facing）变换到世界。P9 起腿网格枢轴在髋（鸟局部 y=BIRD_LEG_HIP_Y），因此顶点 y 要加回髋高；
+## 脚底/趾面在鸟局部 y≈0，前趾尖 z≈0.055，侧向趾尖 x≈±0.045（旧 0.052m 长爪已缩短）。
 func _leg_points(foot: Vector3, n: Vector3, facing: Vector3) -> Array:
 	var out: Array = []
 	var up: Vector3 = n.normalized()
@@ -353,7 +365,8 @@ func _leg_points(foot: Vector3, n: Vector3, facing: Vector3) -> Array:
 	var arrays: Array = _legs_mesh.surface_get_arrays(0)
 	var verts: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
 	for v in verts:
-		out.append(foot + right * v.x + up * v.y + fwd * v.z)
+		# 髋枢轴：网格局部 y 从 -BIRD_LEG_HIP_Y（脚底）到 ~+0.017（腿根埋入躯干）
+		out.append(foot + right * v.x + up * (v.y + _legs_hip_y) + fwd * v.z)
 	return out
 
 func _kind_counts(perches: Array) -> Dictionary:
@@ -385,9 +398,9 @@ func _probe_counts(wp: Array, cp: Array) -> void:
 	var wk: Dictionary = _kind_counts(wp)
 	var ck: Dictionary = _kind_counts(cp)
 	print("[KINDS] world=", wk, " cottage=", ck)
-	_check(wp.size() == 22, "world 栖枝数 == 16 旧 + 6 lamp = 22（实际 %d）" % wp.size())
+	_check(wp.size() == 21, "world 栖枝数 == 16 旧 + 5 lamp = 21（实际 %d）" % wp.size())
 	_check(cp.size() == 14, "cottage 栖枝数 == 10 旧 + 4 porch_rail = 14（实际 %d）" % cp.size())
-	_check(int(wk.get("lamp", 0)) == 6, "world 新增 kind=lamp ×6（实际 %d）" % int(wk.get("lamp", 0)))
+	_check(int(wk.get("lamp", 0)) == 5, "world 新增 kind=lamp ×5（P7.1 删门前 GardenLamp1；实际 %d）" % int(wk.get("lamp", 0)))
 	_check(int(ck.get("porch_rail", 0)) == 4, "cottage 新增 kind=porch_rail ×4（实际 %d）" % int(ck.get("porch_rail", 0)))
 	_check(int(wk.get("tree_branch", 0)) == 6 and int(wk.get("lighthouse_platform", 0)) == 4
 		and int(wk.get("dock", 0)) == 2 and int(wk.get("garden_post", 0)) == 4,
@@ -434,7 +447,7 @@ func _probe_counts(wp: Array, cp: Array) -> void:
 	# world.build 返回结构（Lead 要求不变）
 	_check(_island.has("perches") and _island.has("lamps") and _island.has("light_sources"),
 		"world.build 返回仍含 perches/lamps/light_sources")
-	_check((_island["light_sources"] as Array).size() == 8, "light_sources 仍为 8（实际 %d）" % (_island["light_sources"] as Array).size())
+	_check((_island["light_sources"] as Array).size() == 7, "light_sources 仍为 7（P7.1 删门前 GardenLamp1 后；实际 %d）" % (_island["light_sources"] as Array).size())
 	var lamp_struct_ok := true
 	for entry_v in (_island["lamps"] as Array):
 		if (entry_v as Array).size() != 4:
@@ -555,12 +568,16 @@ func _probe_rails(cp: Array) -> void:
 		_check(float(p["radius"]) >= 0.15 and float(p["radius"]) <= 0.20,
 			pid + " radius ∈ [0.15,0.20]（语义半径，实际 %.3f；slots=1 已固定单鸟）" % float(p["radius"]))
 		# 脚点 / 鸟体不穿模
-		var foot: Vector3 = pos + n * FOOT_LIFT
+		var foot: Vector3 = pos + n * _foot_lift(p)
+		# P9 验收：脚底接地面距作者语义的真实支撑面净空 0~0.005 m
+		var support_gap: float = (foot - Vector3(pos.x, support_top.y, pos.z)).y
+		_check(support_gap >= -0.0005 and support_gap <= 0.005,
+			pid + " 脚底贴面净空 ∈[0,0.005]（实际 %.4f m；作者 gap=%.3f, 鸟侧 lift=%.4f）" % [support_gap, gap, _foot_lift(p)])
 		var foot_clear: Dictionary = _clearance(_cot_parts, [foot])
 		_check((foot_clear["hits"] as Array).is_empty(),
 			pid + " 脚点不在任何 cottage 实体 AABB 内（命中 %s）" % str(foot_clear["hits"]))
-		_check(float(foot_clear["min_clear"]) >= 0.03,
-			pid + " 脚点距最近 cottage 实体 >= 0.03（实际 %.4f m）" % float(foot_clear["min_clear"]))
+		_check(float(foot_clear["min_clear"]) >= 0.0005,
+			pid + " 脚点距最近 cottage 实体 >= 0.0005（贴面不穿模，实际 %.4f m）" % float(foot_clear["min_clear"]))
 		var bird_clear: Dictionary = _clearance(_cot_parts, _bird_points(foot, n, facing))
 		_check((bird_clear["hits"] as Array).is_empty(),
 			pid + " 海鸥体包围采样不穿 cottage 实体（命中 %s）" % str(bird_clear["hits"]))
@@ -570,8 +587,8 @@ func _probe_rails(cp: Array) -> void:
 			var leg_clear: Dictionary = _clearance(_cot_parts, _leg_points(foot, n, facing))
 			_check((leg_clear["hits"] as Array).is_empty(),
 				pid + " 海鸥腿/趾真实网格角点不穿 cottage 实体（命中 %s）" % str(leg_clear["hits"]))
-			_check(float(leg_clear["min_clear"]) >= 0.02,
-				pid + " 海鸥腿/趾最近实体净空 >= 0.02（实际 %.4f m）" % float(leg_clear["min_clear"]))
+			_check(float(leg_clear["min_clear"]) >= 0.0005,
+				pid + " 海鸥腿/趾贴面不穿模（净空 >=0.0005，实际 %.4f m）" % float(leg_clear["min_clear"]))
 		# 最近下方实体表面必须就是扶手顶面（不悬空 / 不架在别的物体上）
 		var nb: Dictionary = _nearest_top_below(_cot_aabbs, foot, pos.y - 0.0005)
 		_check(absf(float(nb["top"]) - support_top.y) <= 0.002,
@@ -610,13 +627,13 @@ func _lamp_parts(node: Node3D) -> Dictionary:
 func _probe_lamps(wp: Array) -> void:
 	print("--- LAMPS (world real hood tops) ---")
 	var lamps: Array = _island["lamps"]
-	_check(lamps.size() == 6, "world 路灯数 == 6（实际 %d）" % lamps.size())
+	_check(lamps.size() == 5, "world 路灯数 == 5（P7.1 删门前 GardenLamp1 后；实际 %d）" % lamps.size())
 	var lamp_perches: Dictionary = {}
 	for p_v in wp:
 		var p: Dictionary = p_v
 		if String(p.get("kind", "")) == "lamp":
 			lamp_perches[String(p["id"])] = p
-	_check(lamp_perches.size() == 6, "kind=lamp 栖点 6 个（实际 %d）" % lamp_perches.size())
+	_check(lamp_perches.size() == 5, "kind=lamp 栖点 5 个（实际 %d）" % lamp_perches.size())
 	var name_to_node: Dictionary = {}
 	for c in _world_root.get_children():
 		name_to_node[String(c.name)] = c
@@ -681,12 +698,16 @@ func _probe_lamps(wp: Array) -> void:
 		if parts["arm"] == null or parts["rod"] == null:
 			continue
 		var lamp_entries: Array = _aabb_entries(parts["meshes"])
-		var foot: Vector3 = pos + n * FOOT_LIFT
+		var foot: Vector3 = pos + n * _foot_lift(p)
+		# P9 验收：脚底接地面距真实灯帽顶面净空 0~0.005 m
+		var lamp_gap: float = foot.y - cap_top.y
+		_check(lamp_gap >= -0.0005 and lamp_gap <= 0.005,
+			pid + " 脚底贴灯帽顶面净空 ∈[0,0.005]（实际 %.4f m；作者 gap=%.3f, 鸟侧 lift=%.4f）" % [lamp_gap, gap, _foot_lift(p)])
 		var foot_clear2: Dictionary = _clearance_local(parts["meshes"], [foot])
 		_check((foot_clear2["hits"] as Array).is_empty(),
 			pid + " 脚点不穿灯体网格（命中 %s）" % str(foot_clear2["hits"]))
-		_check(float(foot_clear2["min_clear"]) >= 0.03,
-			pid + " 脚点距最近灯体网格 >= 0.03（实际 %.4f m）" % float(foot_clear2["min_clear"]))
+		_check(float(foot_clear2["min_clear"]) >= 0.0005,
+			pid + " 脚点距最近灯体网格 >= 0.0005（贴面不穿模，实际 %.4f m）" % float(foot_clear2["min_clear"]))
 		var rod_mi: MeshInstance3D = parts["rod"]
 		var rod_local: AABB = rod_mi.mesh.get_aabb()
 		var rod_lp: Vector3 = rod_mi.global_transform.affine_inverse() * foot
@@ -697,25 +718,28 @@ func _probe_lamps(wp: Array) -> void:
 		var bird_clear2: Dictionary = _clearance_local(parts["meshes"], _bird_points(foot, n, facing))
 		_check((bird_clear2["hits"] as Array).is_empty(),
 			pid + " 海鸥体包围采样不穿灯体（命中 %s）" % str(bird_clear2["hits"]))
-		_check(float(bird_clear2["min_clear"]) >= 0.02,
-			pid + " 海鸥体最近灯体净空 >= 0.02（实际 %.4f m）" % float(bird_clear2["min_clear"]))
+		# P9：脚底贴面后站高下降 2.2 cm，鸟体与灯体（吊杆/横臂）净空由 0.033 降到 0.013（仍不穿模）。
+		_check(float(bird_clear2["min_clear"]) >= 0.010,
+			pid + " 海鸥体最近灯体净空 >= 0.010（P9 贴面站姿；实际 %.4f m）" % float(bird_clear2["min_clear"]))
 		if _fx_ok:
 			var leg_pts: Array = _leg_points(foot, n, facing)
 			var leg_clear2: Dictionary = _clearance_local(parts["meshes"], leg_pts)
 			_check((leg_clear2["hits"] as Array).is_empty(),
 				pid + " 海鸥腿/趾真实网格角点不穿灯体（命中 %s）" % str(leg_clear2["hits"]))
-			_check(float(leg_clear2["min_clear"]) >= 0.02,
-				pid + " 海鸥腿/趾最近灯体净空 >= 0.02（实际 %.4f m）" % float(leg_clear2["min_clear"]))
+			_check(float(leg_clear2["min_clear"]) >= 0.0005,
+				pid + " 海鸥腿/趾贴灯面不穿模（净空 >=0.0005，实际 %.4f m）" % float(leg_clear2["min_clear"]))
 			var toe_reach := 0.0
 			for lp_v in leg_pts:
 				var lp2: Vector3 = lp_v
 				toe_reach = maxf(toe_reach, Vector2(lp2.x - cap_top.x, lp2.z - cap_top.z).length())
 			print("[LAMP] %s foot_side=%.4f rod_horizontal_clear=%.4f body_min_clear=%.4f legs_min_clear=%.4f toe_reach_from_cap_center=%.4f (cap_top_r=0.13, toe_y=%.4f above cap plane)" % [
 				pid, hoff, hclear, float(bird_clear2["min_clear"]), float(leg_clear2["min_clear"]),
-				toe_reach, (foot.y + _legs_aabb.position.y) - cap_top.y])
-			_check(toe_reach <= 0.20,
-				pid + " 腿趾足迹半径 <= 0.20（实际 %.4f，灯帽顶面 r=0.13，趾尖在帽面上方 %.3f m，轻微外探属正常站边缘）" % [
-					toe_reach, (foot.y + _legs_aabb.position.y) - cap_top.y])
+				toe_reach, (foot.y + _foot_mesh_floor_y()) - cap_top.y])
+			print("[LAMP9] %s toe_reach=%.4f toe_y_above_cap=%.4f" % [
+				pid, toe_reach, (foot.y + _foot_mesh_floor_y()) - cap_top.y])
+			_check(toe_reach <= 0.17,
+				pid + " 腿趾足迹半径 <= 0.17（P9 短趾后应更收拢；实际 %.4f，灯帽顶面 r=0.13，趾尖在帽面上方 %.3f m）" % [
+					toe_reach, (foot.y + _foot_mesh_floor_y()) - cap_top.y])
 		var nb2: Dictionary = _nearest_top_below(lamp_entries, foot, pos.y - 0.0005)
 		_check(absf(float(nb2["top"]) - cap_top.y) <= 0.002,
 			pid + " 最近下方实体顶面就是灯帽顶面（最近=%.4f 灯帽=%.4f）" % [float(nb2["top"]), cap_top.y])
@@ -731,7 +755,7 @@ func _probe_global(wp: Array, cp: Array) -> void:
 	var merged: Array = []
 	merged.append_array(wp)
 	merged.append_array(cp)
-	_check(merged.size() == 36, "合并栖点 22 + 14 = 36（实际 %d）" % merged.size())
+	_check(merged.size() == 35, "合并栖点 21 + 14 = 35（P7.1 删一盏路灯；实际 %d）" % merged.size())
 	var seen: Dictionary = {}
 	var dup: Array = []
 	var bad_finite: Array = []
@@ -758,7 +782,7 @@ func _probe_global(wp: Array, cp: Array) -> void:
 				bad_finite.append(pid + "(normal)")
 	_check(dup.is_empty(), "合并后 id 全局唯一（重复 %s）" % str(dup))
 	_check(bad_finite.is_empty(), "所有栖点坐标/朝向/法线有限且新点 normal=UP（异常 %s）" % str(bad_finite))
-	_check(new_count == 10, "新栖点共 10 个（4 porch_rail + 6 lamp，实际 %d）" % new_count)
+	_check(new_count == 9, "新栖点共 9 个（4 porch_rail + 5 lamp，实际 %d）" % new_count)
 
 # ============================================================
 # 5) fx.gd 真实消费：归一化 + 强制停栖 + 夜间 update_birds
@@ -803,11 +827,11 @@ func _probe_fx(wp: Array, cp: Array) -> void:
 	var st: Dictionary = flock.debug_perch_stats()
 	print("[FX] perch_count=", int(st["perch_count"]), " total_slots=", int(st["total_slots"]),
 		" zones=", st["zones"], " perched=", int(st["perched"]))
-	_check(int(st["perch_count"]) == 36, "fx 统计 perch_count == 36（实际 %d）" % int(st["perch_count"]))
-	_check(int(st["total_slots"]) == 36, "fx 统计 total_slots == 36（实际 %d）" % int(st["total_slots"]))
+	_check(int(st["perch_count"]) == 35, "fx 统计 perch_count == 35（14 cottage + 21 world；实际 %d）" % int(st["perch_count"]))
+	_check(int(st["total_slots"]) == 35, "fx 统计 total_slots == 35（实际 %d）" % int(st["total_slots"]))
 	var zones: Dictionary = st["zones"]
 	_check(int(zones.get("porch", 0)) == 6, "fx zone 归类 porch == 6（4 porch_rail + 2 porch_beam，实际 %d）" % int(zones.get("porch", 0)))
-	_check(int(zones.get("lamp", 0)) == 6, "fx zone 归类 lamp == 6（实际 %d）" % int(zones.get("lamp", 0)))
+	_check(int(zones.get("lamp", 0)) == 5, "fx zone 归类 lamp == 5（P7.1 删一盏；实际 %d）" % int(zones.get("lamp", 0)))
 	_check(int(zones.get("roof", 0)) == 8, "fx zone 归类 roof == 8（实际 %d）" % int(zones.get("roof", 0)))
 	# 新 kind 在白天/夜间都可用（烟囱禁停只作用于 chimney）
 	var avail_day: Array = flock.debug_perch_availability(-1.0, 30.0, false)
@@ -817,7 +841,7 @@ func _probe_fx(wp: Array, cp: Array) -> void:
 	for a_v in avail_day:
 		var a: Dictionary = a_v
 		avail_map[String(a["id"])] = a
-	for pid2 in ["porch_rail_L", "porch_rail_R", "porch_rail_FL", "porch_rail_FR", "lamp_0", "lamp_1", "lamp_2", "lamp_3", "lamp_4", "lamp_5"]:
+	for pid2 in ["porch_rail_L", "porch_rail_R", "porch_rail_FL", "porch_rail_FR", "lamp_0", "lamp_1", "lamp_2", "lamp_3", "lamp_4"]:
 		var a2: Dictionary = avail_map.get(pid2, {})
 		if a2.is_empty() or not bool(a2.get("eligible", false)):
 			elig_bad.append("day:%s" % pid2)
@@ -835,7 +859,7 @@ func _probe_fx(wp: Array, cp: Array) -> void:
 			rail_id = pid4
 			break
 	var lamp_id := ""
-	for pid5 in ["lamp_0", "lamp_1", "lamp_2", "lamp_3", "lamp_4", "lamp_5"]:
+	for pid5 in ["lamp_0", "lamp_1", "lamp_2", "lamp_3", "lamp_4"]:
 		if flock.debug_force_perch(1, pid5):
 			lamp_id = pid5
 			break
@@ -857,12 +881,12 @@ func _probe_fx(wp: Array, cp: Array) -> void:
 		var np2: Dictionary = by_id[pid6]
 		var pos2: Vector3 = np2["pos"]
 		var n2: Vector3 = (_support[pid6]["normal"] as Vector3)
-		var want_foot: Vector3 = pos2 + n2 * FOOT_LIFT
+		var want_foot: Vector3 = pos2 + n2 * _foot_lift(np2)
 		var node: Node3D = b["node"]
 		_check(int(b["state"]) == STATE_PERCH and String(b["perch_id"]) == pid6,
 			"%s 上鸟状态 PERCH 且 perch_id 正确" % pid6)
 		_check(node.position.distance_to(want_foot) <= EPS,
-			"%s 上鸟脚点 == perch.pos + normal*0.02（误差 %.4f m）" % [pid6, node.position.distance_to(want_foot)])
+			"%s 上鸟脚点 == perch.pos + normal*fx.perch_foot_lift（误差 %.4f m）" % [pid6, node.position.distance_to(want_foot)])
 		var up_align: float = rad_to_deg(acos(clampf((node.basis.y.normalized()).dot(n2), -1.0, 1.0)))
 		_check(up_align <= 0.1, "%s 上鸟身体 up 对齐 normal（偏差 %.3f°）" % [pid6, up_align])
 	# 夜间 update_birds：鸟必须继续停在真实扶手/灯帽上
@@ -908,13 +932,14 @@ func _probe_fx(wp: Array, cp: Array) -> void:
 		var np3: Dictionary = by_id[pid7]
 		var support: Dictionary = _support[pid7]
 		var node2: Node3D = b2["node"]
-		var want2: Vector3 = (np3["pos"] as Vector3) + (support["normal"] as Vector3) * FOOT_LIFT
+		var want2: Vector3 = (np3["pos"] as Vector3) + (support["normal"] as Vector3) * _foot_lift(np3)
 		var drift := Vector2(node2.position.x - want2.x, node2.position.z - want2.z).length()
 		var dy: float = node2.position.y - want2.y
 		if drift > 0.01 or dy < -0.01 or dy > 0.15 or int(b2["state"]) != STATE_PERCH or String(b2["perch_id"]) != pid7:
 			bad_after.append("%s drift=%.4f dy=%.4f state=%d id=%s" % [pid7, drift, dy, int(b2["state"]), String(b2["perch_id"])])
+		# P9：节点原点=脚底，footgap 应为贴面净空 0~0.005（旧契约 0.04~0.20 为悬空）
 		var footgap: float = node2.position.y - support["support_top"]
-		if footgap < 0.04 or footgap > 0.20:
+		if footgap < -0.001 or footgap > 0.006:
 			bad_after.append("%s footgap=%.4f" % [pid7, footgap])
 		print("[FX] %s after: node=%s footgap_to_support=%.4f m drift=%.4f dy=%.4f" % [
 			pid7, _fmtv(node2.position), footgap, drift, dy])
@@ -938,10 +963,10 @@ func _probe_fx(wp: Array, cp: Array) -> void:
 		if not (pid8.begins_with("porch_rail") or pid8.begins_with("lamp_")):
 			continue
 		var slotpos: Vector3 = flock.call("_slot_position", p3, 0)
-		var want3: Vector3 = (p3["pos"] as Vector3) + (p3["normal"] as Vector3).normalized() * FOOT_LIFT
+		var want3: Vector3 = (p3["pos"] as Vector3) + (p3["normal"] as Vector3).normalized() * _foot_lift(p3)
 		if slotpos.distance_to(want3) > EPS:
 			slot_bad.append("%s d=%.4f" % [pid8, slotpos.distance_to(want3)])
-	_check(slot_bad.is_empty(), "fx _slot_position(perch,0) == perch.pos + normal*0.02（异常 %s）" % str(slot_bad))
+	_check(slot_bad.is_empty(), "fx _slot_position(perch,0) == perch.pos + normal*fx.perch_foot_lift（异常 %s）" % str(slot_bad))
 	flock.free()
 
 # ============================================================
@@ -963,7 +988,7 @@ func _print_new_points(wp: Array, cp: Array) -> void:
 		var facing: Vector3 = (p["facing"] as Vector3)
 		var pos: Vector3 = p["pos"]
 		var support_top: float = float(info.get("support_top", 0.0))
-		var foot: Vector3 = pos + n * FOOT_LIFT
+		var foot: Vector3 = pos + n * _foot_lift(p)
 		print("  %-14s kind=%-10s pos=%s normal=%s slope=%.6f radius=%.3f slots=%d facing=%s support_top=%.4f pos_gap=%.4f foot_y=%.4f foot_gap=%.4f" % [
 			pid, kind, _fmtv(pos), _fmtv(n), float(p["slope"]), float(p["radius"]), int(p.get("slots", 0)),
 			_fmtv(facing), support_top, pos.y - support_top, foot.y, foot.y - support_top])

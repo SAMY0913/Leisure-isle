@@ -10,6 +10,8 @@ const MODEL := preload("res://scripts/isle_villager_model.gd")
 const MATH := preload("res://scripts/isle_math.gd")
 const STUDIO_DIR := "D:/休闲小岛幻境/开发产物/p7v4/model_shots/"
 
+## P9 / P7-FINALIZE：P6 钓鱼新增 3 个剪辑后实际为 15 个；旧断言停在 12（本探针因此长期 FAIL）。
+## 现按新契约校验全部 15 个（12 生活 + 3 钓鱼），时长/循环标志与 model 里 ANIMATIONS 完全一致。
 const EXPECTED_CLIPS := {
 	"idle": [5.0, true],
 	"idle_alt": [5.2, true],
@@ -23,6 +25,9 @@ const EXPECTED_CLIPS := {
 	"get_up": [1.0, false],
 	"bed_sit_down": [0.80, false],
 	"bed_sit_up": [0.70, false],
+	"fish_hold": [4.0, true],
+	"fish_cast": [1.2, false],
+	"fish_reel": [1.4, false],
 }
 
 const JOINT_KEYS := [
@@ -184,7 +189,7 @@ func _check_tweens(root: Node3D) -> void:
 	if anim != null:
 		for name in anim.get_animation_list():
 			track_sum += anim.get_animation(name).get_track_count()
-	_ok(track_sum == 276, "12 条剪辑共 276 条轨道（23×12，全轨道覆盖避免姿态泄漏）", str(track_sum))
+	_ok(track_sum == 345, "15 条剪辑共 345 条轨道（23×15，全轨道覆盖避免姿态泄漏）", str(track_sum))
 
 
 func _check_clips(built: Dictionary, root: Node3D) -> void:
@@ -350,7 +355,8 @@ func _check_lie_pose(built: Dictionary, root: Node3D) -> void:
 	_ok(absf(float(mesh["min_y"]) + 0.02) <= 0.03, "卧姿全身贴床垫面且不穿模（root 放在床垫顶+0.02，min_y≈-0.02）", "%.3f" % mesh["min_y"])
 	# 睡姿 ≠ 直立旋转 90°：右膝屈起 + 头侧转 + 闭眼
 	var knee_r : Node3D = root.get_joint("knee_r")
-	_ok(absf(knee_r.rotation.x) > 0.5, "睡姿右膝屈起（非整体旋转躺平）", "%.2f" % knee_r.rotation.x)
+	# P9：旧契约“右膝屈起 >0.5 rad”正是 C 报告 D2 的“一条腿举在空中”；新契约要求微屈放平
+	_ok(knee_r.rotation.x <= -0.15 and knee_r.rotation.x >= -0.45, "睡姿右膝微屈放平（-0.45..-0.15 rad，旧值 -1.00 翘空）", "%.2f" % knee_r.rotation.x)
 	_ok(absf(head.rotation.z) > 0.08 or absf((root.get_joint("neck") as Node3D).rotation.z) > 0.08, "睡姿头部侧转", "head.z=%.2f neck.z=%.2f" % [head.rotation.z, (root.get_joint("neck") as Node3D).rotation.z])
 	var eyelid : Node3D = root.get_joint("eyelid_l")
 	_ok(absf(eyelid.rotation.x) < 0.3, "睡姿闭眼", "%.2f" % eyelid.rotation.x)
@@ -366,6 +372,27 @@ func _check_lie_pose(built: Dictionary, root: Node3D) -> void:
 	var dz: float = float(samples[1]) - float(samples[0])
 	print("[V4] SLEEP breath dy=%.4f samples=%s" % [dz, str(samples)])
 	_ok(absf(dz) >= 0.004, "睡姿呼吸有起伏（body_pos.y 极轻呼吸）", "%.4f" % dz)
+	# P9 / P7-FINALIZE（C 报告 D2/D3）：右膝不再翘在空中、双腿落在被面上
+	var hip_r_rot: float = absf((root.get_joint("hip_r") as Node3D).rotation.x)
+	var knee_r_rot: float = (root.get_joint("knee_r") as Node3D).rotation.x
+	_ok(hip_r_rot <= 0.25 and knee_r_rot >= -0.40, "睡姿右腿已压平（hip_r<=0.25, knee_r>=-0.40）", "%.2f/%.2f" % [hip_r_rot, knee_r_rot])
+	var knee_r_y := (root.get_joint("knee_r") as Node3D).global_position.y
+	var pelvis_y := pelvis.global_position.y
+	_ok(absf(knee_r_y - pelvis_y) <= 0.10, "右膝与骨盆同高（腿放平，不是举腿）", "d=%.3f" % (knee_r_y - pelvis_y))
+	# P9：躺下链在 lie_down 内部有“搬腿”独立相位（0.30s 时腿已抬平而躯干仍坐起）
+	anim.play("lie_down")
+	anim.seek(0.30, true)
+	var mid_tilt: float = (root.get_joint("body_tilt") as Node3D).rotation.x
+	var mid_hip: float = (root.get_joint("hip_l") as Node3D).rotation.x
+	_ok(mid_tilt > -1.0, "lie_down 0.30s 仍保持坐姿躯干（先搬腿后躺平）", "tilt=%.2f" % mid_tilt)
+	_ok(mid_hip < -0.70, "lie_down 0.30s 双腿已抬上床（hip<=-0.70）", "hip=%.2f" % mid_hip)
+	# P9：头落枕 settle 过冲（0.92s 颈比末帧更低）
+	var neck_pose: Node3D = root.get_joint("neck")
+	anim.seek(0.92, true)
+	var neck_overshoot: float = neck_pose.rotation.x
+	anim.seek(1.0 - 0.0001, true)
+	var neck_end: float = neck_pose.rotation.x
+	_ok(neck_overshoot > neck_end + 0.01, "头落枕 settle：0.92s 颈略低后回位（follow-through）", "%.3f/%.3f" % [neck_overshoot, neck_end])
 
 
 func _check_walk(built: Dictionary, root: Node3D) -> void:
@@ -427,7 +454,8 @@ func _check_bed_sit(built: Dictionary, root: Node3D) -> void:
 		sole_min = minf(sole_min, _mesh_world_aabb(mi).position.y - root_y)
 	print("[V4] BED_SIT pelvis_bottom_rel_root=%.3f pelvis_top_rel_root=%.3f foot_bottom_rel_root=%.3f" % [pelvis_min_rel, pelvis_max_rel, sole_min])
 	_ok(pelvis_min_rel >= -0.09 and pelvis_min_rel <= -0.02, "坐床沿骨盆网格底相对 root 约 -0.04~-0.06（不陷床垫）", "%.3f" % pelvis_min_rel)
-	_ok(sole_min < -0.20, "坐床沿双腿自然垂下（鞋底低于 root）", "%.3f" % sole_min)
+	# P9：腿放长后鞋底相对 root 从 -0.400 变到约 -0.52（控制器 root=床沿 3.745 时鞋底≈阁楼地板 3.181）
+	_ok(sole_min < -0.48 and sole_min > -0.60, "坐床沿双腿自然垂下且鞋底≈阁楼地板（-0.60~-0.48）", "%.3f" % sole_min)
 	# lie_down 首帧必须逐轨道等于 bed_sit（末帧）
 	anim.play("lie_down")
 	anim.seek(0.0, true)
@@ -443,7 +471,8 @@ func _check_boundaries(built: Dictionary, root: Node3D) -> void:
 		["sit_up", "idle", true],
 		["lie_down", "sleep", true],
 		["get_up", "sleep", false],
-		["get_up", "idle", true],
+		# P9：get_up 重写为“睡姿 → 撑起 → 坐起 → 坐回床沿”，末帧 == bed_sit_up 首帧（不再是站立）
+		["get_up", "bed_sit_up", true],
 		["bed_sit_down", "lie_down", true],
 		["bed_sit_down", "idle", false],
 		["bed_sit_up", "lie_down", false],

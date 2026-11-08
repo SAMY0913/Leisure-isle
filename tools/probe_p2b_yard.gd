@@ -450,7 +450,8 @@ func _run_checks_b() -> void:
             str(stems != null), str(heads != null)])
     # B6 路灯：位置/数量不变
     var lamp_nodes: Array = []
-    for nm in ["PathLamp1", "PathLamp2", "PathLamp3", "GardenLamp1", "GardenLamp2", "GardenLamp3"]:
+    # P7.1（用户反馈）：门前挡路的 GardenLamp1 已按用户要求删除，本项核对余下 5 盏仍在。
+    for nm in ["PathLamp1", "PathLamp2", "PathLamp3", "GardenLamp2", "GardenLamp3"]:
         var ln := _main.find_child(nm, true, false)
         if ln != null:
             lamp_nodes.append(nm)
@@ -458,9 +459,9 @@ func _run_checks_b() -> void:
     var lmerge: Dictionary = _fy.get("lamps", {})
     var gl2: Dictionary = lmerge.get("GardenLamp2", {})
     var buried := float(gl2.get("buried", 9.0))
-    _check("B6_lamps_unchanged", "B", lamp_nodes.size() == 6 and lights.size() == 8
+    _check("B6_lamps_unchanged", "B", lamp_nodes.size() == 5 and lights.size() == 7
         and buried >= 0.015 and buried <= 0.030,
-        "6 盏路灯仍在、光源预算 8 不变；GardenLamp2 位置不动（台面埋其基座约 2 cm，U8）",
+        "5 盏路灯仍在（P7.1 删门前一盏）、光源预算 7；GardenLamp2 位置不动（台面埋其基座约 2 cm，U8）",
         "lamps=%d lights=%d GardenLamp2_buried=%.4f" % [lamp_nodes.size(), lights.size(), buried])
     # B7 既有主路/支路石板仍在、且我方石板不与其重叠
     var stones := _main.find_child("PathStones", true, false) as MultiMeshInstance3D

@@ -5,6 +5,8 @@ extends SceneTree
 
 const M := preload("res://scripts/isle_math.gd")
 const W := preload("res://scripts/world.gd")
+const SPOTS := preload("res://scripts/isle_villager_spots.gd")
+const IsleMath := preload("res://scripts/isle_math.gd")
 
 var _main: Node = null
 var _world: Dictionary = {}
@@ -62,6 +64,9 @@ func _a(p: Vector3) -> Array:
 
 func _wl(local: Vector3) -> Vector3:
     return _root.to_global(local)
+
+func _invlocal(world: Vector3) -> Vector3:
+    return _root.to_local(world)
 
 func _spot(id: String, local: Vector3, yaw: float, seat_h: float, approach_off: Vector3, extra: Dictionary = {}) -> Dictionary:
     var ap_local := local + approach_off
@@ -174,15 +179,47 @@ func _dump() -> void:
     attic.append(_spot("attic_desk_chair", Vector3(0.0, _attic_top, 1.95), 0.0, 0.40, Vector3(0.0, 0.0, -0.58), {"kind": "sit"}))
     attic.append(_spot("attic_plant_view", Vector3(2.30, _attic_top, 1.70), -PI * 0.5, -1.0, Vector3(0.0, 0.0, 0.0), {"kind": "view"}))
     data["seats_attic"] = attic
+    # P9 / P7-FINALIZE：真实资产几何（house_props bed）
+    #   床垫 0.90×0.18×1.66 顶 3.64；被子顶 3.70；枕头 0.44×0.11×0.30 @ (±0.235, 0.505, -0.66)
+    #   床 yaw=-PI/2 后：枕头 A 房屋局部 x[-1.495,-1.186] z[-0.885,-0.445]，B z[-1.355,-0.915]
+    #   躺姿锚点已移到枕头 A 正下方（旧 (-2.00,-0.90) 让头卡在两枕缝里）
+    var bed_spots: Dictionary = SPOTS.build(_cottage)["spots"]
+    var bed_spot: Dictionary = bed_spots["bed_attic"]
     data["bed"] = {
         "stand": _a(_wl(Vector3(-2.00, _attic_top, -0.10))),
         "stand_yaw_local": 0.0,
-        "lie_pelvis": _a(_wl(Vector3(-2.00, 3.66, -0.90))),
-        "lie_yaw_local": -PI * 0.5,
+        "anchor_local": _a(_invlocal(bed_spot["anchor"])),
+        "edge_sit_local": _a(_invlocal(bed_spot["anchor_edge"])),
+        "sit_yaw": snappedf(float(bed_spot["sit_yaw"]), 0.0001),
+        "lie_yaw": snappedf(float(bed_spot["yaw"]), 0.0001),
+        "lie_root_local": _a(_invlocal((bed_spot["anchor"] as Vector3) + Vector3(0.0, 0.02, 0.0))),
+        "anchor_world": _a(bed_spot["anchor"]),
+        "edge_world": _a(bed_spot["anchor_edge"]),
         "mattress_top_local": 3.64,
-        "pillow_head_local_x": -1.34,
-        "mattress_x_range": [-2.95, -1.05],
-        "mattress_z_range": [-1.40, -0.40],
+        "mattress_x_range": [-2.83, -1.17],
+        "mattress_z_range": [-1.35, -0.45],
+        "quilt_top_local": 3.70,
+        "pillow_a_local": {"x": [-1.495, -1.186], "z": [-0.885, -0.445], "top": 3.7647},
+        "pillow_b_local": {"x": [-1.495, -1.186], "z": [-1.355, -0.915], "top": 3.7647},
+    }
+    # P9：秋千 / 码头观海（真实几何由 isle_villager_spots.build 同一份数据派生）
+    data["swing"] = {
+        "pivot": _a(Vector3(IsleMath.BIG_TREE_X + 3.0, W._h(IsleMath.BIG_TREE_X, IsleMath.BIG_TREE_Z) + W.SWING_LIMB_Y, IsleMath.BIG_TREE_Z)),
+        "anchor": _a(bed_spots["swing"]["anchor"]),
+        "approach": _a(bed_spots["swing"]["approach"]),
+        "seat_top_y": snappedf(float(bed_spots["swing"]["seat_top_y"]), 0.0001),
+        "rope_len": snappedf(float(bed_spots["swing"]["rope_len"]), 0.0001),
+        "yaw": snappedf(float(bed_spots["swing"]["yaw"]), 0.0001),
+    }
+    data["sea_view"] = {
+        "anchor": _a(bed_spots["sea_view"]["anchor"]),
+        "yaw": snappedf(float(bed_spots["sea_view"]["yaw"]), 0.0001),
+        "node": String(bed_spots["sea_view"]["approach_node"]),
+    }
+    data["spots_p9"] = {
+        "swing": String(bed_spots["swing"]["kind"]),
+        "sea_view": String(bed_spots["sea_view"]["kind"]),
+        "view_swing_yaw": snappedf(float(bed_spots["view_swing"]["yaw"]), 0.0001),
     }
     # ---- outdoor wander nodes ----
     var outdoor := []

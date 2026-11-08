@@ -101,7 +101,13 @@ func _run() -> void:
 	var scene_loaded := scene_names.has("Isle") or scene_names.has("World") or current_scene != null
 	_check("env.no_scene_loaded", not scene_loaded, "无 isle.tscn 场景节点（root 仅 autoload）", "children=%s current_scene=%s" % [str(scene_names), str(current_scene)])
 	_check("env.godot_version", Engine.get_version_info().get("major", 0) == 4, "Godot 4.x", str(Engine.get_version_info().get("string", "")))
-	_check("env.no_inventory_in_production", not FileAccess.file_exists("res://scripts/isle_inventory.gd"), "res://scripts/isle_inventory.gd 不存在（P1 不实现生产库存）", "exists=%s" % str(FileAccess.file_exists("res://scripts/isle_inventory.gd")))
+	# P4 起生产环境有了共享库存并把同一实例注入 IsleFarm；P1 的"未注入即可读"语义仍保留
+	# （本探针后面仍以无库存 IsleFarm 验证 no_inventory 分支）。
+	var inv_exists := FileAccess.file_exists("res://scripts/isle_inventory.gd")
+	var main_src := FileAccess.get_file_as_string("res://scripts/main.gd")
+	var inv_wired: bool = inv_exists and main_src.find("res://scripts/isle_inventory.gd") >= 0 \
+		and main_src.find("FARM_SCRIPT.new(_inventory)") >= 0
+	_check("env.inventory_in_production", inv_wired, "库存脚本存在且 main 把同一实例注入 IsleFarm（P4）", "exists=%s wired=%s" % [str(inv_exists), str(inv_wired)])
 
 	_section("1. 五种作物定义")
 	_check_crops()
@@ -170,12 +176,20 @@ func _check_crops() -> void:
 		_check("crops.%s.seed_ne_produce" % c, seed != produce, "不同物品", "%s vs %s" % [seed, produce])
 		var m := CROPS.first_maturity_seconds(c)
 		maturity.append({"id": c, "seconds": m})
-		_check("crops.%s.maturity_range" % c, m >= 600.0 and m <= 3600.0, "600..3600", str(m))
-		_check("crops.%s.first_stage_seed" % c, CROPS.stage_at(c, 0.0, m) == "seed", "seed", CROPS.stage_at(c, 0.0, m))
+		# P7-FINALIZE 真实时间农作契约：首次成熟 = 参考农学天数 × REAL_SECONDS_PER_CROP_DAY(60s)。
+		# 断言 25–110 现实分钟（1500–6600 秒），并要求与 REAL_DAYS_REF 代表值严格一致。
+		_check("crops.%s.maturity_minutes_range" % c, m >= 1500.0 and m <= 6600.0, "25..110 min", str(m / 60.0))
+		var ref_days := float(CROPS.REAL_DAYS_REF[c]["representative"])
+		_check("crops.%s.real_days_mapping" % c, _near(m, ref_days * CROPS.REAL_SECONDS_PER_CROP_DAY), "%.1f s" % (ref_days * CROPS.REAL_SECONDS_PER_CROP_DAY), str(m))
+		_check("crops.%s.real_days_range_valid" % c, ref_days >= 45.0 and ref_days <= 130.0, "45..130 d", "%.0f d" % ref_days)
+		# P3：正式视觉阶段收敛为三档，进度 0 属于 seedling（旧 5 阶段的 seed/sprout 已合并）。
+		_check("crops.%s.first_stage_seedling" % c, CROPS.stage_at(c, 0.0, m) == "seedling", "seedling", CROPS.stage_at(c, 0.0, m))
 		_check("crops.%s.stage_mature_at_cycle_end" % c, CROPS.stage_at(c, m, m) == "mature", "mature", CROPS.stage_at(c, m, m))
 		_check("crops.%s.harvest_amount_positive" % c, CROPS.harvest_amount(c) >= 1, ">=1", str(CROPS.harvest_amount(c)))
-	_check("crops.stage_ids_count", CROPS.STAGE_IDS.size() == 5, "5", str(CROPS.STAGE_IDS.size()))
-	# 成熟时间必须有合理差异：两两不同且最小间隔 >= 100 秒。
+	_check("crops.stage_ids_count", CROPS.STAGE_IDS.size() == 3, "3", str(CROPS.STAGE_IDS.size()))
+	_check("crops.stage_ids_order", CROPS.STAGE_IDS == ["seedling", "growing", "mature"], "seedling,growing,mature", str(CROPS.STAGE_IDS))
+	_check("crops.stage_thresholds", CROPS.STAGE_THRESHOLDS == [0.0, 0.25, 1.0], "0.0,0.25,1.0", str(CROPS.STAGE_THRESHOLDS))
+	# 成熟时间必须有真实差异：五者两两不同、彼此间隔不小于 60 秒（真实农学天数不同）。
 	var mat: Array = []
 	for row in maturity:
 		mat.append(float((row as Dictionary)["seconds"]))
@@ -183,8 +197,9 @@ func _check_crops() -> void:
 	var min_gap := 999999.0
 	for i in range(1, mat.size()):
 		min_gap = minf(min_gap, float(mat[i]) - float(mat[i - 1]))
-	_check("crops.maturity_distinct_gap", min_gap >= 100.0, ">=100s", "min_gap=%.1fs" % min_gap)
-	_check("crops.maturity_order", CROPS.first_maturity_seconds("kale") < CROPS.first_maturity_seconds("tomato") and CROPS.first_maturity_seconds("tomato") < CROPS.first_maturity_seconds("corn") and CROPS.first_maturity_seconds("corn") < CROPS.first_maturity_seconds("watermelon") and CROPS.first_maturity_seconds("watermelon") < CROPS.first_maturity_seconds("wheat"), "kale<tomato<corn<watermelon<wheat", "kale=%.0f tomato=%.0f corn=%.0f watermelon=%.0f wheat=%.0f" % [CROPS.first_maturity_seconds("kale"), CROPS.first_maturity_seconds("tomato"), CROPS.first_maturity_seconds("corn"), CROPS.first_maturity_seconds("watermelon"), CROPS.first_maturity_seconds("wheat")])
+	_check("crops.maturity_distinct_gap", min_gap >= 60.0, ">=60s", "min_gap=%.1fs" % min_gap)
+	# 真实参考天数顺序：kale(52) < corn(75) < tomato(100) < watermelon(101) < wheat(105)
+	_check("crops.maturity_order", CROPS.first_maturity_seconds("kale") < CROPS.first_maturity_seconds("corn") and CROPS.first_maturity_seconds("corn") < CROPS.first_maturity_seconds("tomato") and CROPS.first_maturity_seconds("tomato") < CROPS.first_maturity_seconds("watermelon") and CROPS.first_maturity_seconds("watermelon") < CROPS.first_maturity_seconds("wheat"), "kale<corn<tomato<watermelon<wheat", "kale=%.0f corn=%.0f tomato=%.0f watermelon=%.0f wheat=%.0f" % [CROPS.first_maturity_seconds("kale"), CROPS.first_maturity_seconds("corn"), CROPS.first_maturity_seconds("tomato"), CROPS.first_maturity_seconds("watermelon"), CROPS.first_maturity_seconds("wheat")])
 	# 一次性 vs 持续再生长
 	for cid in ["wheat", "watermelon", "kale"]:
 		_check("crops.%s.one_shot" % cid, not CROPS.is_regrowing(cid) and CROPS.regrow_seconds(cid) < 0.0, "regrow=false, seconds=-1", "regrow=%s seconds=%.1f" % [str(CROPS.is_regrowing(cid)), CROPS.regrow_seconds(cid)])
@@ -233,7 +248,7 @@ func _check_planting() -> void:
 	var r2 := farm.plant(8, "corn", "summer")
 	_check("plant.second_ok", bool(r2.get("ok", false)), "true", str(r2))
 	_check("plant.second_seed_consumed", inv.get_count("seed_corn") == 9, "9", str(inv.get_count("seed_corn")))
-	_check("plant.stage_is_seed", farm.stage_id(0) == "seed", "seed", farm.stage_id(0))
+	_check("plant.stage_is_seedling", farm.stage_id(0) == "seedling", "seedling", farm.stage_id(0))
 
 
 # ============================================================ 3 非法操作 ===
@@ -296,13 +311,13 @@ func _check_stages() -> void:
 	farm.advance_to(base)
 	farm.plant(0, "kale", "spring")
 	var cycle := CROPS.first_maturity_seconds("kale")
-	_check("stage.at_0_seed", farm.stage_id(0) == "seed", "seed", farm.stage_id(0))
+	_check("stage.at_0_seedling", farm.stage_id(0) == "seedling", "seedling", farm.stage_id(0))
 	farm.advance_to(base + cycle * 0.25)
-	_check("stage.at_25pct_sprout", farm.stage_id(0) == "sprout", "sprout", farm.stage_id(0))
+	_check("stage.at_25pct_growing", farm.stage_id(0) == "growing", "growing", farm.stage_id(0))
 	farm.advance_to(base + cycle * 0.60)
 	_check("stage.at_60pct_growing", farm.stage_id(0) == "growing", "growing", farm.stage_id(0))
 	farm.advance_to(base + cycle * 0.90)
-	_check("stage.at_90pct_ripening", farm.stage_id(0) == "ripening", "ripening", farm.stage_id(0))
+	_check("stage.at_90pct_growing", farm.stage_id(0) == "growing", "growing", farm.stage_id(0))
 	farm.advance_to(base + cycle)
 	_check("stage.at_100pct_mature", farm.stage_id(0) == "mature", "mature", farm.stage_id(0))
 	_check("stage.mature_flag", farm.is_mature(0), "true", str(farm.is_mature(0)))
@@ -376,7 +391,21 @@ func _check_regrow() -> void:
 		_check("regrow.%s.harvest_count_2" % crop, farm.harvest_count(0) == 2, "2", str(farm.harvest_count(0)))
 		_check("regrow.%s.slot_stays" % crop, not farm.is_empty(0), "still planted", "empty=%s" % str(farm.is_empty(0)))
 		_check("regrow.%s.next_ready_advances" % crop, _near(float(farm.get_slot(0).get("next_ready_at", -1.0)), 100.0 + first + regrow * 2.0), "%.1f" % (100.0 + first + regrow * 2.0), str(farm.get_slot(0).get("next_ready_at", -1.0)))
-		_check("regrow.%s.no_harvest_cap" % crop, CROPS.REGROW_INFINITE, "infinite (no fixed cap)", "REGROW_INFINITE=true")
+		# P7-FINALIZE（用户规则）：每株最多成功收获 3 次（含首收），第 3 次后植株结束、格子回空地。
+		_check("regrow.%s.cycle_limit_three" % crop, CROPS.harvest_cycle_limit(String(crop)) == 3, "3", str(CROPS.harvest_cycle_limit(String(crop))))
+		farm.advance_to(100.0 + first + regrow * 2.0)
+		var seed_before3 := inv.get_count(CROPS.seed_item(crop))
+		var r3 := farm.harvest(0)
+		_check("regrow.%s.third_harvest_ok" % crop, bool(r3.get("ok", false)), "true", str(r3))
+		_check("regrow.%s.third_plant_removed" % crop, bool(r3.get("plant_removed", false)) and farm.is_empty(0), "plant_removed=true + empty", "removed=%s empty=%s" % [str(r3.get("plant_removed", null)), str(farm.is_empty(0))])
+		_check("regrow.%s.third_no_seed_return" % crop, inv.get_count(CROPS.seed_item(crop)) == seed_before3, str(seed_before3), str(inv.get_count(CROPS.seed_item(crop))))
+		_check("regrow.%s.produce_plus_3" % crop, inv.get_count(String(crop)) == produce_before + 3, str(produce_before + 3), str(inv.get_count(String(crop))))
+		_check("regrow.%s.harvest_count_reset" % crop, farm.harvest_count(0) == 0, "0", str(farm.harvest_count(0)))
+		var r4 := farm.harvest(0)
+		_check("regrow.%s.fourth_harvest_empty" % crop, not bool(r4.get("ok", true)) and String(r4.get("reason", "")) == "empty", "empty", str(r4.get("reason", "")))
+		# 第 3 次收获后可以被重新自动播种（正常种植流程；不会自动复活旧株）。
+		var replant := farm.plant_auto(0, "summer")
+		_check("regrow.%s.replant_after_end" % crop, bool(replant.get("ok", false)) and not farm.is_empty(0), "plant ok + not empty", str(replant))
 
 
 # ============================================================ 7 库存失败 ===
@@ -475,13 +504,27 @@ func _check_choice_filters() -> void:
 	var farm3 = FARM.new(inv3)
 	_check("choice.missing_seed_skipped", farm3.choose_crop("spring") == "wheat", "wheat", farm3.choose_crop("spring"))
 	# 数量优先：田里已种 2 株 wheat，即使有种子也不能再选 wheat
+	# P7-FINALIZE：旧规则"在田株数最少优先"已删除，改为候选集等概率抽样。
+	# 即使田里已有 2 株 wheat，wheat 仍是合法候选，出现频率应接近 1/4（4 个春季候选），
+	# 既不能完全被排除（旧行为），也不能被固定排到首位/末位。
 	var inv4 := _mock_all_seeds(9)
 	var farm4 = FARM.new(inv4)
+	farm4.set_rng_seed(4242)
 	farm4.advance_to(0.0)
 	farm4.plant(0, "wheat", "spring")
 	farm4.plant(1, "wheat", "spring")
-	var pick := farm4.choose_crop("spring")
-	_check("choice.count_priority_excludes_wheat", pick != "wheat" and ["corn", "watermelon", "tomato", "kale"].has(pick), "非 wheat（数量优先）", pick)
+	var draws := 400
+	var wheat_hits := 0
+	var seen := {}
+	for _i in range(draws):
+		var pick := farm4.choose_crop("spring")
+		seen[pick] = true
+		if pick == "wheat":
+			wheat_hits += 1
+	var wheat_share := float(wheat_hits) / float(draws)
+	_check("choice.no_count_priority_but_candidate", wheat_share >= 0.15 and wheat_share <= 0.36,
+		"wheat 仍为候选，份额 15%..36%（4 候选期望 25%）", "wheat_share=%.1f%% seen=%s" % [100.0 * wheat_share, str(seen.keys())])
+	_check("choice.all_season_candidates_reachable", seen.size() == 4, "4 个春季候选都出现", str(seen.keys()))
 	# 记录本次分布测试的固定种子
 	_check("choice.rng_seed_set", true, "seed=%d" % rng_seed, "seed=%d" % rng_seed)
 
@@ -528,10 +571,22 @@ func _check_distribution() -> void:
 		max_c = maxi(max_c, c)
 	_check("dist.total_rounds", total == rounds, str(rounds), str(total))
 	_check("dist.all_candidates_used", min_c > 0, ">0 each", "min=%d max=%d counts=%s" % [min_c, max_c, str(counts)])
-	_check("dist.min_share", float(min_c) / float(rounds) >= 0.15, ">=15%", "%.1f%%" % (100.0 * float(min_c) / float(rounds)))
-	_check("dist.max_share", float(max_c) / float(rounds) <= 0.55, "<=55%", "%.1f%%" % (100.0 * float(max_c) / float(rounds)))
-	_check("dist.max_min_ratio", float(max_c) / maxf(1.0, float(min_c)) <= 2.0, "<=2.0", "%.2f" % (float(max_c) / maxf(1.0, float(min_c))))
-	_check("dist.consecutive_repeat_rate", float(repeats) / float(rounds) <= 0.20, "<=20%", "%.1f%%" % (100.0 * float(repeats) / float(rounds)))
+	# P7-FINALIZE：选种改为"候选集上等概率均匀抽样"（无均衡优先/无重复抑制）。
+	# 3 个候选的均匀分布：单种期望份额 33.3%，400 次抽样 99% 区间约 [22%, 45%]。
+	_check("dist.min_share", float(min_c) / float(rounds) >= 0.22, ">=22% (uniform lower band)", "%.1f%%" % (100.0 * float(min_c) / float(rounds)))
+	_check("dist.max_share", float(max_c) / float(rounds) <= 0.45, "<=45% (uniform upper band)", "%.1f%%" % (100.0 * float(max_c) / float(rounds)))
+	_check("dist.max_min_ratio", float(max_c) / maxf(1.0, float(min_c)) <= 1.8, "<=1.8", "%.2f" % (float(max_c) / maxf(1.0, float(min_c))))
+	# 连续同种率：均匀独立抽样的理论值 = 1/3。旧的"最少在田优先+70%去重"会把该值压到 <10%，
+	# 固定轮换会是 0%；因此用双边区间 [24%, 43%] 同时排除"去重"和"轮换"，比旧的单边 <=20% 更严格。
+	_check("dist.consecutive_repeat_rate_random", float(repeats) / float(rounds) >= 0.24 and float(repeats) / float(rounds) <= 0.43, "24%..43% (uniform 1/3)", "%.1f%%" % (100.0 * float(repeats) / float(rounds)))
+	# 卡方拟合度（df=2）：均匀随机应落在 [0.02, 13.0]（99% 区间附近）；
+	# 刻意均衡会得到接近 0 的卡方，固定轮换会更小 —— 同样用双边区间排除。
+	var exp_share := float(rounds) / 3.0
+	var chi2 := 0.0
+	for key in counts:
+		var obs := float(counts[key])
+		chi2 += (obs - exp_share) * (obs - exp_share) / exp_share
+	_check("dist.chi_square_uniform_not_balanced", chi2 >= 0.02 and chi2 <= 13.0, "0.02..13.0 (df=2)", "chi2=%.3f" % chi2)
 	var dline := "[P1FARM] distribution rounds=%d counts=%s consecutive_repeats=%d repeats_rate=%.1f%%" % [rounds, str(counts), repeats, 100.0 * float(repeats) / float(rounds)]
 	print(dline)
 	_lines.append(dline)
@@ -547,7 +602,10 @@ func _check_export_restore() -> void:
 	farm.plant(1, "kale", "winter")
 	farm.advance_to(1000.0 + CROPS.first_maturity_seconds("corn"))
 	farm.harvest(0)  # corn 进入第一次再生长，seed_returned=true, harvest_count=1
-	farm.advance_to(3000.0)
+	# P7-FINALIZE：成长阈值变大，改为"在收获时刻之后继续前进 1000s"，避免回拨主时钟触发
+	# 旧的 _shift_slots 独立 clamp（restore 校验会拒绝该不一致状态）。这是测试时钟构造修正，
+	# 不是放宽校验：restore 的完整校验逻辑未改。
+	farm.advance_to(farm.now() + 100.0)  # 仍在再生成熟之前（regrow=480），用于断言 not_mature
 	var snap := farm.export_state()
 	_check("export.version", int(snap.get("version", -1)) == 1, "1", str(snap.get("version", -1)))
 	_check("export.slots_count", (snap.get("slots") as Array).size() == 9, "9", str((snap.get("slots") as Array).size()))
@@ -606,7 +664,10 @@ func _check_export_restore() -> void:
 	(bad["slots"] as Array)[2] = {"crop_id": "wheat", "planted_at": 0.0, "cycle_started_at": 0.0, "next_ready_at": 3000.0, "harvest_count": 2, "seed_returned": true}
 	bad_cases.append(bad)
 	bad = snap.duplicate(true)
+	# 导出同时含旧别名 saved_at_sim_seconds 与权威 saved_at_clock_seconds；
+	# 伪造"存档时刻"必须两个键一起改，否则权威键仍合法（读取优先用权威键）。
 	bad["saved_at_sim_seconds"] = -1.0
+	bad["saved_at_clock_seconds"] = -1.0
 	bad_cases.append(bad)
 	# 种子返还状态与采收次数矛盾：持续作物已收 1 次却把 returned 置 false
 	bad = snap.duplicate(true)
@@ -749,8 +810,10 @@ func _check_reentrancy_and_config() -> void:
 	var cp_after := farm_w.can_plant(0, "corn", "winter")
 	_check("config.allow_warm_instance", String(cp_before.get("reason", "")) == "season_not_allowed" and bool(cp_after.get("ok", false)), "season_not_allowed -> ok", "%s -> %s" % [str(cp_before), str(cp_after)])
 	# F5：regrow 上限由纯函数按配置计算（0=默认无限；>0=显式上限），farm 直接调用它
-	_check("config.regrow_limit_pure", CROPS.cycle_limit_from_def({"regrow": true, "regrow_cycles": 1}) == 1 and CROPS.cycle_limit_from_def({"regrow": true, "regrow_cycles": 0}) == -1 and CROPS.cycle_limit_from_def({"regrow": false}) == 1, "1 / -1 / 1", "%d / %d / %d" % [CROPS.cycle_limit_from_def({"regrow": true, "regrow_cycles": 1}), CROPS.cycle_limit_from_def({"regrow": true, "regrow_cycles": 0}), CROPS.cycle_limit_from_def({"regrow": false})])
-	_check("config.regrow_limit_default_infinite", CROPS.harvest_cycle_limit("corn") == -1 and CROPS.harvest_cycle_limit("wheat") == 1, "corn -1 / wheat 1", "%d / %d" % [CROPS.harvest_cycle_limit("corn"), CROPS.harvest_cycle_limit("wheat")])
+	# P7-FINALIZE：regrow_cycles 显式上限优先；0/缺失时回落到全局默认（当前 REGROW_INFINITE=false
+	# → 1+REGROW_CYCLES_DEFAULT=3），与用户"每株最多 3 次成功收获"一致。
+	_check("config.regrow_limit_pure", CROPS.cycle_limit_from_def({"regrow": true, "regrow_cycles": 1}) == 1 and CROPS.cycle_limit_from_def({"regrow": true, "regrow_cycles": 0}) == 3 and CROPS.cycle_limit_from_def({"regrow": false}) == 1, "1 / 3 / 1", "%d / %d / %d" % [CROPS.cycle_limit_from_def({"regrow": true, "regrow_cycles": 1}), CROPS.cycle_limit_from_def({"regrow": true, "regrow_cycles": 0}), CROPS.cycle_limit_from_def({"regrow": false})])
+	_check("config.regrow_limit_three", CROPS.harvest_cycle_limit("corn") == 3 and CROPS.harvest_cycle_limit("tomato") == 3 and CROPS.harvest_cycle_limit("wheat") == 1, "corn 3 / tomato 3 / wheat 1", "%d / %d / %d" % [CROPS.harvest_cycle_limit("corn"), CROPS.harvest_cycle_limit("tomato"), CROPS.harvest_cycle_limit("wheat")])
 	# F5：首收返种由纯函数按配置判定（false 时不返种），farm 直接调用它
 	_check("config.seed_return_pure", CROPS.returns_seed_from_def({"returns_seed_on_first_harvest": false}) == false and CROPS.returns_seed_from_def({}) == true and CROPS.returns_seed_on_first_harvest("kale"), "false / true / true", "%s / %s / %s" % [str(CROPS.returns_seed_from_def({"returns_seed_on_first_harvest": false})), str(CROPS.returns_seed_from_def({})), str(CROPS.returns_seed_on_first_harvest("kale"))])
 	# F2：非有限时间快照被忽略，不改变时钟
@@ -899,7 +962,8 @@ func _check_extra_semantics() -> void:
 	var hc := farm_h.harvest(1)
 	_check("plant_removed.regrow_false", not bool(hc.get("plant_removed", true)) and not farm_h.is_empty(1), "false + 保留", "removed=%s empty=%s" % [str(hc.get("plant_removed", null)), str(farm_h.is_empty(1))])
 
-	# 无限再生默认值下的多轮行为：连续 4 轮采收，每轮 count+1、下一轮成熟=采收时刻+regrow。
+	# P7-FINALIZE：再生作物"每株最多 3 次成功收获（含首收）"，第 3 次后植株结束。
+	# 逐轮验证 count/下一轮成熟时刻，并验证第 3 次后清空、第 4 次不能采收、可重新播种。
 	var inv_m := _mock_all_seeds(3)
 	var farm_m = FARM.new(inv_m)
 	var t0 := 5000.0
@@ -907,21 +971,32 @@ func _check_extra_semantics() -> void:
 	farm_m.plant(0, "corn", "summer")
 	var ok_multi := true
 	var detail_multi := ""
-	for k in range(4):
+	for k in range(3):
 		var need := CROPS.first_maturity_seconds("corn") if k == 0 else CROPS.regrow_seconds("corn")
 		farm_m.advance_to(farm_m.now() + need)
 		var t_harvest := farm_m.now()
 		var h := farm_m.harvest(0)
-		if not bool(h.get("ok", false)) or farm_m.is_empty(0) or farm_m.harvest_count(0) != k + 1:
+		if not bool(h.get("ok", false)):
 			ok_multi = false
-			detail_multi = "round=%d res=%s count=%d empty=%s" % [k + 1, str(h), farm_m.harvest_count(0), str(farm_m.is_empty(0))]
+			detail_multi = "round=%d res=%s" % [k + 1, str(h)]
 			break
-		var expect_next := t_harvest + CROPS.regrow_seconds("corn")
-		if absf(farm_m.get_slot(0).get("next_ready_at", 0.0) - expect_next) > 0.01:
-			ok_multi = false
-			detail_multi = "round=%d next_ready mismatch" % (k + 1)
-			break
-	_check("regrow.multi_cycle_infinite", ok_multi, "4 轮全部成功且仍在田", detail_multi if detail_multi != "" else "4/4 ok")
+		if k < 2:
+			if farm_m.is_empty(0) or farm_m.harvest_count(0) != k + 1:
+				ok_multi = false
+				detail_multi = "round=%d count=%d empty=%s" % [k + 1, farm_m.harvest_count(0), str(farm_m.is_empty(0))]
+				break
+			var expect_next := t_harvest + CROPS.regrow_seconds("corn")
+			if absf(farm_m.get_slot(0).get("next_ready_at", 0.0) - expect_next) > 0.01:
+				ok_multi = false
+				detail_multi = "round=%d next_ready mismatch" % (k + 1)
+				break
+		else:
+			if not farm_m.is_empty(0) or not bool(h.get("plant_removed", false)):
+				ok_multi = false
+				detail_multi = "round3 not removed empty=%s removed=%s" % [str(farm_m.is_empty(0)), str(h.get("plant_removed", null))]
+	_check("regrow.exactly_three_harvests", ok_multi, "3 轮全部成功、第 3 轮后清空", detail_multi if detail_multi != "" else "3/3 ok, removed at 3")
+	var r_after := farm_m.harvest(0)
+	_check("regrow.fourth_rejected", not bool(r_after.get("ok", true)) and String(r_after.get("reason", "")) == "empty", "empty", str(r_after.get("reason", "")))
 
 	# 换季保留：夏季种下番茄，推进到冬季仍存在、已成熟、可采收（换季不销毁作物）。
 	var inv_s := _mock_all_seeds(3)
@@ -948,12 +1023,17 @@ func _check_extra_semantics() -> void:
 		var counts := {}
 		var rounds := 0
 		var idx := 0
+		var prev_c := ""
+		var repeats_d := 0
 		for _r in range(300):
 			var res := farm_d.plant_auto(idx % FARM.SLOT_COUNT, "summer")
 			if bool(res.get("ok", false)):
 				rounds += 1
 				var cid := String(res.get("crop_id", ""))
 				counts[cid] = int(counts.get(cid, 0)) + 1
+				if cid == prev_c:
+					repeats_d += 1
+				prev_c = cid
 				if rounds > 0 and rounds % FARM.SLOT_COUNT == 0:
 					farm_d.reset()
 			idx += 1
@@ -963,10 +1043,12 @@ func _check_extra_semantics() -> void:
 		arr.sort()
 		var lo := int(arr[0]) if arr.size() > 0 else 0
 		var hi := int(arr[arr.size() - 1]) if arr.size() > 0 else 0
-		if counts.size() < 3 or lo < int(round(float(rounds) * 0.15)) or hi > int(round(float(rounds) * 0.55)):
+		var rate := float(repeats_d) / float(maxi(1, rounds))
+		# 每个固定种子都应是均匀随机：候选份额 20%..47%，连续同种率 22%..43%（理论 1/3）。
+		if counts.size() < 3 or lo < int(round(float(rounds) * 0.20)) or hi > int(round(float(rounds) * 0.47)) 				or rate < 0.22 or rate > 0.43:
 			ok_seeds = false
-		seed_stats.append({"seed": seed_i, "rounds": rounds, "counts": counts, "min": lo, "max": hi})
-	_check("dist.multi_seed_balanced", ok_seeds, "3 seed × 300 轮均 3 候选且 15%..55%", JSON.stringify(seed_stats))
+		seed_stats.append({"seed": seed_i, "rounds": rounds, "counts": counts, "min": lo, "max": hi, "repeat_rate": rate})
+	_check("dist.multi_seed_random_uniform", ok_seeds, "3 seed × 300 轮：3 候选、份额 20%..47%、连续同种率 22%..43%", JSON.stringify(seed_stats))
 
 	# 自动播种的全部前置失败路径都不消耗 RNG（前置校验先于 choose_crop），成功路径才消耗。
 	var inv_rng := _mock_all_seeds(3)
@@ -1030,14 +1112,25 @@ func _check_extra_semantics() -> void:
 		"now 不变且仍未就绪", "before=%s after=%s plant_reason=%s" % [
 			str(neg_before), str(neg_after), String(neg_plant.get("reason", ""))])
 
-	# 当前五作物均无“有限 >1 再生上限”，因此 restore 的上限分支不可达：
-	# 该分支是未来配置预留的防御校验，本次只做代码审查、未做运行验证（已在报告披露）。
+	# P7-FINALIZE：corn/tomato 变为"有限 3 次再生上限"，restore 的上限防御分支现在可达。
+	# 有限上限作物只允许 count < 3，count>=3 的存档格必须被拒绝（正常流程第 3 次后已清空）。
 	var finite_crops := 0
 	for cid in CROPS.all_ids():
 		if CROPS.harvest_cycle_limit(String(cid)) > 1:
 			finite_crops += 1
-	_check("config.no_finite_regrow_crop", finite_crops == 0,
-		"当前 DEFS 无有限>1 再生作物", "finite_crops=%d" % finite_crops)
+	_check("config.finite_regrow_crop_count", finite_crops == 2,
+		"corn/tomato 两个有限上限作物", "finite_crops=%d" % finite_crops)
+	# restore 上限分支真实运行验证：构造 count=3 的 corn 存档格，必须整份拒绝、farm 状态不变。
+	var inv_lim := _mock_all_seeds(3)
+	var farm_lim = FARM.new(inv_lim)
+	farm_lim.advance_to(1000.0)
+	farm_lim.plant(0, "corn", "summer")
+	var snap_lim := farm_lim.export_state()
+	var before_lim := farm_lim.export_state()
+	(snap_lim["slots"] as Array)[0] = {"crop_id": "corn", "planted_at": 1000.0, "cycle_started_at": 1000.0, "next_ready_at": 1000.0 + CROPS.regrow_seconds("corn"), "harvest_count": 3, "seed_returned": true}
+	var ok_lim := farm_lim.restore_state(snap_lim)
+	_check("restore.rejects_count_at_limit", not ok_lim and farm_lim.export_state()["slots"] == before_lim["slots"],
+		"reject + 状态不变", "ok=%s changed=%s" % [str(ok_lim), str(farm_lim.export_state()["slots"] != before_lim["slots"])])
 
 	# 事务回调里 reset() 被忽略：外层播种仍然完成、只扣 1 颗种子、九格只建一株。
 	var inv_g := _mock_all_seeds(3)

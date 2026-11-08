@@ -154,7 +154,7 @@ func _run_checks() -> void:
     var csrc: Array = _isle._cottage.get("light_sources", [])
     var wsrc: Array = _isle._world.get("light_sources", [])
     _ok(csrc.size() == 10, "cottage light_sources 条数", "actual=%d expect=10" % csrc.size())
-    _ok(wsrc.size() == 8, "world light_sources 条数", "actual=%d expect=8" % wsrc.size())
+    _ok(wsrc.size() == 7, "world light_sources 条数", "actual=%d expect=7 (P7.1 删门前 GardenLamp1)" % wsrc.size())
     var vol := _house_volume()
     var gh: Vector4 = vol[0]
     var gh2: Vector4 = vol[1]
@@ -192,13 +192,17 @@ func _run_checks() -> void:
 
     # ---- Q3 每档双池激活清单（L7）----
     # Lead 复核 2026-10-22：室外 rank 改为 路灯0→灯塔1→码头2→门廊3→窗光4（码头灯 q1+ 生效、默认 q2 有门廊）。
+    # P7.1：用户要求删掉门前挡路的 GardenLamp1，世界路灯 6→5、室外灯源 8→7（+冬季船灯仍被压掉）。
+    # 预算不变，于是每档室外池都多容纳一个更低优先级的灯，阶梯整体提前一档：
+    # q0 = 5路灯+灯塔+码头，q1 += 门廊，q2 += 窗光；q3/q4 预算 10 > 可用室外灯源 9，池被灯源数封顶。
     var L := "street_lamp"
+    var OUT_SRC := 9
     var exp_out: Array = [
-        [L, L, L, L, L, L, "lighthouse"],
-        [L, L, L, L, L, L, "lighthouse", "dock"],
-        [L, L, L, L, L, L, "lighthouse", "dock", "porch_lantern"],
-        [L, L, L, L, L, L, "lighthouse", "dock", "porch_lantern", "window_glow"],
-        [L, L, L, L, L, L, "lighthouse", "dock", "porch_lantern", "window_glow"],
+        [L, L, L, L, L, "lighthouse", "dock"],
+        [L, L, L, L, L, "lighthouse", "dock", "porch_lantern"],
+        [L, L, L, L, L, "lighthouse", "dock", "porch_lantern", "window_glow"],
+        [L, L, L, L, L, "lighthouse", "dock", "porch_lantern", "window_glow"],
+        [L, L, L, L, L, "lighthouse", "dock", "porch_lantern", "window_glow"],
     ]
     var base_in := ["fireplace", "chandelier", "table_lamp"]
     var exp_in: Array = [
@@ -227,8 +231,11 @@ func _run_checks() -> void:
             "%d expect %d" % [int(st.get("outdoor_count", -1)), exp_out[q].size()])
         _ok(int(st.get("indoor_count", -1)) == exp_in[q].size(), "q%d indoor_count" % q,
             "%d expect %d" % [int(st.get("indoor_count", -1)), exp_in[q].size()])
-        _ok(int(st.get("outdoor_count", 0)) + int(st.get("indoor_count", 0)) == EXP_BUDGET[q],
-            "q%d 双池激活总数=预算" % q, "%d+%d vs %d" % [int(st.get("outdoor_count", 0)), int(st.get("indoor_count", 0)), EXP_BUDGET[q]])
+        # 预算是上限：P7.1 删一盏路灯后可用灯源 = 9 室外 + 6 室内。每档两池各按自己的槽位装满，
+        # 槽位多于灯源时被灯源数封顶，故总数 = min(室外槽,9) + min(室内槽,6)。
+        var exp_total: int = mini(EXP_BUDGET[q] - EXP_INDOOR[q], OUT_SRC) + mini(EXP_INDOOR[q], 6)
+        _ok(int(st.get("outdoor_count", 0)) + int(st.get("indoor_count", 0)) == exp_total,
+            "q%d 双池激活总数=min(槽,灯源) 之和" % q, "%d+%d vs %d" % [int(st.get("outdoor_count", 0)), int(st.get("indoor_count", 0)), exp_total])
         _ok(int(st.get("outdoor_budget", -1)) == EXP_BUDGET[q] - EXP_INDOOR[q], "q%d outdoor_budget" % q, str(st.get("outdoor_budget", null)))
         _ok(int(st.get("indoor_budget", -1)) == EXP_INDOOR[q], "q%d indoor_budget" % q, str(st.get("indoor_budget", null)))
         # 池隔离：室外池无室内灯种，室内池无室外灯种
@@ -246,10 +253,10 @@ func _run_checks() -> void:
         _ok(si.has("chandelier"), "q%d 一层吊灯在列" % q)
         _ok(si.has("table_lamp"), "q%d 一层台灯在列" % q)
         _ok(si.has("floor_lamp") == (q >= 3), "q%d 一层落地灯在列=%s（契约 q3+）" % [q, str(q >= 3)], str(si.has("floor_lamp")))
-        # L3/L4 室外阶梯：门廊 q1+、窗光 q2+、码头 q3+
-        _ok(so.has("dock") == (q >= 1), "q%d 码头灯在列=%s（契约 q1+，Lead 复核）" % [q, str(q >= 1)], str(so.has("dock")))
-        _ok(so.has("porch_lantern") == (q >= 2), "q%d 门廊灯在列=%s（契约 q2+，Lead 复核）" % [q, str(q >= 2)], str(so.has("porch_lantern")))
-        _ok(so.has("window_glow") == (q >= 3), "q%d 窗光在列=%s（契约 q3+，Lead 复核）" % [q, str(q >= 3)], str(so.has("window_glow")))
+        # L3/L4 室外阶梯：删一盏路灯后每档多一个槽，阶梯整体提前一档——码头全档、门廊 q1+、窗光 q2+
+        _ok(so.has("dock"), "q%d 码头灯在列（契约：删盏后 q0+）" % q, str(so.has("dock")))
+        _ok(so.has("porch_lantern") == (q >= 1), "q%d 门廊灯在列=%s（契约 q1+，Lead 复核）" % [q, str(q >= 1)], str(so.has("porch_lantern")))
+        _ok(so.has("window_glow") == (q >= 2), "q%d 窗光在列=%s（契约 q2+，Lead 复核）" % [q, str(q >= 2)], str(so.has("window_glow")))
         # L6 槽位合法：上限、有限值
         _ok(po.size() <= OUT_CAP, "q%d 室外池 <= %d 槽" % [q, OUT_CAP], "size=%d" % po.size())
         _ok(pi.size() <= IN_CAP, "q%d 室内池 <= %d 槽" % [q, IN_CAP], "size=%d" % pi.size())

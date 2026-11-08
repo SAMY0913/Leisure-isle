@@ -410,7 +410,7 @@ func _measure_lamps(world: Dictionary) -> void:
 		if cap_top_derived < 2.745 or cap_top_derived > 3.05:
 			_issue("lamp%d cap top %.3f outside 2.75-3.05 target" % [i, cap_top_derived])
 	var lights: Array = world["light_sources"]
-	_line("light_sources.count=%d (expect 8: 6 street + dock + sailboat + lighthouse)" % lights.size())
+	_line("light_sources.count=%d (expect 7: 5 street（P7.1 删一盏）+ dock + sailboat + lighthouse)" % lights.size())
 	for i in lights.size():
 		var ld: Dictionary = lights[i]
 		var lp: Vector3 = ld["pos"]

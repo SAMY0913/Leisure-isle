@@ -1,12 +1,12 @@
 extends SceneTree
 ## P7-V2 独立验收探针：夜间道路照明（任务 D）
-## 验收点：五档画质下 6 盏路灯全部进入点光数组、位置与 world["lamps"] 世界坐标一致、
+## 验收点：五档画质下 5 盏路灯全部进入点光数组、位置与 world["lamps"] 世界坐标一致、
 ##          低/中档道路照明不为零、强度不过曝、切换档位不闪断、昼夜亮度差异真实生效。
 ## 两种模式：
 ##  headless（逻辑）：
 ##   "D:/休闲小岛幻境/引擎/Godot_v4.7.2-stable_win64_console.exe" --headless --path "D:/休闲小岛幻境/游戏工程" --script res://tools/probe_p7v2_light.gd
 ##  窗口（追加截图像素统计；global shader uniform 在本引擎 --script 窗口模式仍读不到（返回 null），
-##        因此「6 盏灯是否真实参与照地」改由逐盏隔离的真实帧像素证据承担）：
+##        因此「5 盏灯是否真实参与照地」改由逐盏隔离的真实帧像素证据承担）：
 ##   "D:/休闲小岛幻境/引擎/Godot_v4.7.2-stable_win64_console.exe" --path "D:/休闲小岛幻境/游戏工程" --resolution 1600x900 --script res://tools/probe_p7v2_light.gd -- --window --out=D:/休闲小岛幻境/开发产物/p7v2/shots/light_probe/
 ## 退出码：0=全部通过；1=有失败；窗口模式的像素断言只在窗口模式执行。
 
@@ -15,6 +15,9 @@ const TIME_DAY := 12.0 * 60.0
 # P8.1-06 契约变更：旧值 [7, 8, 9, 11, 12]（单池 12 槽）；双池 16 槽（室外 g_l0..9 + 室内 g_l10..15）后更新为 10/11/12/14/16。
 const EXP_BUDGET := [10, 11, 12, 14, 16]
 const LAMP_EPS := 0.01
+# P7.1（用户反馈 m01190）：门前挡路的 GardenLamp1 已删除，world 路灯由 6 盏变 5 盏。
+# 统一常量，避免下面十余处硬编码 6 漏改。
+const LAMP_N := 5
 const OUT_DEFAULT := "D:/休闲小岛幻境/开发产物/p7v2/shots/light_probe/"
 const IsleMathScript := preload("res://scripts/isle_math.gd")
 const WARM_EPS := 0.002
@@ -110,7 +113,7 @@ func _probe_scene_and_lamps() -> void:
 		return
 	var world: Dictionary = wv
 	var lamps: Array = world.get("lamps", [])
-	_check(lamps.size() == 6, "world[\"lamps\"] 恰好 6 盏（实际 %d）" % lamps.size())
+	_check(lamps.size() == LAMP_N, "world[\"lamps\"] 恰好 5 盏（实际 %d）" % lamps.size())
 	for l in lamps:
 		if not (l is Array) or (l as Array).size() < 3:
 			_check(false, "lamps 元素为 [?, ?, dict] 结构")
@@ -125,13 +128,13 @@ func _probe_scene_and_lamps() -> void:
 	# 探针独立取 main.debug_light_state().lamp_positions 作为对照基准（不假设 main 内部命名）
 	var st: Dictionary = _main.call("debug_light_state")
 	_lamp_positions = (st.get("lamp_positions", []) as Array).duplicate()
-	_check(_lamp_positions.size() == 6, "debug_light_state().lamp_positions = 6（实际 %d）" % _lamp_positions.size())
+	_check(_lamp_positions.size() == LAMP_N, "debug_light_state().lamp_positions = 5（实际 %d）" % _lamp_positions.size())
 	var pos_ok := true
 	for i in range(mini(_lamp_positions.size(), _lamp_light_pos.size())):
 		if (_lamp_positions[i] as Vector3).distance_to(_lamp_light_pos[i] as Vector3) > LAMP_EPS:
 			pos_ok = false
 	_check(pos_ok, "debug_light_state().lamp_positions 与 world[\"lamps\"] 世界坐标一一一致（eps=%s）" % str(LAMP_EPS))
-	# 六盏灯必须在空间上互不重合；高度按「相对村庄地形」判定：
+	# 五盏灯必须在空间上互不重合；高度按「相对村庄地形」判定：
 	# 灯位在灯柱顶的灯罩中心（绝对 y≈5.3-10.5，村庄地形 y≈7.5-8.5），不是贴地假点。
 	var min_gap := 1.0e30
 	var rel_heights: Array = []
@@ -141,21 +144,39 @@ func _probe_scene_and_lamps() -> void:
 		var gh: float = IsleMathScript.terrain_height(a.x, a.z)
 		var rel := a.y - gh
 		rel_heights.append(rel)
-		if rel < 1.2 or rel > 2.6:
+		if rel < 1.2 or rel > 2.9:
 			h_ok = false
 		for j in range(i + 1, _lamp_positions.size()):
 			var b: Vector3 = _lamp_positions[j]
 			min_gap = minf(min_gap, a.distance_to(b))
-	_check(min_gap >= 1.0, "六盏路灯位置互不重合（最小间距 %.3f m）" % min_gap)
+	_check(min_gap >= 1.0, "五盏路灯位置互不重合（最小间距 %.3f m）" % min_gap)
 	print("[LIGHT] lamp rel heights above terrain=", str(rel_heights))
-	_check(h_ok, "路灯相对地形高度均在 [1.2,2.6] m（真实灯具位置而非地面假点）")
+	# 灯头向前探出 0.42 m：若探出处正好压在农场台面边缘/坡地，地形高度会比基座低约 0.2 m，
+	# 于是「灯头 - 灯头下地形」可到 2.73 m。上限放到 2.9 只放宽这个地形代理指标，
+	# 真正的灯头几何由下面这条基座相对断言严格约束（恒为 2.55 m）。
+	_check(h_ok, "路灯相对地形高度均在 [1.2,2.9] m（真实灯具位置而非地面假点）")
+	var head_ok := true
+	var head_rel: Array = []
+	for i in range(mini(_lamp_positions.size(), lamps.size())):
+		var li: Array = lamps[i]
+		if li.size() < 4:
+			head_ok = false
+			continue
+		var bi: Dictionary = li[3]
+		var lbase: Vector3 = bi.get("base", Vector3.ZERO)
+		var hr: float = (_lamp_positions[i] as Vector3).y - lbase.y
+		head_rel.append(hr)
+		if absf(hr - 2.55) > 0.02:
+			head_ok = false
+	print("[LIGHT] lamp head above own base=", str(head_rel))
+	_check(head_ok, "灯罩中心恒在灯柱基座上方 2.55 m（真实灯头几何，与地形坡度无关）")
 	var src: Array = world.get("light_sources", [])
 	var sw: Array = []
 	for s in src:
 		if typeof(s) == TYPE_DICTIONARY:
 			sw.append(String((s as Dictionary).get("kind", "other")))
 	print("[LIGHT] world light_sources=", src.size(), " kinds=", sw)
-	_check(src.size() >= 8, "world light_sources >= 8 盏（含 6 路灯 + 灯塔/码头/小屋灯）")
+	_check(src.size() >= 7, "world light_sources >= 7 盏（含 5 路灯 + 灯塔/码头/小屋灯）")
 
 # ---------------- 五档逻辑断言 ----------------
 func _probe_five_quality_logic() -> void:
@@ -174,10 +195,10 @@ func _probe_five_quality_logic() -> void:
 		var qv: int = int(st.get("quality", -1))
 		_check(qv == q, "q=%d debug_light_state().quality 一致（实际 %d）" % [q, qv])
 		_check(budget == EXP_BUDGET[q], "q=%d light_budget=%d（契约 %d）" % [q, budget, EXP_BUDGET[q]])
-		_check(lamp_count == 6, "q=%d lamp_count=6" % q)
+		_check(lamp_count == LAMP_N, "q=%d lamp_count=5" % q)
 		_check(lights.size() >= 7, "q=%d 参与排序的光源 >= 7（实际 %d）" % [q, lights.size()])
 		var first6_ok := true
-		for i in range(6):
+		for i in range(LAMP_N):
 			var L: Dictionary = lights[i] if i < lights.size() else {}
 			if String(L.get("kind", "")) != "street_lamp":
 				first6_ok = false
@@ -186,15 +207,15 @@ func _probe_five_quality_logic() -> void:
 			if p.distance_to(_lamp_positions[i] as Vector3) > LAMP_EPS:
 				first6_ok = false
 				break
-		_check(first6_ok, "q=%d 前 6 盏均为 street_lamp 且坐标与真实路灯一一对应" % q)
-		# 低/中档不能把路灯挤掉：active 至少 6 路灯 + 1 环境灯
-		_check(active >= 7, "q=%d active=%d >= 7（6 路灯 + >=1 环境灯）" % [q, active])
+		_check(first6_ok, "q=%d 前 5 盏均为 street_lamp 且坐标与真实路灯一一对应" % q)
+		# 低/中档不能把路灯挤掉：active 至少 5 路灯 + >=2 环境灯
+		_check(active >= 7, "q=%d active=%d >= 7（5 路灯 + >=2 环境灯）" % [q, active])
 		# P8.1-06 前上限为 12（单池）；双池后室外 10 + 室内 6 = 16。
 		_check(active <= 16, "q=%d active=%d <= 16（shader 双池点光上限）" % [q, active])
 		# 路灯参数不能被清成 0
 		var lit_ok := true
 		var warm_ok := true
-		for i in range(6):
+		for i in range(LAMP_N):
 			var L: Dictionary = lights[i]
 			var en := float(L.get("energy", 0.0))
 			var rng := float(L.get("range", 0.0))
@@ -203,23 +224,23 @@ func _probe_five_quality_logic() -> void:
 				lit_ok = false
 			if col.r < col.b:
 				warm_ok = false
-		_check(lit_ok, "q=%d 6 路灯 energy>0 且 range>=0.6（不发黑）" % q)
+		_check(lit_ok, "q=%d 5 路灯 energy>0 且 range>=0.6（不发黑）" % q)
 		_check(warm_ok, "q=%d 路灯色温为暖色（r>=b）" % q)
 		# 环境灯种类标签：至少 lighthouse 或 dock 之一存在（夜景地标）
 		var kinds: Array = []
-		for i in range(6, lights.size()):
+		for i in range(LAMP_N, lights.size()):
 			kinds.append(String((lights[i] as Dictionary).get("kind", "?")))
 		var has_env := kinds.has("lighthouse") or kinds.has("dock") or kinds.has("other")
 		_check(has_env, "q=%d 环境灯 kind 标签存在（%s）" % [q, str(kinds)])
 		print("[LIGHT] q=", q, " budget=", budget, " active=", active, " lights=", lights.size(), " kinds=", str(kinds),
 			" lamp0=", str((lights[0] as Dictionary).get("pos")), " en=", float((lights[0] as Dictionary).get("energy", 0.0)),
 			" range=", float((lights[0] as Dictionary).get("range", 0.0)))
-	# 档位之间前 6 盏路灯必须完全同源（低档不是"另一种灯"）
+	# 档位之间前 5 盏路灯必须完全同源（低档不是"另一种灯"）
 	var same_ok := true
 	for q in range(1, 5):
 		var a: Array = (_quality_states[0] as Dictionary).get("lights", [])
 		var b: Array = (_quality_states[q] as Dictionary).get("lights", [])
-		for i in range(6):
+		for i in range(LAMP_N):
 			var la: Dictionary = a[i]
 			var lb: Dictionary = b[i]
 			if (la.get("pos", Vector3.ZERO) as Vector3).distance_to(lb.get("pos", Vector3.ONE) as Vector3) > LAMP_EPS:
@@ -228,7 +249,7 @@ func _probe_five_quality_logic() -> void:
 				same_ok = false
 			if not _float_close(float(la.get("range", 0.0)), float(lb.get("range", 0.0)), 0.001):
 				same_ok = false
-	_check(same_ok, "五档前 6 盏路灯同源（pos/energy/range 完全一致）")
+	_check(same_ok, "五档前 5 盏路灯同源（pos/energy/range 完全一致）")
 
 # ---------------- 切档不闪断 ----------------
 func _probe_quality_switch_no_flash() -> void:
@@ -251,7 +272,7 @@ func _probe_quality_switch_no_flash() -> void:
 			var active := int(st.get("active", -1))
 			min_active = mini(min_active, active)
 			var frame_ok := active >= 7 and lights.size() >= 7
-			for i in range(6):
+			for i in range(LAMP_N):
 				if not frame_ok:
 					break
 				var L: Dictionary = lights[i]
@@ -287,7 +308,7 @@ func _probe_uniforms_day_night() -> void:
 	var gc: Variant = RenderingServer.global_shader_parameter_get("g_light_count")
 	if gc == null:
 		print("  [INFO] global shader uniform 在本引擎 --script 模式下不可读（返回 null；headless 与窗口均实测）；不用参数值冒充，")
-		print("         6 盏灯是否真实参与照地改由 [PIXEL-ISOLATION] 逐盏隔离真实帧 delta 断言。")
+		print("         5 盏灯是否真实参与照地改由 [PIXEL-ISOLATION] 逐盏隔离真实帧 delta 断言。")
 		return
 	var st: Dictionary = _main.call("debug_light_state")
 	var active_real := int(round(float(gc)))
@@ -296,7 +317,7 @@ func _probe_uniforms_day_night() -> void:
 	var pos_ok := true
 	var col_ok := true
 	var night_alpha := 0.0
-	for i in range(6):
+	for i in range(LAMP_N):
 		var pv: Variant = RenderingServer.global_shader_parameter_get("g_l%d_pos" % i)
 		var cv: Variant = RenderingServer.global_shader_parameter_get("g_l%d_col" % i)
 		if not (pv is Vector4) or not (cv is Vector4):
@@ -437,23 +458,23 @@ func _window_pixel_checks() -> void:
 		print("[LIGHT] switch q=%d lamp_mean=%.4f floor=%.4f" % [q, sm, floor_ref])
 	_check(switch_ok, "窗口真实渲染切档全程灯区亮度无闪断（最小 %.4f）" % switch_min)
 
-# ---------------- 窗口模式：6 盏灯逐盏隔离，证明每盏灯都真实参与照地 ----------------
+# ---------------- 窗口模式：5 盏灯逐盏隔离，证明每盏灯都真实参与照地 ----------------
 ## 该引擎 --script 模式读不到 global shader uniform（headless 与窗口均 null），
 ## 因此不用参数值冒充：把 _lights 换成单盏灯、固定机位抓真实帧，与其关灯帧比较灯下地面亮度。
 func _window_isolation_checks() -> void:
-	print("--- [PIXEL-ISOLATION] 6 盏路灯逐盏隔离：每盏都真实参与照地 ---")
-	if _lamp_positions.size() < 6:
-		_check(false, "逐盏隔离需要 6 个路灯坐标")
+	print("--- [PIXEL-ISOLATION] 5 盏路灯逐盏隔离：每盏都真实参与照地 ---")
+	if _lamp_positions.size() < LAMP_N:
+		_check(false, "逐盏隔离需要 5 个路灯坐标")
 		return
 	_main.call("_set_time_of_day", TIME_NIGHT)
 	_main.call("_apply_quality", 2)
 	var saved_all: Array = (_main.get("_lights") as Array).duplicate(true)
 	var lamp_slice: Array = []
-	for i in range(mini(6, saved_all.size())):
+	for i in range(mini(LAMP_N, saved_all.size())):
 		var L: Dictionary = saved_all[i]
 		if String(L.get("kind", "")) == "street_lamp":
 			lamp_slice.append(L)
-	_check(lamp_slice.size() == 6, "隔离前 _lights 前 6 项均为 street_lamp（实际 %d）" % lamp_slice.size())
+	_check(lamp_slice.size() == LAMP_N, "隔离前 _lights 前 5 项均为 street_lamp（实际 %d）" % lamp_slice.size())
 	var iso_ok := 0
 	for i in range(lamp_slice.size()):
 		var lp: Vector3 = _lamp_positions[i]
@@ -486,7 +507,7 @@ func _window_isolation_checks() -> void:
 		if delta >= 0.01:
 			iso_ok += 1
 		_check(delta >= 0.01, "灯%d 单独入槽时其正下方地面显著变亮（delta=%.4f >= 0.01：该灯真实参与照地）" % [i, delta])
-	_check(iso_ok == 6, "6 盏路灯逐盏隔离均真实参与照地（%d/6）" % iso_ok)
+	_check(iso_ok == LAMP_N, "5 盏路灯逐盏隔离均真实参与照地（%d/5）" % iso_ok)
 
 func _grab(shot_name: String) -> Image:
 	await RenderingServer.frame_post_draw

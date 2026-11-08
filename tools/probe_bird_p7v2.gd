@@ -85,9 +85,10 @@ func _build_perches() -> void:
 	# 旧三参调用（probe 桩）必须仍返回 16 点（world.gd 兼容契约）
 	var world_base: Array = World._build_perches(big, dock, lh)
 	_check(world_base.size() == 16, "world 旧三参 _build_perches 仍返回 16 点（兼容，实际 %d）" % world_base.size())
-	# P7-V2：传入 6 个真实路灯数据（base/facing 与 _street_lamps 同格式），验证 lamp 栖点接入
+	# P7-V2：传入 5 个路灯数据（base/facing 与 _street_lamps 同格式；P7.1 删门前 GardenLamp1 后
+	# 生产世界只剩 5 盏），验证 lamp 栖点接入
 	var lamps: Array = []
-	for i in range(6):
+	for i in range(5):
 		var lbase := Vector3(cos(float(i) * 1.05) * 12.0, 0.0, sin(float(i) * 1.05) * 12.0)
 		var lf := Vector3(-lbase.x, 0.0, -lbase.z)
 		if lf.length_squared() < 0.000001:
@@ -99,7 +100,7 @@ func _build_perches() -> void:
 		var p0: Dictionary = p_v
 		if String(p0["kind"]) == "lamp":
 			lamp_kinds.append(String(p0["id"]))
-	_check(world_perches.size() == 22 and lamp_kinds.size() == 6, "world 接入 6 个真实路灯栖点（总 %d，lamp=%s）" % [world_perches.size(), str(lamp_kinds)])
+	_check(world_perches.size() == 21 and lamp_kinds.size() == 5, "world 接入 5 个真实路灯栖点（P7.1 删一盏；总 %d，lamp=%s）" % [world_perches.size(), str(lamp_kinds)])
 	_all_perches = world_perches.duplicate()
 	var cottage_script: GDScript = load("res://scripts/cottage.gd") as GDScript
 	if cottage_script != null and cottage_script.can_instantiate():
@@ -109,7 +110,7 @@ func _build_perches() -> void:
 		for p_v in _cot_perches:
 			_all_perches.append(p_v)
 	print("[PERCH] world=", world_perches.size(), " cottage=", _cot_perches.size(), " all=", _all_perches.size())
-	_check(world_perches.size() == 22, "world 栖枝数 16+6 lamp=22（实际 %d）" % world_perches.size())
+	_check(world_perches.size() == 21, "world 栖枝数 16+5 lamp=21（实际 %d）" % world_perches.size())
 	_check(_cottage_loaded and _cot_perches.size() >= 10, "cottage 栖枝可用（实际 %d）" % _cot_perches.size())
 
 func _mk_flock(perches: Array):
@@ -223,7 +224,7 @@ func _test_debug_interfaces() -> void:
 	var stats: Dictionary = flock.call("debug_perch_stats")
 	_check(int(stats["perch_count"]) == _all_perches.size() and int(stats["total_slots"]) == _all_perches.size(), "36 个真实栖点全部被接受（perch_count=%d total_slots=%d）" % [int(stats["perch_count"]), int(stats["total_slots"])])
 	var z0: Dictionary = stats["zones"]
-	_check(int(z0.get("lamp", 0)) == 6 and int(z0.get("porch", 0)) == 6 and int(z0.get("roof", 0)) == 8, "区域统计 lamp=6/porch=6/roof=8（实际 %s）" % str(z0))
+	_check(int(z0.get("lamp", 0)) == 5 and int(z0.get("porch", 0)) == 6 and int(z0.get("roof", 0)) == 8, "区域统计 lamp=5（P7.1 删一盏）/porch=6/roof=8（实际 %s）" % str(z0))
 	var need2 := ["perch_count", "total_slots", "used_slots", "roof_count", "ridge_count", "zones", "perched", "idle_active", "idle_counts", "chimney_evictions", "cap_fallbacks", "no_slot_skips", "night", "sim_seconds", "sim_rate", "smoke_hold", "smoke_hold_count", "hold_reason", "perches"]
 	var missing2: Array = []
 	for k in need2:

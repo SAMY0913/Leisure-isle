@@ -16,6 +16,12 @@ extends RefCounted
 ##   fov             35..65 (垂直视野角度，默认 42°；P7-V3)
 
 const PATH := "user://settings.cfg"
+## P7-FINALIZE：主路径不可写时的兜底存档（实测沙箱启动的 Godot 对 %APPDATA% 只读，error 12）。
+## 原则：主路径与既有契约完全不变；只有主路径写入失败才用兜底，读取时取两者中较新的有效文件。
+## 兜底位置：编辑器/开发运行 = 项目根目录；导出运行 = 可执行文件所在目录。
+const FALLBACK_NAME := "settings_fallback.cfg"
+static var last_save_path := ""
+static var last_load_path := ""
 
 ## 五档画质名称（isle_quality.gd 的参数与之一一对应）。
 const QUALITY_COUNT := 5
@@ -115,6 +121,50 @@ const VOLUME_KEYS := ["volume_master", "volume_ambient", "volume_birds", "volume
 
 static func defaults() -> Dictionary:
 	return DEFAULTS.duplicate(true)
+
+
+## 兜底配置文件绝对路径（仅主路径写失败时使用；正常玩家环境永远不会产生该文件）。
+static func fallback_path() -> String:
+	var base := ""
+	if OS.has_feature("editor"):
+		base = ProjectSettings.globalize_path("res://")
+	else:
+		base = OS.get_executable_path().get_base_dir().path_join("")
+	if base.is_empty():
+		return ""
+	return base.path_join(FALLBACK_NAME)
+
+
+## 选择"最新且可读"的配置文件：主文件存在且不旧于兜底 -> 主文件；否则兜底。都无 -> 主路径（load 会失败并走默认值）。
+static func resolve_read_path(path: String = PATH) -> String:
+	var fb := fallback_path()
+	var has_primary := FileAccess.file_exists(path)
+	var has_fallback := fb != "" and FileAccess.file_exists(fb)
+	if has_fallback:
+		if not has_primary:
+			return fb
+		# 主文件可能是旧版本写入后一直写失败的陈旧档；兜底更新时以兜底为准。
+		if FileAccess.get_modified_time(fb) > FileAccess.get_modified_time(path):
+			return fb
+	return path
+
+
+## 写配置到指定路径；主路径失败时自动尝试兜底并返回实际保存路径。失败返回 ""。
+static func save_with_fallback(cfg: ConfigFile, path: String = PATH) -> String:
+	var err: int = cfg.save(path)
+	if err == OK:
+		last_save_path = path
+		return path
+	var fb := fallback_path()
+	if fb != "":
+		var err2: int = cfg.save(fb)
+		if err2 == OK:
+			push_warning("[settings] primary save failed %s (error %d), fallback saved %s" % [path, err, fb])
+			last_save_path = fb
+			return fb
+		push_warning("[settings] fallback save also failed %s (error %d)" % [fb, err2])
+	push_warning("[settings] failed to save %s (error %d)" % [path, err])
+	return ""
 
 ## 当前显示器可用区域（headless 下返回 0，调用方据此走兜底逻辑）。
 static func _screen_usable_size() -> Vector2i:
@@ -344,10 +394,18 @@ static func audio_default(key: String) -> float:
 static func load_settings(path: String = PATH) -> Dictionary:
 	var out: Dictionary = DEFAULTS.duplicate(true)
 	var cfg := ConfigFile.new()
-	var loaded: int = cfg.load(path)
+	# P7-FINALIZE：主 user:// 写入失败的环境（沙箱/权限）会留下陈旧主文件 + 较新的兜底文件，
+	# 这里选"较新的有效文件"读取；正常环境永远读主文件。
+	# 显式传入 path（测试/基线快照/迁移）时严格读该文件，不参与兜底择优。
+	var read_path := path
+	if path == PATH:
+		read_path = resolve_read_path(path)
+	var loaded: int = cfg.load(read_path)
 	if loaded != OK:
+		last_load_path = ""
 		out["resolution"] = default_resolution()
 		return out
+	last_load_path = read_path
 	# 旧版单音量 -> 主音量迁移。
 	var legacy_volume: Variant = null
 	if cfg.has_section_key("settings", "volume"):
@@ -395,7 +453,9 @@ static func load_settings(path: String = PATH) -> Dictionary:
 	return out
 
 
-static func save_settings(values: Dictionary, path: String = PATH) -> void:
+## P7-FINALIZE：返回 ConfigFile.save 的错误码（OK=0）。旧调用方可继续忽略返回值；
+## 存档链路/自检必须据此判断"保存是否真的成功"，不允许静默假装已保存。
+static func save_settings(values: Dictionary, path: String = PATH) -> int:
 	var cfg := ConfigFile.new()
 	cfg.load(path)
 	var snapshot: Dictionary = values.duplicate(true)
@@ -420,6 +480,9 @@ static func save_settings(values: Dictionary, path: String = PATH) -> void:
 		cfg.set_value("settings", key, snapshot.get(key, DEFAULTS[key]))
 	# DEFAULTS 不含旧版 volume 键，需显式写出镜像值（P5 及更早版本回退读取用）。
 	cfg.set_value("settings", "volume", snapshot["volume"])
-	var err: int = cfg.save(path)
-	if err != OK:
-		push_warning("[settings] failed to save %s (error %d)" % [path, err])
+	# P7-FINALIZE：主路径不可写时回退到项目/可执行文件旁的 settings_fallback.cfg。
+	# 返回 OK 表示"确实已持久化到某个可读回的位置"；两个路径都失败才返回错误码。
+	var saved_path := save_with_fallback(cfg, path)
+	if saved_path == "":
+		return ERR_FILE_CANT_OPEN
+	return OK

@@ -57,7 +57,7 @@ func _run() -> void:
 	# --- 1. 场景结构与资源 ---
 	_ck("岛民挂在 World 节点下", _v.get_parent() != null and String(_v.get_parent().name) == "World")
 	_ck("岛民唯一（场景中仅一个 Islander）", root.find_children("Islander", "", true, false).size() == 1)
-	_ck("动画剪辑 12 个", _anim != null and _anim.get_animation_list().size() == 12,
+	_ck("动画剪辑 15 个（P6 钓鱼新增 3 个）", _anim != null and _anim.get_animation_list().size() == 15,
 		"list=%s" % [str(_anim.get_animation_list() if _anim != null else [])])
 	var stats: Dictionary = _v.get("stats")
 	_ck("模型网格预算 mesh<=16", int(stats.get("meshes", 99)) <= 16, "meshes=%d" % int(stats.get("meshes", -1)))

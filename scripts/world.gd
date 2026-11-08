@@ -82,8 +82,9 @@ static func build(parent: Node3D, include_winter: bool = false) -> Dictionary:
     var lighthouse := _lighthouse(root)
     var swing := _swing(root, big)
 
-    # P5: six street lamps along the real path curves (3 main + 3 garden).
-    # With the dock lantern and the lighthouse lamp this keeps light_sources at 8.
+    # P5: five street lamps along the real path curves (3 main + 2 garden; 门前那盏
+    # 已按 P7.1 用户反馈删除，见 _street_lamps）。
+    # With the dock lantern and the lighthouse lamp this keeps light_sources at 7.
     var lamps: Array = _street_lamps(root)
     var lamp_mats: Array = []
     var lamp_halos: Array = []
@@ -187,6 +188,14 @@ static func _prepare() -> void:
     # garden east gate -> vegetable plot
     _add_path([Vector2(-5.90, -6.20), Vector2(-5.30, -6.55),
         Vector2(FIELD_X0, -6.90)], 0.40)
+    # P7.1（用户反馈 m01190「必要的时候扩路」）：农田出口 -> 门廊草坪的接驳铺装。
+    # 原来农田支路（_yard_build_slabs）终止在 YARD_PATH_FROM，与门前主路起点之间
+    # 留了约 1.6 m 草地缺口，岛民出田后要沿花园支路绕到 garden_1/garden_0 才能回门前。
+    # 这段把缺口补上（1.63 m，与花园支路同宽 0.50），路口只走一次、不再绕圈。
+    # 追加在所有既有路径段之后，段索引 15 不影响路灯采样（0..3 / 4..10）与围栏距离用法。
+    var farm_exit_w := _yard_l2w(YARD_PATH_FROM.x, YARD_PATH_FROM.y)
+    var lawn_w := _yard_l2w(0.0, 5.95)
+    _add_path([farm_exit_w, lawn_w], 0.50)
     _bed_rects = [
         Vector4(-9.40, -8.32, -9.10, -6.70),
         Vector4(-7.33, -6.25, -9.10, -6.70),
@@ -1984,13 +1993,10 @@ static func _garden(root: Node3D) -> void:
         var gh := _h(gp.x, gp.y)
         M.cyl(node, 0.092, 0.112, 1.48, Vector3(gp.x, gh + 0.62, gp.y), M.C_WOOD_DARK, 0.0, {"outline": 0.025})
         M.sphere(node, 0.082, Vector3(gp.x, gh + 1.40, gp.y), M.C_WOOD_LIGHT, Vector3.ONE, {"outline": 0.02})
-    # --- bench just outside the south fence ---
-    var bp := Vector2(-6.15, -2.30)
-    var bh := _h(bp.x, bp.y)
-    M.box(node, Vector3(1.70, 0.10, 0.44), Vector3(bp.x, bh + 0.46, bp.y), M.C_WOOD_LIGHT, 0.0, {"outline": 0.025})
-    M.box(node, Vector3(1.70, 0.42, 0.09), Vector3(bp.x, bh + 0.72, bp.y + 0.18), M.C_WOOD, 0.0, {"outline": 0.025})
-    for sx in [-0.66, 0.66]:
-        M.box(node, Vector3(0.12, 0.42, 0.40), Vector3(bp.x + sx, bh + 0.21, bp.y), M.C_WOOD_DARK, 0.0, {"outline": 0.025})
+    # --- P7-FINALIZE：删除花圃旁（Garden 南栏外 0.65 m，世界 XZ (-6.15,-2.30)）的长椅 ---
+    # 用户明确要求移除该长椅。调查确认它没有座椅点/路径节点/碰撞/探针/文档引用，
+    # 删除只影响 Garden 子节点数与画面；门廊长椅（cottage.gd porch_bench）不属于此对象，保留。
+    # 原构建代码（座板/靠背/两条腿）已删除，周边陶盆/花圃/围栏保持原样。
     # --- terracotta pots ---
     for ps in [Vector2(-9.00, -2.52), Vector2(-8.15, -2.28), Vector2(-6.55, -2.44), Vector2(-5.52, -3.10)]:
         var pp: Vector2 = ps
@@ -3611,16 +3617,19 @@ static func _lamp_spot_score(p: Vector2) -> float:
         return -1.0e9
     return _h(p.x, p.y) - absf(clearance - 0.40) * 0.5
 
-# Six P5 street lamps along the real path curves: 3 on the main path to the dock,
-# 3 on the garden spur. Each base sits half-width + 0.25 m off the centre line and
+# Five P5 street lamps along the real path curves: 3 on the main path to the dock,
+# 2 on the garden spur. Each base sits half-width + 0.25 m off the centre line and
 # the arm is aimed at the centre line. Together with the dock lantern and the
-# lighthouse lamp this keeps world.light_sources at 8.
+# lighthouse lamp this keeps world.light_sources at 7.
+# P7.1（用户反馈 m01190）：原第 3 盏花园灯 GardenLamp1（arc 2.2 m）立在门廊台阶左前方、
+# 石基压在石板路肩上，岛民出门要绕着它走，已按用户要求删除；起始编号写死为 2/1，
+# 余下两盏仍沿用 GardenLamp2/GardenLamp3 的名字，既有引用与档位不变。
 static func _street_lamps(root: Node3D) -> Array:
     var lamps: Array = []
-    # (first segment, last segment, half width, arc positions, name prefix)
+    # (first segment, last segment, half width, arc positions, name prefix, first number)
     var plans: Array = [
-        [0, 3, 0.31, [2.4, 9.6, 16.0], "PathLamp"],
-        [4, 10, 0.25, [2.2, 8.4, 14.6], "GardenLamp"],
+        [0, 3, 0.31, [2.4, 9.6, 16.0], "PathLamp", 1],
+        [4, 10, 0.25, [8.4, 14.6], "GardenLamp", 2],
     ]
     for plan in plans:
         var spec: Array = plan
@@ -3628,7 +3637,7 @@ static func _street_lamps(root: Node3D) -> Array:
         var half_w: float = spec[2]
         var arcs: Array = spec[3]
         var prefix := String(spec[4])
-        var idx := 0
+        var idx: int = int(spec[5]) - 1
         for arc in arcs:
             var sample: Array = _sample_path(pts, float(arc))
             var centre: Vector2 = sample[0]
@@ -4827,8 +4836,10 @@ static func _yard_build_fence(node: Node3D) -> Dictionary:
         var spans2 := maxi(1, int(round(L2 / YARD_FENCE_PITCH)))
         var pts: Array = []
         for k in range(spans2 + 1):
-            if k == 0 and e > 0:
-                continue
+            # P7-FINALIZE 围栏断口修复：旧实现把"柱点去重"（k==0 且 e>0 跳过）误用到横杆采样，
+            # 导致 E1/E2/E3 每段都少了从角柱到第一个采样点的第一跨（0.6775 m，两道横杆，共 6 根）。
+            # 横杆必须包含每条边的起点：与上一条边的终点重合时 seg_len≈0 会被下方 <0.10 m 过滤掉，
+            # 不会产生重复横杆；包含后四角/四边横杆首尾相接，run-time rail_count 54 -> 60。
             var t2 := float(k) / float(spans2)
             var p2 := a2.lerp(b2, t2)
             if e == 0 and absf(p2.x - c.x) < gate_half - 0.005:

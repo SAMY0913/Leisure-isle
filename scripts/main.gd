@@ -95,6 +95,50 @@ var _grass_season_mats: Array = []  # 草材质 + 原始 tint（与画质草密�
 var _season_apply_count := 0
 var _winter_bloom: Dictionary = {}             # P8.1 冬季屋前红花（world 提供 stems/heads/base；只在冬季权重高时出现）
 
+# ---- 全岛共享库存（P4：唯一运行时物品库存；由本文件单次初始化并注入 IsleFarm） ----
+const INVENTORY_SCRIPT := preload("res://scripts/isle_inventory.gd")
+## P7-FINALIZE：最小世界状态存档（共享库存 + 九格农田；真实时间农作/三次收获所需）。
+const SAVE_SCRIPT := preload("res://scripts/isle_save.gd")
+## P6：鱼类目录（纯数据/纯函数；钓鱼抽鱼与 HUD/背包显示名统一走这一份）。
+const FISH_SCRIPT := preload("res://scripts/isle_fish.gd")
+var _inventory: Object = null
+var _inventory_grant_count := 0   # 诊断用：初始种子实际发放次数（正常恒为 0 或 1）
+# ---- P7-FINALIZE 世界状态持久化（仅正式游戏；自动化/探针不读写玩家存档）----
+var _automation_run := false          # 当前运行是否为 --shots/--selftest/--perf/... 自动化
+var _world_save_enabled := false      # 正式游戏（非自动化、非 --script 探针）才启用
+var _world_save_delay := -1.0         # 变更后的延迟落盘（秒）
+var _world_save_auto := 30.0          # 周期自动落盘（秒）
+var _world_save_count := 0            # 本次运行成功写盘次数（诊断）
+var _world_save_last: Dictionary = {} # 最近一次写盘结果（诊断）
+var _world_loaded_at_start := false   # 启动时是否成功读档
+var _exit_saved := false              # 退出落盘去重
+
+# ---- 每日巡田调度（P4：只由 _sim_seconds 的"游戏日 + 08:00"驱动，一个游戏日最多一轮） ----
+const PATROL_HOUR := 8.0            # 每天 08:00 检查当日天气并决定是否巡田
+const PATROL_START_WINDOW := 7200.0 # 08:00 起 2 个游戏小时内可重试启动（睡醒/路径等），之后记 start_failed
+const PATROL_RETRY_REAL := 0.5      # 启动重试的真实帧节流（只影响重试频率，不是游戏日历）
+var _patrol_handled_day := -2147483647   # 已处理过的游戏日序号（floor(_sim_seconds/86400)）
+var _patrol_phase := "idle"   # idle|starting|running|completed|weather_aborted|weather_skip|start_failed|day_rewound
+var _patrol_last: Dictionary = {}
+var _patrol_retry_timer := 0.0
+var _patrol_start_count := 0   # 诊断：本次运行实际启动的巡田轮数（同一游戏日正常 ≤ 1）
+var _patrol_deadline := 0.0    # 当天允许启动巡田的当日秒上限（08:00+窗口；若初始化已晚于 08:00 则从看到时刻起算）
+var _patrol_deadline_day := -2147483647
+# P7：时间回退守卫。_patrol_handled_day 是"已处理游戏日"的单调高水位，回退时不得下调
+# （下调会让"倒带→重播"再次进入新游戏日分支，同一游戏日重复巡田/重复播种），
+# 这里单独记录本次回退落到的游戏日，保证 day_rewound 只报告/取消一次。
+var _patrol_rewind_day := -2147483647
+# ---- P6 钓鱼（权威状态在岛民状态机；main 只负责发起/入账/HUD 投影/结束提示）----
+var _fishing_seen := false
+var _fishing_rounds_seen := 0
+var _fish_discovered: Dictionary = {}   # fish_id -> true（仅用于首次发现提示，不是库存）
+
+# ---- 农田（P9/P3：IsleFarm 是唯一权威状态，IsleFarmView 只读它生成作物模型） ----
+const FARM_VIEW_INTERVAL := 0.20   # 视觉刷新节流（状态未变时 sync() 不做任何换 mesh 的工作）
+var _farm: Object = null
+var _farm_view: Node3D = null
+var _farm_view_timer := 0.0
+
 # ---- 天气（P8 阶段 5：独立确定性状态机；只读 _sim_seconds，不新建时钟） ----
 const ISLE_WEATHER := preload("res://scripts/isle_weather.gd")
 const WEATHER_STATE_INTERVAL := 0.10   # 天气 → HUD/视觉参数的刷新节流（10 Hz；权重变化慢，无需每帧）
@@ -368,6 +412,9 @@ var _photo_count := 0
 var _last_photo := ""
 var _settings_save_delay := -1.0
 
+# ---- P7-FINALIZE：巡田随机顺序 RNG（每轮重新洗牌；测试可注入固定种子）----
+var _patrol_rng := RandomNumberGenerator.new()
+
 # ============================================================
 # 启动
 # ============================================================
@@ -405,6 +452,16 @@ func _ready() -> void:
 	# 读取用户设置：菜单、时钟、画质、音量、窗口模式共用同一份数据。
 	# 自动化运行（截图/性能/自测/转场）使用默认设置，保证结果可复现且不受玩家配置影响。
 	var automation := _shots or _perf or _selftest or _transition or _p7shots or _p8shots or _p8moon or _p8seasons or _p8weather or _p8wfx or _p8eco or _p8perf or _p81treebird or _p81white or _p81snow or _p81wind or _p81windperf or _p82windcpu
+	_automation_run = automation
+	# P7-FINALIZE：世界存档只在"正式游戏"启用。--script 是探针/测量入口（会手动挂载主场景），
+	# 与自动化同样保持确定性，绝不读写玩家存档，避免测试互相污染或清掉玩家进度。
+	var script_mode := "--script" in OS.get_cmdline_args() or "--script" in OS.get_cmdline_user_args()
+	_world_save_enabled = (not automation) and (not script_mode)
+	# P7-FINALIZE 测试钩子（仅存档 e2e 探针使用）：--p7worldsave 强制启用世界存档，
+	# 让 --script 探针也能走与正式游戏完全相同的 load/save 代码路径（存档路径用隔离 APPDATA）。
+	if "--p7worldsave" in OS.get_cmdline_args() or "--p7worldsave" in OS.get_cmdline_user_args():
+		_world_save_enabled = true
+	_patrol_rng.randomize()
 	_settings = Settings.defaults() if automation else Settings.load_settings()
 	_setup_time_api()
 	_time_source = String(_settings.get("time_source", "sim"))
@@ -434,6 +491,14 @@ func _ready() -> void:
 	_build_ui()
 	_setup_audio()
 	_apply_user_settings(false)
+	# P7-FINALIZE（D §1.4 B3/B2）：正式游戏启动完成"读取→应用"后立即把规范化后的设置写回一次。
+	# 作用：旧版 settings.cfg（day_length=480 / fullscreen 无 window_mode / 无 fov、weather_* 键）
+	# 在首次启动即被迁移成当前 schema，避免文件内容与实际生效值长期不一致；
+	# 同时这也是"保存失败不再静默"的第一次真实尝试（失败会 push_warning 并在保存链路暴露）。
+	if _world_save_enabled:
+		var settings_err: int = Settings.save_settings(_settings)
+		if settings_err != OK:
+			push_warning("[settings] startup normalize save failed (error %d)" % settings_err)
 	_update_lighting()
 	# P7-V3.2 开发测量模式：--scale-debug 时挂 T1 ScaleDebugOverlay（1 m 立方 / 1.50 m 人形 /
 	# 标尺 / 房屋层高标注），只建一次；默认无参数完全不创建，零常驻开销。
@@ -676,6 +741,8 @@ func _build_world() -> void:
 	# P8.1：游戏内启用冬季裸枝栖点（world 27 + cottage 14 = 41）；probe 直接 build() 仍为旧 36 点契约。
 	_world = IsleWorld.build(holder, true)
 	_winter_bloom = _world.get("winter_bloom", {})
+	# P3：九格农田视觉接在 P2-B 已建好的门前土地上（不重建场地，只挂 9 个作物锚点）。
+	_setup_farm()
 	_cottage = IsleCottage.build(holder)
 	_window_mats = _cottage["window_mats"]
 	_window_halos = _cottage["window_halos"]
@@ -732,6 +799,12 @@ func _build_world() -> void:
 	# P7-V4：岛民与场景同父（World），复用小区块合批与光照收集；只创建一次，运行期不重建。
 	if not _no_villager:
 		_villager = ISLE_VILLAGER.build(holder, _cottage)
+	# P7-FINALIZE：把真实秋千吊点/座椅注入岛民（供"坐秋千"生活动作同步摆角）。
+	# 必须在 _world（第 742 行已 build）与岛民都创建之后；has_method 守卫保证无岛民模式可运行。
+	var swing_pivot_facts := _world.get("swing", null) as Node3D
+	if swing_pivot_facts != null and _villager != null and _villager.has_method("set_swing_target"):
+		var swing_seat_facts: Node3D = swing_pivot_facts.find_child("SwingSeat", true, false) as Node3D
+		_villager.call("set_swing_target", swing_pivot_facts, swing_seat_facts)
 	# P8 四季：建立季节视觉条目（复制材质，避免污染 isle_math 的全局材质缓存）。
 	_setup_season_visuals()
 	# P8.1-03：室内体积 uniform + 材质类别接收系数（必须在季节材质复制之后，才能覆盖那几份副本）。
@@ -884,6 +957,9 @@ func _build_ui() -> void:
 	# P5：T 面板的时间来源切换与设置菜单共用同一状态源（main._settings["time_source"]）
 	if _hud.has_signal("time_mode_requested"):
 		_hud.connect("time_mode_requested", _on_time_mode_requested)
+	# P6：钓鱼按钮（玩家正式入口；与 B 键背包互不冲突，也不新增键盘快捷键）
+	if _hud.has_signal("fishing_toggle_requested"):
+		_hud.connect("fishing_toggle_requested", _on_fishing_toggle)
 	_menu = IsleMenu.new()
 	_menu.name = "Menu"
 	_menu.layer = 10
@@ -1419,6 +1495,9 @@ const WIND_SWING_TR0 := 0.35      # 秋千开始明显受风的风力阈值
 const WIND_SWING_TR1 := 0.95      # 秋千完全受迫的风力
 const SWING_W0 := 1.3707          # 秋千弹簧固有角频率（周期≈4.585s，贴合旧 idle 观感）
 const SWING_ZETA_C := 0.7676      # 阻尼系数（ζ≈0.56：有回摆但不上晃）
+# P7-FINALIZE：无风被动摆幅（单侧最大偏转角，单位 rad；见 swing_idle_rot）。
+const SWING_IDLE_PITCH := 0.122   # 7.0° 前后摆（相对自然悬垂）
+const SWING_IDLE_ROLL := 0.035    # 2.0° 侧向
 
 ## 阵风包络（S4）：与风同向叠加；tr=0 时恒 1，保证无风旧轨迹严格回归（S1）。
 static func wind_gust(t: float, tr: float) -> float:
@@ -1494,9 +1573,14 @@ static func swing_wind_targets_into(out: Dictionary, wv: float, wd: Vector2, t: 
 	out["gust"] = gust
 	out["tr"] = tr
 
-## 秋千 idle 基础姿态：与 P8.1-04 旧公式逐字符一致，S1 回归的基准。
+## 秋千"无风"基础姿态（P7-FINALIZE）：只保留轻微的被动摆动，不再像强风一样大幅荡起。
+## 用户要求：无风时最大摆角约 5–10°（相对自然悬垂位置的单侧偏转角）。
+##   前/后摆（绕 X，pitch）幅度 0.122 rad ≈ 7.0°
+##   侧向（绕 Z，roll）  幅度 0.035 rad ≈ 2.0°
+## 合成最大倾斜 ≈ 7.3°（在 5–10° 目标带内；风起时由 swing_wind_targets 平滑叠加）。
+## 角度定义：rotation.x / rotation.z 即绕吊点的偏转角，0 = 自然悬垂。
 static func swing_idle_rot(t: float) -> Vector2:
-	return Vector2(sin(t * 1.15) * 0.42, sin(t * 0.83 + 0.8) * 0.06)
+	return Vector2(sin(t * 1.15) * SWING_IDLE_PITCH, sin(t * 0.83 + 0.8) * SWING_IDLE_ROLL)
 
 ## 半隐式欧拉弹簧-阻尼一步（S1/S4）：返回 [新角度, 新角速度]。
 static func swing_spring_step(x: float, v: float, target: float, dt: float) -> Array:
@@ -1783,6 +1867,10 @@ func _on_weather_auto_requested(enabled: bool) -> void:
 	_weather_available_types()
 	_settings_save_delay = 0.25 if not (_selftest or _perf or _shots or _transition) else -1.0
 	_update_weather(0.0, true)
+	# P7-FINALIZE（D §1.4 B4）：天气状态不在设置菜单里编辑，设置菜单的 _values 会过期；
+	# 这里把权威 _settings 推回菜单，避免玩家下次拖任意滑条时把旧天气值合并覆盖回来。
+	if _menu != null:
+		_menu.set_settings(_settings)
 	_hud.show_toast("天气：自动" if enabled else "天气：手动 · %s" % String(_weather_state.get("label", "")))
 
 ## 天气面板：手动选择类型。只接受当前季节的合法选项（雪仅冬季、台风主要夏秋），
@@ -1800,6 +1888,8 @@ func _on_weather_type_requested(type_id: String) -> void:
 	_weather.set_manual_type(type_id)
 	_settings_save_delay = 0.25 if not (_selftest or _perf or _shots or _transition) else -1.0
 	_update_weather(0.0, true)
+	if _menu != null:
+		_menu.set_settings(_settings)
 	_hud.show_toast("天气：%s" % String(ISLE_WEATHER.TYPE_LABELS.get(type_id, type_id)))
 
 # ============================================================
@@ -1818,8 +1908,34 @@ func _tick(delta: float) -> void:
 		if _settings_save_delay <= 0.0:
 			_settings_save_delay = -1.0
 			Settings.save_settings(_settings)
-	if _mode == Mode.PLAYING and (not _paused or _time_source == "real"):
+	# P7-FINALIZE：世界状态（库存+农田）延迟落盘 + 30s 周期自动落盘。
+	# 正式游戏才启用；自动化/探针不写玩家存档。
+	if _world_save_enabled:
+		if _world_save_delay >= 0.0:
+			_world_save_delay -= delta
+			if _world_save_delay <= 0.0:
+				_world_save_delay = -1.0
+				_save_game_state("deferred")
+		_world_save_auto -= delta
+		if _world_save_auto <= 0.0:
+			_world_save_auto = 30.0
+			_save_game_state("auto")
+	# P7（C-01）：_sim_delta 只在真正推进时更新；暂停/菜单/非游玩阶段必须显式清零，
+	# 否则灯塔光束（main.gd:_update_lighthouse_beam）和远海等待（_update_boat OFFSCREEN_WAIT）
+	# 会继续消费上一帧的陈旧增量，暂停期间世界仍在前进。
+	var _sim_advancing: bool = _mode == Mode.PLAYING and (not _paused or _time_source == "real")
+	if _sim_advancing:
 		_advance_sim(delta)
+	else:
+		_sim_delta = 0.0
+	# P3：农田成长时钟与"游戏模拟时钟"分离（P7-FINALIZE 真实时间农作）：
+	#   正式游戏 clock_mode="real"，每帧注入现实帧时长，暂停/菜单/时间跳转/day_length 都不影响；
+	#   探针/自动化保持 clock_mode="sim"，仍注入 _sim_seconds 以复用既有可控测试时钟。
+	if _farm != null:
+		if String(_farm.call("clock_mode_name")) == "real":
+			_farm.call("advance_realtime", delta)
+		else:
+			_farm.advance_to(_sim_seconds)
 	if _mode == Mode.MENU:
 		_menu_theta += delta * 0.035
 		_movie_theta = lerp_angle(_movie_theta, _menu_theta, 1.0 - exp(-2.0 * delta))
@@ -1834,13 +1950,410 @@ func _tick(delta: float) -> void:
 	_update_weather_fx(delta)
 	# P8 阶段 4：季节是日历（_sim_seconds）的只读投影；视觉属性和权威时间同一帧刷新。
 	_update_season(delta)
+	# P3：作物视觉同样只是权威状态的投影（节流刷新，状态不变则不产生任何变更）。
+	_update_farm(delta)
+	# P4：每日巡田调度（放在天气之后，用当帧权威天气；放在岛民 tick 之前，当天启动当帧生效）。
+	_update_farm_patrol(delta)
 	# P7-V4：岛民 tick 放在光照之后（当帧 _astro/_sun_alt/_events 已刷新），用真实帧 delta；
 	# 世界时间/暂停/时间来源全部由 ctx 注入，角色自身不建时钟。
 	if _villager != null:
 		_villager.call("sim_tick", delta, _villager_ctx())
 	_update_lighthouse_beam(delta)
 	_update_smoke_clock()
+	# P6：钓鱼结束/中断的收尾提示（状态推进全部在岛民状态机内，这里只消费结果）。
+	_update_fishing()
 	_update_ui(delta)
+
+# ============================================================
+# P3：农田视觉（权威数据 = IsleFarm，可见表现 = IsleFarmView）
+# ============================================================
+func _setup_farm() -> void:
+	var facts: Dictionary = _world.get("front_yard", {})
+	if facts.is_empty():
+		push_warning("P3: world facts 缺少 front_yard，农田视觉未接入")
+		return
+	var fy: Node3D = facts.get("node", null) as Node3D
+	if fy == null:
+		push_warning("P3: front_yard facts 缺少 node，农田视觉未接入")
+		return
+	# 用 preload 而非全局 class 缓存：headless --script 首次运行时 class_name 表可能尚未刷新。
+	const FARM_SCRIPT := preload("res://scripts/isle_farm.gd")
+	const FARM_VIEW_SCRIPT := preload("res://scripts/isle_farm_view.gd")
+	# 数据层：唯一权威状态。库存必须先于农田创建并注入，否则播种/采收只能返回 no_inventory。
+	# P4：正式运行环境注入全岛共享库存；P1 的"未注入即可读"语义保留（探针可传 null）。
+	# P7-FINALIZE：正式游戏先尝试读档；读档成功不再发初始种子。探针/自动化保持旧流程。
+	var grant := not _world_save_enabled
+	_setup_inventory(grant)
+	_farm = FARM_SCRIPT.new(_inventory)
+	if _world_save_enabled:
+		# 生产模式：农田成长时钟 = 现实经过时间（与 _sim_seconds / day_length 解耦）。
+		_farm.call("set_clock_mode", "real")
+		_world_loaded_at_start = _load_game_state()
+		if not _world_loaded_at_start:
+			# 新游戏：发放初始种子并立即落盘，保证下次启动读取到同一份世界状态（不会重复发放）。
+			if bool(_inventory.call("grant_starting_seeds")):
+				_inventory_grant_count += 1
+			else:
+				push_warning("P7: 新游戏初始种子发放失败")
+			_save_game_state("new_game")
+	var view: Node3D = FARM_VIEW_SCRIPT.new()
+	view.name = "FarmCropView"
+	fy.add_child(view)
+	if view.setup(_farm, facts):
+		_farm_view = view
+		_farm_view_timer = FARM_VIEW_INTERVAL
+	else:
+		view.queue_free()
+		_farm_view = null
+		push_warning("P3: IsleFarmView.setup 失败（facts 槽位不完整）")
+
+
+func _update_farm(delta: float) -> void:
+	if _farm_view == null:
+		return
+	_farm_view_timer += delta
+	if _farm_view_timer < FARM_VIEW_INTERVAL:
+		return
+	_farm_view_timer = 0.0
+	_farm_view.sync()
+
+
+# ============================================================
+# P4：全岛共享库存（单次初始化 + 注入农田）
+# ============================================================
+## 创建并初始化共享库存；重复调用返回同一实例，不会重复发放初始种子。
+## 正式初始化只发生在 _build_world -> _setup_farm 中；探针可通过 inventory() 只读取用。
+## grant=false 用于"正式游戏先读档、成功则不发种子"的流程（P7-FINALIZE）。
+func _setup_inventory(grant: bool = true) -> Object:
+	if _inventory != null:
+		return _inventory
+	_inventory = INVENTORY_SCRIPT.new()
+	if grant:
+		if _inventory.grant_starting_seeds():
+			_inventory_grant_count += 1
+		else:
+			push_warning("P4: 共享库存初始种子发放失败")
+	return _inventory
+
+
+# ============================================================
+# P7-FINALIZE：最小世界状态持久化（库存 + 农田；真实时间农作）
+# ============================================================
+## 启动时读档；成功则恢复库存/九格/收获次数，并按现实离线秒数补长生长期。
+## 返回是否成功。失败（无存档/版本不符/数据非法）时不改动任何状态，调用方走新游戏。
+func _load_game_state() -> bool:
+	if _inventory == null or _farm == null:
+		return false
+	var res: Dictionary = SAVE_SCRIPT.load_into(_inventory, _farm)
+	if not bool(res.get("ok", false)):
+		print("[SAVE] load skipped reason=%s" % String(res.get("reason", "")))
+		return false
+	print("[SAVE] loaded offline=%.1fs saved_unix=%.0f farm_clock=%.1f inv_items=%d" % [
+		float(res.get("offline_seconds", 0.0)), float(res.get("saved_unix", 0.0)),
+		float(res.get("farm_clock", 0.0)), (res.get("inventory", {}) as Dictionary).size()])
+	return true
+
+
+## 立即落盘（正式游戏才生效）。tag 只用于日志/诊断。
+func _save_game_state(tag: String = "") -> bool:
+	if not _world_save_enabled or _inventory == null or _farm == null:
+		return false
+	var res: Dictionary = SAVE_SCRIPT.save_state(_inventory, _farm)
+	_world_save_last = res
+	if bool(res.get("ok", false)):
+		_world_save_count += 1
+		if tag != "auto":
+			print("[SAVE] saved tag=%s count=%d farm_clock=%.1f" % [
+				tag, _world_save_count, float(res.get("farm_clock", 0.0))])
+		return true
+	push_warning("[SAVE] save failed tag=%s reason=%s" % [tag, String(res.get("reason", ""))])
+	return false
+
+
+## 标记世界状态有变更，延迟落盘（合并连续事务，避免每次收获都写盘）。
+func _mark_world_dirty(delay: float = 2.0) -> void:
+	if not _world_save_enabled:
+		return
+	_world_save_delay = maxf(_world_save_delay, delay)
+
+
+## 探针只读入口：存档是否启用 / 最近一次写盘结果 / 启动是否读档成功。
+func world_save_state() -> Dictionary:
+	return {
+		"enabled": _world_save_enabled,
+		"automation": _automation_run,
+		"loaded_at_start": _world_loaded_at_start,
+		"save_count": _world_save_count,
+		"last": _world_save_last.duplicate(true),
+		"farm_clock_mode": String(_farm.call("clock_mode_name")) if _farm != null else "",
+		"farm_clock": float(_farm.call("now")) if _farm != null else 0.0,
+	}
+
+
+## P7-FINALIZE：退出时落盘（窗口关闭 / Esc 菜单退出 / 引擎销毁统一覆盖）。
+## 正式游戏：保存设置偏好 + 世界状态；自动化/探针不写玩家数据。
+func _notification(what: int) -> void:
+	if what != NOTIFICATION_WM_CLOSE_REQUEST and what != NOTIFICATION_EXIT_TREE:
+		return
+	if _exit_saved:
+		return
+	_exit_saved = true
+	# 退出时若仍有未确认的显示变更：先回退（菜单会 emit 旧值 → 合回 _settings），再落盘。
+	if _menu != null and _menu.has_method("display_confirm_pending") \
+			and bool(_menu.call("display_confirm_pending")) and _menu.has_method("_cancel_res_confirm"):
+		_menu.call("_cancel_res_confirm")
+	if not _automation_run and not _settings.is_empty():
+		Settings.save_settings(_settings)
+	if _world_save_enabled:
+		_save_game_state("exit")
+
+
+## P4 探针只读入口：正式玩法不使用（返回共享库存实例本身，不改变状态）。
+func inventory() -> Object:
+	return _inventory
+
+
+## 诊断用：初始种子发放次数（重复初始化不得大于 1）。
+func inventory_grant_count() -> int:
+	return _inventory_grant_count
+
+
+## P5：背包面板的只读快照。数量唯一来源仍是共享库存；未初始化时返回空表。
+func _inventory_snapshot() -> Dictionary:
+	if _inventory == null:
+		return {}
+	return _inventory.item_snapshot()
+
+
+## ============================================================
+# P4：每日巡田调度（权威时间 = _sim_seconds；一个游戏日最多一轮）
+# ============================================================
+## 每个游戏日的第一帧判断 08:00（或初始化时已晚于 08:00 的当下），
+## 天气允许则让唯一岛民按九格路线实际走到每一格；雨雪天不启动；当天只处理一次。
+## 自动截图/自检/性能模式不启用（保持既有确定性基线），正式运行与 P4 探针不受影响。
+func _update_farm_patrol(delta: float) -> void:
+	if _farm == null or _villager == null:
+		return
+	if _shots or _selftest or _perf:
+		return
+	# 菜单/标题阶段不启动巡田：此时玩家还没进入游戏，岛民仍在待机取景中。
+	if _mode != Mode.PLAYING:
+		return
+	# P7（C-02）：暂停期间不启动/不重试巡田。暂停是"世界冻结"，不应该在冻结时刻
+	# 产生新的活动状态；恢复后（下一帧）照常按 08:00/天气/窗口重新判断。
+	if _paused:
+		return
+	# P6：钓鱼占用岛民期间不启动/不重试巡田——一个岛民只能有一个有效活动意图；
+	# 不标记"当天已处理"，钓鱼结束后窗口内仍可正常补跑当天的巡田。
+	if bool(_villager.call("fishing_active")):
+		return
+	var day := int(floor(_sim_seconds / 86400.0))
+	var secs := fposmod(_sim_seconds, 86400.0)
+	if day < _patrol_handled_day:
+		# 时间回退：不自动补跑当天，避免"倒带→重播→重复播种/重复发奖"。
+		# P7（A-FARM-01）：_patrol_handled_day 是单调高水位，回退时绝不下调。
+		# 旧实现把高水位降到 day，倒带跨过 00:00 再前进到同一游戏日时，
+		# 新游戏日分支会认为"这天还没巡过"而第二次启动巡田，直接违反"一个游戏日最多一轮"。
+		# 现在只用 _patrol_rewind_day 记录本次回退落到的游戏日：day_rewound 的取消/上报每段回退一次。
+		if _patrol_rewind_day != day:
+			_patrol_rewind_day = day
+			_patrol_deadline_day = day
+			_patrol_deadline = maxf(secs, PATROL_HOUR * 3600.0) + PATROL_START_WINDOW
+			_patrol_phase = "day_rewound"
+			_patrol_last = {"outcome": "day_rewound", "day": day, "sim_seconds": _sim_seconds}
+			if bool(_villager.call("farm_patrol_active")):
+				_villager.call("cancel_farm_patrol", "day_rewound")
+			print("[P4] patrol day rewind -> hold day=%d handled=%d sim=%.0f" % [day, _patrol_handled_day, _sim_seconds])
+		return
+	if day == _patrol_handled_day:
+		_patrol_rewind_day = -2147483647
+		_sync_farm_patrol_phase()
+		return
+	# ---- 新游戏日 ----
+	_patrol_rewind_day = -2147483647
+	if _patrol_deadline_day != day:
+		_patrol_deadline_day = day
+		_patrol_deadline = (PATROL_HOUR * 3600.0 if secs < PATROL_HOUR * 3600.0 else secs) + PATROL_START_WINDOW
+	if bool(_villager.call("farm_patrol_active")):
+		# 跨日时仍在巡田（最快日程档 60s/日 会自然跨过 00:00；探针 J12 覆盖）：
+		# 取消后必须同步投影 phase/last，否则 farm_patrol_state() 会在新日 08:00 前
+		# 一直谎报 running，与被取消的真实状态不一致（旧实现只取消、不投影）。
+		_villager.call("cancel_farm_patrol", "new_day")
+		_patrol_last = _villager.call("farm_patrol_last")
+		_patrol_phase = "cancelled"
+		print("[P4] patrol new_day cancel day=%d visited=%d sim=%.0f" % [
+			day, int((_patrol_last.get("results", []) as Array).size()), _sim_seconds])
+	if secs < PATROL_HOUR * 3600.0:
+		return
+	_patrol_retry_timer -= delta
+	if _patrol_retry_timer > 0.0:
+		return
+	_patrol_retry_timer = PATROL_RETRY_REAL
+	# 1) 天气否决（只读当帧权威天气状态，不看粒子/天空/截图）
+	var precip := String(_weather_state.get("precip_type", "none"))
+	if precip == "rain" or precip == "snow":
+		_patrol_handled_day = day
+		_patrol_phase = "weather_skip"
+		_patrol_last = {"outcome": "weather_skip", "reason": precip, "day": day, "sim_seconds": _sim_seconds}
+		print("[P4] patrol weather_skip day=%d precip=%s sim=%.0f" % [day, precip, _sim_seconds])
+		return
+	# 2) 启动窗口（睡醒/路径等重试机会耗尽后放弃当天，绝不无限等待）
+	if secs > _patrol_deadline:
+		_patrol_handled_day = day
+		_patrol_phase = "start_failed"
+		_patrol_last = {"outcome": "start_failed", "reason": "start_window_expired", "day": day, "sim_seconds": _sim_seconds}
+		print("[P4] patrol start_failed day=%d reason=window sim=%.0f" % [day, _sim_seconds])
+		return
+	# 3) 构建九格路线并交给岛民（岛民到点后才读农田权威状态并执行唯一主操作）
+	var route: Array = _build_farm_patrol_route()
+	if route.is_empty():
+		_patrol_handled_day = day
+		_patrol_phase = "start_failed"
+		_patrol_last = {"outcome": "start_failed", "reason": "no_route", "day": day, "sim_seconds": _sim_seconds}
+		return
+	var season := _farm_season_id()
+	if bool(_villager.call("begin_farm_patrol", route, _farm, season)):
+		_patrol_handled_day = day
+		_patrol_phase = "running"
+		_patrol_start_count += 1
+		_patrol_last = {"outcome": "running", "day": day, "season": season,
+			"route_size": route.size(), "started_sim": _sim_seconds}
+		print("[P4] patrol start day=%d season=%s slots=%d sim=%.0f" % [day, season, route.size(), _sim_seconds])
+	else:
+		# 岛民还在睡/刚被打断等：保持"当天未处理"，窗口内下一帧重试；绝不重复建任务。
+		_patrol_phase = "starting"
+
+
+## 同步岛民侧的结束状态（主控只投影结果，不复制农田状态）。
+func _sync_farm_patrol_phase() -> void:
+	if _patrol_phase != "running" and _patrol_phase != "starting" and _patrol_phase != "returning":
+		return
+	var prev_phase := _patrol_phase
+	if bool(_villager.call("farm_patrol_active")):
+		if String(_villager.call("farm_patrol_phase")) == "returning":
+			_patrol_phase = "returning"
+		elif _patrol_phase == "starting":
+			_patrol_phase = "running"
+		return
+	var last: Dictionary = _villager.call("farm_patrol_last")
+	if last.is_empty():
+		return
+	_patrol_last = last
+	match String(last.get("outcome", "")):
+		"done":
+			_patrol_phase = "completed"
+		"weather_returned", "weather_aborted":
+			_patrol_phase = "weather_aborted"
+		"cancelled":
+			_patrol_phase = "cancelled"
+		_:
+			_patrol_phase = "failed"
+	# P7-FINALIZE：巡田事务（播种/收获/返种）已提交 -> 世界状态有变更，合并落盘。
+	# 只在本帧确实发生 running->terminal 迁移时标脏，避免每帧重复。
+	if prev_phase != _patrol_phase:
+		_mark_world_dirty()
+	print("[P4] patrol day_done day=%d outcome=%s phase=%s visited=%d" % [
+		_patrol_handled_day, String(last.get("outcome", "")), _patrol_phase,
+		(last.get("results", []) as Array).size()])
+
+
+func _farm_season_id() -> String:
+	var cal: Dictionary = ISLE_CALENDAR.parts(_sim_seconds)
+	return str(cal.get("season_id", "spring"))
+
+
+## 九格路线：来自 world facts（P2-B 权威几何）+ 岛民走道图节点。
+## 顺序：门内→北带西端→北带中→北带东端→东带→南带东→南带中→南带西→西带→中心格；
+## P4-CLOSE：中心格（slot 4）不再记为空节点。岛民先走到北排中间苗床的走道边
+## （yard_bed_step），再从床沿上台、沿床顶走到 yard_slot_4 站位——该站位距中心格
+## 格心 1.235 m（≤ P4 的 1.30 m 交互臂展），且九格之间 0.5 m 草坪缝仍然不可通行。
+func _build_farm_patrol_route() -> Array:
+	var facts: Dictionary = _world.get("front_yard", {})
+	var slots: Array = facts.get("slots", [])
+	if slots.size() != 9:
+		push_warning("P4: front_yard facts 槽位数不是 9，巡田路线未构建")
+		return []
+	var by_index: Dictionary = {}
+	for row in slots:
+		var d: Dictionary = row
+		by_index[int(d.get("index", -1))] = d
+	var node_of := {
+		0: "yard_slot_0", 1: "yard_gate_in", 2: "yard_slot_2",
+		3: "yard_slot_3", 4: "yard_slot_4", 5: "yard_slot_5",
+		6: "yard_slot_6", 7: "yard_slot_7", 8: "yard_slot_8",
+	}
+	# P7-FINALIZE：每轮巡田重新洗牌九格访问顺序（用户要求"真正随机"，不得固定 0→1→2… 环绕）。
+	# 约束：每轮每个格最多处理一次（洗牌不会重复/遗漏）；岛民仍按路径图真实走到每个操作点。
+	# 洗牌只决定访问顺序，不改变 slot→节点映射，也不改变每格单主操作语义。
+	var order: Array = _shuffled_patrol_order()
+	var nodes: Dictionary = {}
+	if _villager != null:
+		nodes = (_villager.get("graph") as Dictionary).get("nodes", {})
+	var route: Array = []
+	for idx in order:
+		var row: Dictionary = by_index.get(int(idx), {})
+		if row.is_empty():
+			push_warning("P4: 农田 facts 缺少槽位 %d" % int(idx))
+			continue
+		var nid := String(node_of.get(int(idx), ""))
+		var point: Variant = null
+		if nid != "":
+			if nodes.has(nid):
+				point = (nodes[nid] as Dictionary)["pos"]
+			else:
+				push_warning("P4: 岛民走道图缺少节点 %s，槽位 %d 记为不可达" % [nid, int(idx)])
+				nid = ""
+		var w2: Vector2 = row.get("world", Vector2.ZERO)
+		var deck := float(row.get("deck", 0.0))
+		route.append({"slot": int(idx), "node": nid, "point": point, "face": Vector3(w2.x, deck, w2.y)})
+	return route
+
+
+## P7-FINALIZE：生成一轮随机访问顺序（Fisher–Yates）。
+## 基准集合仍是九格 [0..8]，但每轮顺序独立；不按格位/左右/中心偏好排序。
+func _shuffled_patrol_order() -> Array:
+	var order: Array = [0, 1, 2, 3, 4, 5, 6, 7, 8]
+	for i in range(order.size() - 1, 0, -1):
+		var j: int = _patrol_rng.randi_range(0, i)
+		var tmp: int = order[i]
+		order[i] = order[j]
+		order[j] = tmp
+	return order
+
+
+## 测试/复现入口：固定巡田随机种子（正式游戏每轮用随机源；探针可复现同一顺序）。
+## 注意：种子只影响"之后"的洗牌；已开始的巡田路线不受影响。
+func set_farm_patrol_rng_seed(seed_value: int) -> void:
+	_patrol_rng.seed = seed_value
+
+
+## 诊断：当前巡田 RNG 状态（只读；用于随机性复现/报告）。
+func farm_patrol_rng_state() -> int:
+	return _patrol_rng.state
+
+
+## P4 探针只读入口：巡田调度状态（不改变任何状态）。
+func farm_patrol_state() -> Dictionary:
+	return {
+		"phase": _patrol_phase,
+		"handled_day": _patrol_handled_day,
+		"start_count": _patrol_start_count,
+		"deadline_day": _patrol_deadline_day,
+		"deadline": _patrol_deadline,
+		"last": _patrol_last.duplicate(true),
+		"sim_seconds": _sim_seconds,
+	}
+
+
+## P3 探针只读入口：正式玩法不使用（不改变任何状态）。
+func farm() -> Object:
+	return _farm
+
+
+## P3 探针只读入口：正式玩法不使用（不改变任何状态）。
+func farm_view() -> Node3D:
+	return _farm_view
+
 
 func _update_camera(delta: float) -> void:
 	# 自由视角期间只由 IsleFlyCam 写相机变换/FOV；轨道相机参数（_theta/_elev/_radius/_cam_target/_fov）
@@ -2208,6 +2721,177 @@ func _update_lighting() -> void:
 	_update_props(get_process_delta_time())
 
 # ============================================================
+# P6：岛民自主钓鱼（玩家 HUD 按钮 → 岛民走到真实岸边 → 抛竿/等待/咬钩/收线/展示 → 自动下一轮）
+# ============================================================
+## 玩家正式入口（HUD 钓鱼按钮 → fishing_toggle_requested → 这里）：钓鱼中点击即停止。
+func _on_fishing_toggle() -> void:
+	_sfx_ui()
+	if _villager != null and _villager.has_method("fishing_active") and bool(_villager.call("fishing_active")):
+		stop_fishing("player_stop")
+	else:
+		start_fishing()
+
+
+## 发起钓鱼。失败原因会明确提示玩家，绝不静默进入钓鱼状态；
+## 冲突（巡田/强制移动/睡觉/路径不可达）全部由岛民现有的活动仲裁拒绝，main 只转发为可读提示。
+func start_fishing() -> Dictionary:
+	if _villager == null:
+		_hud.show_toast("岛上暂时没有可以钓鱼的岛民")
+		return {"ok": false, "reason": "no_villager"}
+	if _mode != Mode.PLAYING:
+		_hud.show_toast("进入小岛后才能让岛民去钓鱼")
+		return {"ok": false, "reason": "not_playing"}
+	if _inventory == null:
+		_hud.show_toast("背包还没准备好，暂时不能钓鱼")
+		return {"ok": false, "reason": "no_inventory"}
+	# P7（C-02）：暂停期间不接受新的钓鱼活动（暂停=世界冻结，岛民不会开始移动；
+	# 否则 HUD 会提示"往岸边走去"而岛民其实被冻结，状态与提示不一致）。
+	if _paused:
+		_hud.show_toast("时间已暂停，继续后才能让岛民去钓鱼")
+		return {"ok": false, "reason": "paused"}
+	var res: Dictionary = _villager.call("begin_fishing",
+		Callable(self, "_fishing_commit"), Callable(self, "_sfx_splash"))
+	if bool(res.get("ok", false)):
+		_fishing_seen = true
+		_fishing_rounds_seen = 0
+		if _hud.has_method("close_backpack") and bool(_hud.call("backpack_open")):
+			_hud.call("close_backpack")
+		print("[P6] fishing start (player) spot=%s sim=%.0f" % [String((res.get("spot", {}) as Dictionary).get("node", "")), _sim_seconds])
+		_hud.show_toast("岛民拿起鱼竿，往岸边走去")
+	else:
+		var reason := String(res.get("reason", "unknown"))
+		print("[P6] fishing start refused reason=%s sim=%.0f" % [reason, _sim_seconds])
+		_hud.show_toast(_fishing_refuse_text(reason))
+	return res
+
+
+## 玩家停止钓鱼：立即结束当前轮、不再开下一轮；已经提交入账的鱼获保留（不撤销、不重复）。
+func stop_fishing(reason: String = "player_stop") -> void:
+	if _villager == null or not _villager.has_method("fishing_active"):
+		return
+	if bool(_villager.call("fishing_active")):
+		_villager.call("cancel_fishing", reason)
+		print("[P6] fishing stop requested reason=%s sim=%.0f" % [reason, _sim_seconds])
+		_hud.show_toast("岛民收起鱼竿，结束钓鱼")
+
+
+func _fishing_refuse_text(reason: String) -> String:
+	match reason:
+		"already_fishing":
+			return "岛民已经在钓鱼了"
+		"patrol_running":
+			return "岛民正在巡田，等这一轮巡完再钓鱼"
+		"forced_mode":
+			return "岛民现在走不开，稍后再试"
+		"sleeping":
+			return "岛民还在休息，先等他醒来吧"
+		"no_spot":
+			return "没有找到合适的岸边钓位"
+		"path_failed":
+			return "岛民走不到那个岸边钓位"
+		"no_villager":
+			return "岛上暂时没有可以钓鱼的岛民"
+		"no_inventory":
+			return "背包还没准备好，暂时不能钓鱼"
+		"not_playing":
+			return "进入小岛后才能让岛民去钓鱼"
+		"paused":
+			return "时间已暂停，继续后才能让岛民去钓鱼"
+		_:
+			return "现在没法钓鱼（%s）" % reason
+
+
+## 岛民每次成功收线后唯一的一次入账入口：走既有共享库存事务，失败时状态机不会展示鱼获。
+func _fishing_commit(fish_id: String, size: float) -> bool:
+	if _inventory == null or not _inventory.is_known_item(fish_id):
+		print("[P6] inventory reject fish=%s (inventory=%s known=%s)" % [fish_id, str(_inventory != null), str(_inventory != null and _inventory.is_known_item(fish_id))])
+		return false
+	var ok: bool = _inventory.add_items({fish_id: 1})
+	if not ok:
+		print("[P6] inventory add failed fish=%s" % fish_id)
+		return false
+	var fish_name := String(FISH_SCRIPT.display_name(fish_id))
+	var first := not _fish_discovered.has(fish_id)
+	_fish_discovered[fish_id] = true
+	var total: int = _inventory.get_count(fish_id)
+	_fishing_rounds_seen += 1
+	print("[P6] inventory +1 id=%s size=%.2fm total=%d first=%s sim=%.0f" % [fish_id, size, total, str(first), _sim_seconds])
+	if first:
+		_hud.show_toast("首次发现：%s ×1 · %.2f m" % [fish_name, size])
+	else:
+		_hud.show_toast("钓到 %s ×1 · %.2f m" % [fish_name, size])
+	return true
+
+
+## HUD 只读快照：状态机阶段 + 已钓条数 + 最近一尾鱼（名称/尺寸来自生产的鱼类目录）。
+func _fishing_hud_state() -> Dictionary:
+	if _villager == null or not _villager.has_method("fishing_state"):
+		return {"active": false, "phase": "", "rounds": 0, "label": "", "last_catch": {}}
+	var st: Dictionary = _villager.call("fishing_state")
+	var phase := String(st.get("phase", ""))
+	st["label"] = _fishing_phase_text(phase)
+	var catches: Array = st.get("catches", [])
+	var last_catch: Dictionary = {}
+	if not catches.is_empty():
+		last_catch = catches.back()
+	st["last_catch"] = last_catch
+	if _inventory != null and not last_catch.is_empty():
+		st["last_fish_total"] = _inventory.get_count(String(last_catch.get("fish_id", "")))
+	else:
+		st["last_fish_total"] = 0
+	return st
+
+
+func _fishing_phase_text(phase: String) -> String:
+	match phase:
+		"walking":
+			return "岛民走向码头…"
+		"casting":
+			return "抛竿中…"
+		"waiting":
+			return "等待咬钩…"
+		"bite":
+			return "咬钩了！"
+		"reeling":
+			return "收线中…"
+		"reveal":
+			return "展示鱼获…"
+		"between":
+			return "准备下一竿…"
+		_:
+			return ""
+
+
+## 消费岛民状态机的结束结果（状态推进不在这里，避免第二套状态机）。
+func _update_fishing() -> void:
+	if _villager == null or not _villager.has_method("fishing_active"):
+		return
+	var active := bool(_villager.call("fishing_active"))
+	if _fishing_seen and not active:
+		_fishing_seen = false
+		var last: Dictionary = _villager.call("fishing_last")
+		var outcome := String(last.get("outcome", ""))
+		var reason := String(last.get("reason", ""))
+		var rounds := int(last.get("rounds", 0))
+		print("[P6] fishing ended outcome=%s reason=%s rounds=%d sim=%.0f" % [outcome, reason, rounds, _sim_seconds])
+		if outcome == "cancelled" and reason == "player_stop":
+			if rounds > 0:
+				_hud.show_toast("钓鱼结束：这一趟钓到 %d 条" % rounds)
+			else:
+				_hud.show_toast("钓鱼结束：岛民收起了鱼竿")
+		elif outcome == "cancelled":
+			_hud.show_toast("钓鱼已安全结束（%s）· 已钓 %d 条" % [reason, rounds])
+		elif outcome == "inventory_failed":
+			_hud.show_toast("鱼获没能放进背包，钓鱼已停止")
+		elif outcome == "path_failed":
+			_hud.show_toast("岛民到不了岸边，钓鱼已结束")
+		elif outcome == "failed":
+			_hud.show_toast("钓鱼中断（%s）" % reason)
+	elif active:
+		_fishing_seen = true
+
+
+# ============================================================
 # HUD
 # ============================================================
 var _ui_timer := 0.0
@@ -2281,6 +2965,10 @@ func _update_ui(delta: float) -> void:
 			"auto_orbit": _auto_orbit,
 			# P8 阶段 5：天气面板数据（唯一状态源 _weather_state，面板只读）。
 			"weather": _weather_state,
+			# P5：背包只读快照（数量唯一来源仍是 _inventory；HUD 只展示、不回写）。
+			"inventory_items": _inventory_snapshot(),
+			# P6：钓鱼只读快照（权威状态在岛民状态机；HUD 只展示、按钮只发请求）。
+			"fishing": _fishing_hud_state(),
 		})
 	if _blending.is_empty() and _mode == Mode.PLAYING and _started:
 		pass
@@ -2365,6 +3053,9 @@ func _toggle_auto_orbit() -> void:
 	_settings["auto_orbit"] = _auto_orbit
 	if _hud != null and _hud.has_method("set_auto_orbit"):
 		_hud.set_auto_orbit(_auto_orbit, true)
+	# P7-FINALIZE（B4）：H 键自动运镜状态同步回设置菜单，避免菜单旧草稿覆盖。
+	if _menu != null:
+		_menu.set_settings(_settings)
 	if not (_selftest or _perf or _shots or _transition):
 		_settings_save_delay = 0.25
 
@@ -2494,13 +3185,46 @@ func _on_settings_changed(s: Dictionary) -> void:
 	# 自动化测试（自测/截图/性能/转场）不写入玩家配置，避免污染下次启动；
 	# 拖动滑条时每帧都会发出设置，写盘用 0.25s 防抖合并，避免频繁 IO。
 	_apply_user_settings(false)
-	if not (_selftest or _perf or _shots or _transition):
+	# P7-FINALIZE（D §1.4 B5）：分辨率/窗口模式的 12s 确认期间只应用、不落盘；
+	# 确认后菜单再 emit 一次，此时才安排写盘；超时/回退 emit 旧值，不写入未确认值。
+	var display_pending: bool = _menu != null and _menu.has_method("display_confirm_pending") \
+		and bool(_menu.call("display_confirm_pending"))
+	if not (_selftest or _perf or _shots or _transition) and not display_pending:
 		_settings_save_delay = 0.25
 	_sfx_ui()
 
 # ============================================================
 # 输入
 # ============================================================
+## P7.2 背包入口加固：B 键在 GUI 层机会之前先捕获一次。
+## 背景：用户反馈「按 B 打不开背包」；真实 OS 键盘复测（tools/probe_p9_bag_realinput.gd
+## 配合系统级 SendKeys）未能复现，但 GUI 控件抢焦点或物理键位差异仍可能让
+## _unhandled_input 收不到 B。这里只做一件事：把 B 规范地交给 _handle_key(KEY_B)
+## 并标记事件已处理，避免与 _unhandled_input 里的同一分支双触发（开→关）。
+func _input(event: InputEvent) -> void:
+	if not (event is InputEventKey):
+		return
+	var ke := event as InputEventKey
+	if not ke.pressed or ke.echo:
+		return
+	if _mode != Mode.PLAYING or _shots:
+		return
+	if _flycam != null and _flycam.active:
+		return
+	var code: int = ke.keycode
+	if code == 0:
+		code = ke.physical_keycode
+	if code != KEY_B:
+		return
+	if _hud == null or not _hud.has_method("toggle_backpack"):
+		return
+	var focus := get_viewport().gui_get_focus_owner()
+	if focus is LineEdit or focus is TextEdit:
+		return
+	_handle_key(KEY_B)
+	get_viewport().set_input_as_handled()
+
+
 func _unhandled_input(event: InputEvent) -> void:
 	# P7-V2 自由飞行视角：F 进入/退出；ESC 优先退出（不打开菜单）。
 	# P7-V3 交互：右键按住拖动转向（相对位移交给 flycam）；左键=场景点击（不改变视角）；
@@ -2557,6 +3281,10 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 	if event is InputEventKey and event.pressed and not event.echo:
 		var k: int = (event as InputEventKey).keycode
+		# P7.2：少数输入后端只填 physical_keycode（keycode 为 0），兜底用物理键位，
+		# 否则 F11/ESC/B 等按 keycode 分支会全部失效。
+		if k == 0:
+			k = (event as InputEventKey).physical_keycode
 		if k == KEY_F11:
 			_toggle_fullscreen()
 			get_viewport().set_input_as_handled()
@@ -2631,6 +3359,14 @@ func _handle_key(k: int) -> void:
 	elif k == KEY_W:
 		if _hud.has_method("toggle_weather_panel"):
 			_hud.call("toggle_weather_panel")
+	elif k == KEY_B:
+		# P5：背包开关（与左下角入口按钮共用同一个 HUD 路径；B 键此前未被占用）。
+		if _hud == null or not _hud.has_method("toggle_backpack"):
+			return
+		if not bool(_hud.get("_visible_now")):
+			# 界面被 H 隐藏时 B 也能用：先恢复 HUD，再打开背包。
+			_toggle_hud_visible()
+		_hud.call("toggle_backpack")
 	elif k == KEY_F2:
 		_take_photo()
 	elif k == KEY_F3:
@@ -2638,6 +3374,9 @@ func _handle_key(k: int) -> void:
 	elif k == KEY_BRACKETLEFT:
 		if _time_source == "real":
 			_hud.show_toast("现实时间模式不可调时")
+			return
+		if _paused:
+			_hud.show_toast("时间已暂停，继续后才能调整时间")
 			return
 		_time_jump -= 600.0
 		_sim_seconds -= 600.0
@@ -2647,6 +3386,9 @@ func _handle_key(k: int) -> void:
 		if _time_source == "real":
 			_hud.show_toast("现实时间模式不可调时")
 			return
+		if _paused:
+			_hud.show_toast("时间已暂停，继续后才能调整时间")
+			return
 		_time_jump += 600.0
 		_sim_seconds += 600.0
 		_events = IsleAstro.day_events(_sim_seconds)
@@ -2654,6 +3396,9 @@ func _handle_key(k: int) -> void:
 	elif k >= KEY_1 and k <= KEY_5:
 		if _time_source == "real":
 			_hud.show_toast("现实时间模式不可调时")
+			return
+		if _paused:
+			_hud.show_toast("时间已暂停，继续后才能调整时间")
 			return
 		var times := [5.6, 12.0, 17.4, 18.6, 22.0]
 		var target_min := float(times[k - KEY_1]) * 60.0
@@ -2675,6 +3420,9 @@ func _toggle_pause() -> void:
 
 ## P8：HUD 日历弹层请求跳转 → 立即落到合法状态（不补演中间天气/日程）。
 func _on_datetime_jump_requested(year: int, month: int, day: int, hour: int, minute: int) -> void:
+	if _paused:
+		_hud.show_toast("时间已暂停，继续后才能调整时间")
+		return
 	_jump_datetime(year, month, day, hour, minute, 0)
 
 func _reset_camera() -> void:
@@ -2758,6 +3506,8 @@ func _villager_ctx() -> Dictionary:
 		"frozen": (_mode != Mode.PLAYING) or _paused,
 		"door_set": Callable(self, "_set_door_state"),
 		"weather": _weather_eco(),
+		# P6：鱼类出现条件只读当帧权威季节（与 P8 日历同一投影）。
+		"season_id": _farm_season_id(),
 	}
 
 # ============================================================
@@ -4366,9 +5116,9 @@ func _collect_lights() -> void:
 	for src in (_world.get("light_sources", []) as Array):
 		_light_sources.append(src)
 	# P7-V2 夜间道路照明修复：路灯固定占位。
-	# 旧实现把所有光源按 energy 降序后按画质 _light_budget 截断；6 盏路灯 energy=1.35，
+	# 旧实现把所有光源按 energy 降序后按画质 _light_budget 截断；路灯 energy=1.35，
 	# 低/中档（budget 4/6）会被小屋灯（1.60/1.50/1.42…）整体挤出，夜里道路没有任何受光。
-	# 现在先单独收集 6 盏路灯并永远排在最前，剩余名额才按能量分给环境灯。
+	# 现在先单独收集路灯（P7.1 起 5 盏）并永远排在最前，剩余名额才按能量分给环境灯。
 	var lamp_lights: Array = []
 	var lamp_positions: Array = []
 	for l in (_world.get("lamps", []) as Array):
@@ -4398,7 +5148,7 @@ func _collect_lights() -> void:
 		var pos: Vector3 = d.get("pos", d.get("position", Vector3.ZERO))
 		if d.has("node") and (d["node"] as Object) is Node3D:
 			pos = (d["node"] as Node3D).global_position
-		# world.light_sources 里也包含这 6 盏路灯：按位置去重，避免同一盏灯被算两次。
+		# world.light_sources 里也包含这些路灯（P7.1 起 5 盏）：按位置去重，避免同一盏灯被算两次。
 		var dup := false
 		for lp2 in lamp_positions:
 			if pos.distance_squared_to(lp2) < 0.0025:
@@ -4448,7 +5198,7 @@ func _collect_lights() -> void:
 	RenderingServer.global_shader_parameter_set("g_light_indoor", 0.0)
 
 ## P7-V2 / P8.1-06 探针接口：当前参与着色的光源清单（含 kind 标签）、双池明细与真实路灯世界坐标。
-## 旧键（lights / active / budget / lamp_count / lamp_positions）保持兼容：lights = 室外池 + 室内池，前 6 盏仍是路灯。
+## 旧键（lights / active / budget / lamp_count / lamp_positions）保持兼容：lights = 室外池 + 室内池，前 5 盏仍是路灯（P7.1 删灯前为 6）。
 func debug_light_state() -> Dictionary:
 	var pools := _compute_light_pools()
 	var out_sel: Array = pools["out"]
@@ -4500,6 +5250,8 @@ func _collect_props() -> void:
 	# 旋转组件挂在灯室节点上，既让灯具/玻璃旋转，也让光束同轴转动。
 	_beam_origin_node = _lighthouse_lamp if _lighthouse_lamp != null else _lighthouse
 	_swing_pivot = _world.get("swing", null) as Node3D
+	# 注：秋千→岛民的目标注入在 _build_world() 内、岛民创建后完成（见 set_swing_target 调用），
+	# 这里只保存视觉旋转节点。
 	_sailboat = _world.get("sailboat", null) as Node3D
 	_sail_speed = maxf(float(_world.get("sailboat_speed", 3.4)), 0.2)
 	_sail_trip_speed = _sail_speed
@@ -4575,6 +5327,11 @@ func _collect_props() -> void:
 func _on_time_adjust(seconds_delta: float) -> void:
 	if _time_source == "real" or absf(seconds_delta) < 0.001:
 		return
+	# P7（C-02）：暂停中拒绝交互式调时（HUD 时间轴/快捷调时统一走这里）。
+	# 冻结中的世界不接受时间跳变：否则农田时钟已前进、岛民却因冻结分支不检测跳变，
+	# 巡田/钓鱼活动不会被取消，暂停结束后状态就与"跳变即取消活动"的既有契约不一致。
+	if _paused:
+		return
 	_time_jump += seconds_delta
 	_sim_seconds += seconds_delta
 	_events = IsleAstro.day_events(_sim_seconds)
@@ -4584,6 +5341,8 @@ func _on_time_adjust(seconds_delta: float) -> void:
 ## 可拖动时间轴：直接设置当天时刻（保留当前日期），仍驱动同一个模拟时钟。
 func _on_time_set(sec_of_day: float) -> void:
 	if _time_source == "real":
+		return
+	if _paused:
 		return
 	var day_start := _sim_seconds - fposmod(_sim_seconds, 86400.0)
 	var next_seconds := day_start + clampf(sec_of_day, 0.0, 86399.0)

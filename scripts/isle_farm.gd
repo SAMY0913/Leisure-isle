@@ -8,8 +8,14 @@ extends RefCounted
 ##   remove_item(item_id: String, amount: int) -> bool
 ##   add_items(item_deltas: Dictionary) -> bool   # 一次采收的成品+返还种子必须原子提交
 ##
-## 时间：只接受主系统传入的模拟秒快照（IsleFarm.advance_to(sim_seconds)），
-## 不使用 Timer / Time.get_ticks_msec / 任何独立时钟。模拟时间不推进 => 作物不生长。
+## 时间（P7-FINALIZE 真实时间农作）：
+##   clock_mode == "sim"  —— 兼容/探针模式：主系统注入模拟秒快照 advance_to(sim_seconds)，
+##                           成长时钟 = 注入值；探针用任意可控数字模拟"经过时间"。
+##   clock_mode == "real" —— 生产模式：main.gd 每帧把**现实经过秒数**送到 advance_realtime(delta)，
+##                           内部成长时钟由单调累加得到；advance_to() 只记录诊断值、不推进生长。
+## 两种模式下本类都不自己读系统时钟、不用 Timer：时间跳转/时间加速/day_length 无法改变成长。
+## 真实模式跨进程的离线生长由 main.gd 的存档层按 saved_unix 计算离线秒数后调用 advance_realtime。
+## 暂停/菜单不会停止成长时钟（现实时间仍在走），这是"按现实时间成熟"的明确语义。
 ##
 ## 九格索引：s = j * 3 + i，i=0..2 左->右（房屋局部 X），j=0..2 前->后（房屋局部 Z）。
 ## 与 P0 验收的田块索引一致；GRID_PITCH 为 P0 实测格心距 1.5 m，供 P2 视觉层复用。
@@ -31,7 +37,12 @@ const STATE_VERSION := 1
 ## 外部库存（Object，鸭子类型）。null 表示未注入：播种/采收返回明确失败，不崩溃。
 var _inventory: Object = null
 var _slots: Array = []
+## 权威成长时钟秒（sim 模式 = 注入的模拟秒；real 模式 = 现实经过秒数累加）。
 var _sim_seconds := 0.0
+## 成长时钟模式："sim"（兼容/探针，默认）| "real"（正式游戏，按现实经过时间生长）。
+var clock_mode := "sim"
+## real 模式下主控注入的模拟秒仅作诊断记录，不参与生长判定。
+var _last_sim_snapshot := 0.0
 var _clock_ready := false
 var _busy := false
 var _last_chosen := ""
@@ -98,8 +109,28 @@ func slot_count() -> int:
 
 
 # ============================================================ 时间 =========
-## 注入权威模拟秒快照。第一次成功调用即视为"主时钟已就绪"（未就绪时禁止播种，
-## 避免用 0 时刻种下作物后，第一次快照让它瞬间成熟）。
+## 切换成长时钟模式。生产环境在 main._setup_farm 里切换为 "real"；
+## 探针/自测不调用即保持 "sim"（既有 243 项农田探针语义不变）。
+## 切换不会重置已有格内时间戳；调用方应在切换后自行注入一次时钟（advance_realtime(0) 即可就绪）。
+func set_clock_mode(mode: String) -> void:
+	clock_mode = "real" if mode == "real" else "sim"
+
+func clock_mode_name() -> String:
+	return clock_mode
+
+## real 模式：注入本帧现实经过秒数（主控每帧调用；暂停/菜单期间也应继续调用）。
+## 单帧夹取 MAX_REAL_STEP_SECONDS，避免调试断点/系统休眠后的单帧巨额补涨；
+## 跨进程离线生长不经过这里，由存档层显式注入（见 main._load_game_state）。
+const MAX_REAL_STEP_SECONDS := 300.0
+func advance_realtime(delta_seconds: float) -> void:
+	if not is_finite(delta_seconds) or delta_seconds < 0.0:
+		return
+	_sim_seconds += minf(delta_seconds, MAX_REAL_STEP_SECONDS)
+	_clock_ready = true
+	_last_sim_snapshot = _sim_seconds
+
+## 兼容入口：sim 模式注入模拟秒快照；real 模式只记录诊断值、不推进成长时钟。
+## 第一次成功推进后 clock_ready=true（未就绪时禁止播种，避免 0 时刻种下后瞬间成熟）。
 ##
 ## 时间回退（玩家拨时间 / 切换 real↔sim 时间源）不会让作物退回幼苗：
 ## 所有格内时间戳按同一个 delta 平移，作物的"年龄"保持不变，也不会出现
@@ -107,6 +138,9 @@ func slot_count() -> int:
 func advance_to(sim_seconds: float) -> void:
 	# 非有限/负时钟（损坏的存档或引擎异常值）不参与时间语义，直接忽略。
 	if not is_finite(sim_seconds) or sim_seconds < 0.0:
+		return
+	if clock_mode == "real":
+		_last_sim_snapshot = sim_seconds
 		return
 	if sim_seconds < _sim_seconds:
 		_shift_slots(sim_seconds - _sim_seconds)
@@ -223,6 +257,17 @@ func seed_returned(index: int) -> bool:
 	if is_empty(index):
 		return false
 	return bool((_slots[index] as Dictionary).get("seed_returned", false))
+
+
+## 该格当前是否处于"再生周期"（再生作物且已至少成功采收过一次）。
+## 只读查询，供渲染层决定再生期是否按成株体量显示；不参与任何生长/成熟/采收判定。
+func is_regrow_cycle(index: int) -> bool:
+	if is_empty(index):
+		return false
+	var s: Dictionary = _slots[index]
+	if not CROPS.is_regrowing(String(s.get("crop_id", ""))):
+		return false
+	return int(s.get("harvest_count", 0)) >= 1
 
 
 # ============================================================ 播种 =========
@@ -374,8 +419,11 @@ func harvest(index: int) -> Dictionary:
 
 
 # ============================================================ 自动选种 ====
-## 均衡随机选种：只考虑"库存有种子 + 当前季节允许新种"的作物；
-## 优先当前在田株数最少的一组；组内用可注入 RNG 随机，且多候选中降低连续同种概率。
+## P7-FINALIZE：**统一随机抽签**选种（用户明确要求"真正随机"）。
+## 候选集 = 当前季节允许新种 + 种子库存 > 0；在候选集上做等概率均匀抽样。
+## 不再有"在田株数最少优先""70% 排除上次选中"等均衡/抑制规则，也不按格位/顺序加权：
+## 不保证九格最终平均分配五种作物，某次偶然连续同种也属正常随机结果。
+## 约束优先于随机：季节、种子库存、空格等合法条件仍在 plant_auto/plant 的校验里强制执行。
 ## 不修改农田状态（slots / _last_chosen 只在 plant() 成功后才更新），可安全重复调用；
 ## 但随机选择本身会消耗注入 RNG 的随机序列（这是设计行为，不是状态突变）。
 ## 没有任何可选作物时返回空串（调用方据此得到"没有可执行种植目标"，不得生成种子）。
@@ -392,19 +440,9 @@ func choose_crop(season_id: String) -> String:
 		candidates.append(cid)
 	if candidates.is_empty():
 		return ""
-	var counts := _crop_counts()
-	var min_count := 2147483647
-	for crop_id in candidates:
-		min_count = mini(min_count, int(counts.get(crop_id, 0)))
-	var group: Array = []
-	for crop_id in candidates:
-		if int(counts.get(crop_id, 0)) == min_count:
-			group.append(crop_id)
-	# 组内多候选时，按概率把上一次选中的作物移出本轮候选：既降低连续同种概率，
-	# 又不会在只有 2 个候选时退化成严格的确定性交替。
-	if group.size() > 1 and group.has(_last_chosen) and _rng.randf() < 0.70:
-		group.erase(_last_chosen)
-	return String(group[_rng.randi_range(0, group.size() - 1)])
+	if candidates.size() == 1:
+		return String(candidates[0])
+	return String(candidates[_rng.randi_range(0, candidates.size() - 1)])
 
 
 ## 自动播种：先选种再播种，返回播种结果并附 crop_id（无目标时 ok=false, reason="no_candidate"）。
@@ -427,6 +465,7 @@ func plant_auto(index: int, season_id: String) -> Dictionary:
 	return out
 
 
+## 诊断/报告用：当前九格在田株数统计（P7-FINALIZE 选种已改为均匀随机，不再用均衡规则）。
 func _crop_counts() -> Dictionary:
 	var counts: Dictionary = {}
 	for s in _slots:
@@ -454,8 +493,11 @@ func export_state() -> Dictionary:
 	return {
 		"version": STATE_VERSION,
 		"slot_count": SLOT_COUNT,
-		# 仅作为"导出时刻"元数据；主时钟（IsleFarm.advance_to 的快照）才是权威。
+		# 仅作为"导出时刻"元数据；成长时钟（本类 _sim_seconds）才是权威。
+		# saved_at_sim_seconds 是历史字段名：P7-FINALIZE 起其值语义 = 权威成长时钟秒。
 		"saved_at_sim_seconds": _sim_seconds,
+		"saved_at_clock_seconds": _sim_seconds,
+		"clock_mode": clock_mode,
 		"last_chosen": _last_chosen,
 		"slots": slots,
 	}
@@ -485,8 +527,8 @@ func restore_state(data: Dictionary, current_sim_seconds: float = NAN) -> bool:
 		return false
 	var has_current := not is_nan(current_sim_seconds)
 	var stored_sim := _sim_seconds
-	if data.has("saved_at_sim_seconds"):
-		stored_sim = float(data.get("saved_at_sim_seconds", 0.0))
+	if data.has("saved_at_clock_seconds") or data.has("saved_at_sim_seconds"):
+		stored_sim = float(data.get("saved_at_clock_seconds", data.get("saved_at_sim_seconds", 0.0)))
 		if not is_finite(stored_sim) or stored_sim < 0.0:
 			return false
 	if has_current:
@@ -573,6 +615,10 @@ func restore_state(data: Dictionary, current_sim_seconds: float = NAN) -> bool:
 	_last_chosen = String(data.get("last_chosen", ""))
 	if not CROPS.has_crop(_last_chosen):
 		_last_chosen = ""
+	# 存档里的时钟模式只在合法时恢复；缺省保持调用方已设置的模式（探针默认 sim）。
+	var saved_mode := String(data.get("clock_mode", ""))
+	if saved_mode == "sim" or saved_mode == "real":
+		clock_mode = saved_mode
 	return true
 
 

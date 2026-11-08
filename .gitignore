@@ -12,3 +12,7 @@
 __pycache__/
 *.pyc
 *.pyo
+
+# P7-FINALIZE：user:// 不可写环境（沙箱/权限）下的运行时兜底存档，非工程资产
+settings_fallback.cfg
+save_fallback.cfg

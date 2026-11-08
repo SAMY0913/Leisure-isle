@@ -184,6 +184,10 @@ const ANIMATIONS := {
 	&"lie_down": {"length": 1.0, "loop": false},
 	&"sleep": {"length": 6.0, "loop": true},
 	&"get_up": {"length": 1.0, "loop": false},
+	# —— P6 钓鱼（站立）：持竿待机循环 + 抛竿 + 收线；两个一次性剪辑都以持竿姿势收尾 ——
+	&"fish_hold": {"length": 4.0, "loop": true},
+	&"fish_cast": {"length": 1.2, "loop": false},
+	&"fish_reel": {"length": 1.4, "loop": false},
 }
 
 const WALK_STRIDE := 1.0  # 每循环（左右各一步）步幅，单位 m；控制器按 WALK_STRIDE/length 换算≈1.13 m/s
@@ -326,7 +330,10 @@ func _build_bowl(mat: ShaderMaterial) -> MeshInstance3D:
 	mi.mesh = _bowl_kit().commit()
 	mi.material_override = _bowl_material()
 	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	mi.position = Vector3(0.0, 0.230, -0.330)
+	# P9 / P7-FINALIZE：碗从 -0.330 前移到 -0.400。四把餐椅（n/s/e/w）里 n/s 椅到桌沿只有
+	# 0.37 m，旧位置让碗心落在桌面外 4 cm（悬空）；-0.40 时四把椅子碗心都在桌面上（见
+	# tools/probe_p9_life_anim.gd 的 all-chairs 断言），且仍在坐姿右臂舒适取食范围内。
+	mi.position = Vector3(0.0, 0.230, -0.400)
 	mi.visible = false
 	add_child(mi)
 	return mi
@@ -504,12 +511,14 @@ static func _sit() -> Dictionary:
 		&"neck": Vector3.ZERO,
 		&"head": Vector3(-0.02, 0.0, 0.0),
 		&"hair": Vector3.ZERO,
-		&"shoulder_l": Vector3(0.30, 0.0, -0.14),
-		&"shoulder_r": Vector3(0.30, 0.0, 0.14),
-		&"elbow_l": Vector3(0.50, 0.0, 0.0),
-		&"elbow_r": Vector3(0.50, 0.0, 0.0),
-		&"hand_l": Vector3(0.12, 0.0, 0.0),
-		&"hand_r": Vector3(0.12, 0.0, 0.0),
+		# P9：坐姿双手改为自然搭在大腿上（掌根在桌沿投影之外），
+		# 这样吃饭循环从 _sit() 出发时，手可以先在桌沿外抬起再越过桌面，不会从桌板下穿上来。
+		&"shoulder_l": Vector3(-0.20, -0.20, 0.0),
+		&"shoulder_r": Vector3(-0.20, 0.20, 0.0),
+		&"elbow_l": Vector3(0.80, 0.0, 0.0),
+		&"elbow_r": Vector3(0.80, 0.0, 0.0),
+		&"hand_l": Vector3(0.60, 0.0, 0.0),
+		&"hand_r": Vector3(0.60, 0.0, 0.0),
 		&"hip_l": Vector3(1.26, 0.0, 0.0),
 		&"hip_r": Vector3(1.26, 0.0, 0.0),
 		&"knee_l": Vector3(-1.207, 0.0, 0.0),
@@ -523,6 +532,10 @@ static func _sit() -> Dictionary:
 
 
 ## 坐床沿：root 原点=骨盆中心，双腿朝 +Z 垂下（床在角色 +Z 方向）。
+## P9 / P7-FINALIZE：旧姿势 hip=-1.34 / knee=0.94 / foot=0.46 是大腿水平、小腿近垂直的“悬空坐”，
+## 鞋底相对 root 只有 -0.400，root 放到床沿（床垫+0.085）时鞋底离阁楼地板 0.164 m。
+## 现在把腿放长（hip -1.08 / knee 0.72 / foot 0.33）：大腿前下方、小腿继续下落，
+## 鞋底相对 root ≈ -0.52，root 在 3.745 时鞋底 ≈ 3.18 = 阁楼地板 3.181（脚落地不穿地）。
 static func _bed_sit() -> Dictionary:
 	return {
 		&"body_pos": Vector3(0.0, 0.030, 0.0),
@@ -539,12 +552,12 @@ static func _bed_sit() -> Dictionary:
 		&"elbow_r": Vector3(0.28, 0.0, 0.0),
 		&"hand_l": Vector3(0.05, 0.0, 0.0),
 		&"hand_r": Vector3(0.05, 0.0, 0.0),
-		&"hip_l": Vector3(-1.34, 0.0, 0.0),
-		&"hip_r": Vector3(-1.34, 0.0, 0.0),
-		&"knee_l": Vector3(0.94, 0.0, 0.0),
-		&"knee_r": Vector3(0.94, 0.0, 0.0),
-		&"foot_l": Vector3(0.46, 0.0, 0.0),
-		&"foot_r": Vector3(0.46, 0.0, 0.0),
+		&"hip_l": Vector3(-1.08, 0.0, 0.0),
+		&"hip_r": Vector3(-1.08, 0.0, 0.0),
+		&"knee_l": Vector3(0.72, 0.0, 0.0),
+		&"knee_r": Vector3(0.72, 0.0, 0.0),
+		&"foot_l": Vector3(0.33, 0.0, 0.0),
+		&"foot_r": Vector3(0.33, 0.0, 0.0),
 		&"eyelid_l": EYELID_OPEN,
 		&"eyelid_r": EYELID_OPEN,
 		&"shadow": false,
@@ -583,19 +596,27 @@ static func _lie() -> Dictionary:
 	}
 
 
-## 睡姿：躺姿 + 闭眼 + 侧头 + 右腿屈起、右手搭在胸前（明显不是“直立旋转 90°”）。
+## 睡姿：躺姿 + 闭眼 + 侧头 + 右腿微屈搭在被面上、右手搭在身前（明显不是“直立旋转 90°”）。
+## P9 / P7-FINALIZE（C 报告 D1/D2/D3）：
+## - 旧值 hip_r=0.55 / knee_r=-1.00 把右大腿抬向天花板，右膝关节离床垫 0.313 m（一条腿举在空中）；
+##   改为 hip_r=0.16 / knee_r=-0.28 / foot_r=0.10：右膝只比左膝高约 5 cm，腿落在被面上。
+## - 旧值 neck=-0.78 使头心停在两颗枕头之间的 3 cm 缝里、后脑低于枕顶 0.10 m；
+##   配合 spot 躺姿锚点移到枕头 A 正上方（见 isle_villager_spots.gd BED.anchor_local），
+##   现在把颈/头微调（neck -0.72 / head 0.06）让后脑正好落在枕面（≈枕顶）上，不再夹在枕缝里。
+## - body_pos 0.105→0.095：后背后脑整体下沉约 1 cm，背部贴床垫但不穿透（最轻呼吸时仍 ≥ 床垫顶）。
 static func _sleep_pose() -> Dictionary:
 	return _merge(_lie(), {
-		&"neck": Vector3(-0.78, 0.04, 0.30),
-		&"head": Vector3(0.10, 0.04, 0.18),
+		&"body_pos": Vector3(0.0, 0.095, 0.0),
+		&"neck": Vector3(-0.72, 0.03, 0.24),
+		&"head": Vector3(0.06, 0.03, 0.12),
 		&"shoulder_l": Vector3(-0.08, 0.0, -0.30),
 		&"shoulder_r": Vector3(-0.02, 0.0, 0.16),
 		&"elbow_l": Vector3(0.20, 0.0, 0.0),
 		&"elbow_r": Vector3(0.55, 0.0, 0.0),
 		&"hand_r": Vector3(0.10, 0.0, 0.0),
-		&"hip_r": Vector3(0.55, 0.0, 0.0),
-		&"knee_r": Vector3(-1.00, 0.0, 0.0),
-		&"foot_r": Vector3(0.20, 0.0, 0.0),
+		&"hip_r": Vector3(0.16, 0.0, 0.0),
+		&"knee_r": Vector3(-0.28, 0.0, 0.0),
+		&"foot_r": Vector3(0.10, 0.0, 0.0),
 		&"eyelid_l": EYELID_CLOSED,
 		&"eyelid_r": EYELID_CLOSED,
 	})
@@ -610,9 +631,11 @@ static func _merge(base: Dictionary, over: Dictionary) -> Dictionary:
 
 static func _clip_base(clip_name: StringName) -> Dictionary:
 	match clip_name:
-		&"sleep", &"get_up":
+		&"sleep":
 			return _sleep_pose()
-		&"lie_down", &"sit_down", &"sit_idle", &"sit_up", &"eat":
+		&"lie_down", &"get_up":
+			return _bed_sit()
+		&"sit_down", &"sit_idle", &"sit_up", &"eat":
 			return _sit()
 		&"bed_sit_down", &"bed_sit_up":
 			return _stand()
@@ -815,51 +838,138 @@ func _clip_frames(clip_name: StringName) -> Array:
 				{"t": 0.70, "pose": stand},
 			]
 		&"eat":
+			# P9 / P7-FINALIZE 吃饭重做（C 报告 E1-E6 + T1）：3.0 s 循环内两个完整“取食口”，
+			# 每口 5 相位：就位 → 右手下探到碗（手-碗 ≤0.13 m）→ 送到嘴边（手-嘴 ≤0.12 m，
+			# 肘始终低于肩）→ 咀嚼（头/手小幅节奏 + 眨眼）→ 停顿放下；第二口节奏略快。
+			# 手在“桌板下方 ↔ 桌面上方”之间切换时先从桌子投影外抬起/收回，避免手腕穿过桌板。
+			# 右臂角度由 tools/probe_p9_life_anim.gd 的前向运动学求解器对准真实碗/嘴位置
+			# （碗=Bowl 节点、嘴=头关节+嘴部几何偏移，均由真实资产坐标反算）；首尾帧都是 _sit()。
 			var sit4 := _sit()
+			# 收手到桌沿外：沿用 _sit() 的“手搭大腿”姿势（桌沿投影外），左手上桌扶碗
+			var retract := _merge(sit4, {
+				&"torso": Vector3(0.03, 0.0, 0.0),
+				&"neck": Vector3(0.0, 0.0, 0.0),
+				&"head": Vector3(0.02, 0.0, 0.0),
+				&"shoulder_l": Vector3(0.40, 0.0, 0.30),
+				&"elbow_l": Vector3(0.85, 0.0, 0.0),
+				&"hand_l": Vector3(0.15, 0.0, 0.0),
+			})
+			# 桌沿外抬起（腕在桌面上方、仍在桌子投影外）
+			var lift := _merge(sit4, {
+				&"torso": Vector3(0.06, 0.0, 0.0),
+				&"neck": Vector3(0.0, 0.0, 0.0),
+				&"head": Vector3(0.03, 0.0, 0.0),
+				&"shoulder_r": Vector3(-0.20, 0.40, -0.27),
+				&"elbow_r": Vector3(2.00, 0.0, 0.0),
+				&"hand_r": Vector3(0.60, 0.0, 0.0),
+				&"shoulder_l": Vector3(0.40, 0.0, 0.30),
+				&"elbow_l": Vector3(0.85, 0.0, 0.0),
+				&"hand_l": Vector3(0.15, 0.0, 0.0),
+			})
+			# 越过桌沿（手在桌面上方、进入桌子投影）
+			var overedge := _merge(sit4, {
+				&"torso": Vector3(0.12, 0.0, 0.0),
+				&"neck": Vector3(-0.02, 0.0, 0.0),
+				&"head": Vector3(0.06, 0.0, 0.0),
+				&"shoulder_r": Vector3(-0.20, 0.00, -0.67),
+				&"elbow_r": Vector3(1.60, 0.0, 0.0),
+				&"hand_r": Vector3(0.40, 0.0, 0.0),
+				&"shoulder_l": Vector3(0.40, 0.0, 0.30),
+				&"elbow_l": Vector3(0.85, 0.0, 0.0),
+				&"hand_l": Vector3(0.15, 0.0, 0.0),
+			})
+			# 取食下探（俯身 + 右臂伸到碗沿，左手扶碗）
+			var pick := _merge(sit4, {
+				&"torso": Vector3(0.14, 0.0, 0.0),
+				&"neck": Vector3(-0.02, 0.0, 0.0),
+				&"head": Vector3(0.08, 0.0, 0.0),
+				&"shoulder_r": Vector3(1.00, 0.0, -0.27),
+				&"elbow_r": Vector3(0.20, 0.0, 0.0),
+				&"hand_r": Vector3(-0.20, 0.0, 0.0),
+				&"shoulder_l": Vector3(0.40, 0.0, 0.30),
+				&"elbow_l": Vector3(0.85, 0.0, 0.0),
+				&"hand_l": Vector3(0.15, 0.0, 0.0),
+			})
+			# 送到嘴边（头转向右手、微前倾；肩 0.80、肘 2.20，肘仍低于肩）
+			var to_mouth := _merge(sit4, {
+				&"torso": Vector3(0.09, 0.0, 0.0),
+				&"neck": Vector3(0.12, -0.42, 0.02),
+				&"head": Vector3(0.10, -0.22, -0.02),
+				&"shoulder_r": Vector3(0.80, 0.40, -0.80),
+				&"elbow_r": Vector3(2.20, 0.0, 0.0),
+				&"hand_r": Vector3(0.60, 0.0, 0.0),
+				&"shoulder_l": Vector3(0.40, 0.0, 0.30),
+				&"elbow_l": Vector3(0.85, 0.0, 0.0),
+				&"hand_l": Vector3(0.15, 0.0, 0.0),
+			})
+			# 咀嚼 a/b：头小幅点头 + 手在嘴边微动
+			var chew_a := _merge(to_mouth, {
+				&"head": Vector3(0.15, -0.21, -0.02),
+				&"neck": Vector3(0.14, -0.40, 0.02),
+				&"elbow_r": Vector3(2.10, 0.0, 0.0),
+				&"hand_r": Vector3(0.55, 0.0, 0.0),
+			})
+			var chew_b := _merge(to_mouth, {
+				&"head": Vector3(0.05, -0.24, -0.01),
+				&"neck": Vector3(0.10, -0.43, 0.02),
+				&"elbow_r": Vector3(2.24, 0.0, 0.0),
+				&"hand_r": Vector3(0.62, 0.0, 0.0),
+			})
+			# 停顿/放下：手在桌面上方收回到桌沿外
+			var pause := _merge(sit4, {
+				&"torso": Vector3(0.05, 0.0, 0.0),
+				&"neck": Vector3(0.02, -0.20, 0.01),
+				&"head": Vector3(0.04, -0.10, 0.0),
+				&"shoulder_r": Vector3(0.00, 0.40, 0.13),
+				&"elbow_r": Vector3(1.40, 0.0, 0.0),
+				&"hand_r": Vector3(0.60, 0.0, 0.0),
+				&"shoulder_l": Vector3(0.40, 0.0, 0.30),
+				&"elbow_l": Vector3(0.85, 0.0, 0.0),
+				&"hand_l": Vector3(0.15, 0.0, 0.0),
+			})
 			return [
 				{"t": 0.0, "pose": sit4},
-				{"t": 0.70, "pose": _merge(sit4, {
-					&"shoulder_r": Vector3(1.35, 0.0, 0.10),
-					&"elbow_r": Vector3(1.60, 0.0, 0.0),
-					&"hand_r": Vector3(0.25, 0.0, 0.0),
-					&"neck": Vector3(-0.06, 0.0, 0.0),
-					&"head": Vector3(-0.08, 0.0, 0.0),
-					&"torso": Vector3(0.0, 0.0, 0.0),
+				# 第一口：手在桌沿外抬起 → 越过桌沿 → 下探到碗 → 送嘴 → 咀嚼 → 停顿收回
+				{"t": 0.12, "pose": lift},
+				{"t": 0.22, "pose": overedge},
+				{"t": 0.32, "pose": pick},
+				{"t": 0.52, "pose": to_mouth},
+				{"t": 0.66, "pose": chew_a},
+				{"t": 0.68, "pose": {&"eyelid_l": EYELID_OPEN, &"eyelid_r": EYELID_OPEN}},
+				{"t": 0.74, "pose": {&"eyelid_l": EYELID_CLOSED, &"eyelid_r": EYELID_CLOSED}},
+				{"t": 0.82, "pose": {&"eyelid_l": EYELID_OPEN, &"eyelid_r": EYELID_OPEN}},
+				{"t": 0.80, "pose": chew_b},
+				{"t": 0.94, "pose": pause},
+				# 第二口（节奏略快）
+				{"t": 1.04, "pose": lift},
+				{"t": 1.14, "pose": overedge},
+				{"t": 1.24, "pose": _merge(pick, {&"torso": Vector3(0.13, 0.0, 0.0), &"head": Vector3(0.10, 0.0, 0.0)})},
+				{"t": 1.44, "pose": to_mouth},
+				{"t": 1.58, "pose": chew_a},
+				{"t": 1.60, "pose": {&"eyelid_l": EYELID_OPEN, &"eyelid_r": EYELID_OPEN}},
+				{"t": 1.66, "pose": {&"eyelid_l": EYELID_CLOSED, &"eyelid_r": EYELID_CLOSED}},
+				{"t": 1.74, "pose": {&"eyelid_l": EYELID_OPEN, &"eyelid_r": EYELID_OPEN}},
+				{"t": 1.72, "pose": chew_b},
+				{"t": 1.86, "pose": pause},
+				# 收手：桌沿外抬起 → 落回大腿，然后停顿回到 _sit()
+				{"t": 1.98, "pose": lift},
+				{"t": 2.22, "pose": _merge(sit4, {
+					&"torso": Vector3(0.04, 0.0, 0.0),
+					&"neck": Vector3(0.0, 0.0, 0.0),
+					&"head": Vector3(0.02, 0.0, 0.0),
+					&"shoulder_r": Vector3(0.10, 0.10, 0.20),
+					&"elbow_r": Vector3(0.58, 0.0, 0.0),
+					&"hand_r": Vector3(0.30, 0.0, 0.0),
+					&"shoulder_l": Vector3(-0.18, -0.18, 0.0),
+					&"elbow_l": Vector3(0.78, 0.0, 0.0),
+					&"hand_l": Vector3(0.56, 0.0, 0.0),
 				})},
-				{"t": 1.30, "pose": _merge(sit4, {
-					&"shoulder_r": Vector3(2.02, 0.0, 0.12),
-					&"elbow_r": Vector3(1.50, 0.0, 0.0),
-					&"hand_r": Vector3(0.20, 0.0, 0.0),
-					&"neck": Vector3(-0.10, 0.0, 0.0),
-					&"head": Vector3(-0.14, 0.05, 0.0),
-				})},
-				{"t": 1.70, "pose": _merge(sit4, {
-					&"shoulder_r": Vector3(2.04, 0.0, 0.12),
-					&"elbow_r": Vector3(1.58, 0.0, 0.0),
-					&"hand_r": Vector3(0.22, 0.0, 0.0),
-					&"neck": Vector3(-0.09, 0.0, 0.0),
-					&"head": Vector3(-0.12, 0.05, 0.0),
-				})},
-				{"t": 2.00, "pose": _merge(sit4, {
-					&"shoulder_r": Vector3(2.00, 0.0, 0.12),
-					&"elbow_r": Vector3(1.44, 0.0, 0.0),
-					&"hand_r": Vector3(0.18, 0.0, 0.0),
-					&"neck": Vector3(-0.08, 0.0, 0.0),
-					&"head": Vector3(-0.11, 0.05, 0.0),
-				})},
-				{"t": 2.30, "pose": _merge(sit4, {
-					&"shoulder_r": Vector3(2.03, 0.0, 0.12),
-					&"elbow_r": Vector3(1.56, 0.0, 0.0),
-					&"hand_r": Vector3(0.21, 0.0, 0.0),
-					&"neck": Vector3(-0.09, 0.0, 0.0),
-					&"head": Vector3(-0.13, 0.05, 0.0),
-				})},
-				{"t": 2.70, "pose": _merge(sit4, {
-					&"shoulder_r": Vector3(1.00, 0.0, 0.10),
-					&"elbow_r": Vector3(0.90, 0.0, 0.0),
-					&"hand_r": Vector3(0.20, 0.0, 0.0),
-					&"neck": Vector3(-0.03, 0.0, 0.0),
-					&"head": Vector3(-0.04, 0.0, 0.0),
+				{"t": 2.60, "pose": _merge(sit4, {
+					&"torso": Vector3(0.02, 0.0, 0.0),
+					&"head": Vector3(0.0, 0.02, 0.0),
+					&"shoulder_r": Vector3(-0.20, 0.20, 0.0),
+					&"elbow_r": Vector3(0.80, 0.0, 0.0),
+					&"hand_r": Vector3(0.60, 0.0, 0.0),
 				})},
 				{"t": 3.0, "pose": sit4},
 			]
@@ -957,61 +1067,93 @@ func _clip_frames(clip_name: StringName) -> Array:
 				{"t": 0.70, "pose": bsu_stand},
 			]
 		&"lie_down":
+			# P9 / P7-FINALIZE 睡觉重做（C 报告 D5 + S3/S4）：1.0 s 内分三段，控制器同步分段移动 root：
+			#   0.00-0.30 坐床沿 → 先搬腿：双腿抬平搭到被面上（躯干仍坐直、只后仰 0.55 rad，root 不动）；
+			#   0.30-0.85 后仰躺平：躯干由 -0.55 转到 -1.52，双腿保持水平，双臂撑床滑到身侧（root 同步横移）；
+			#   0.85-1.00 头落枕 settle + 2% 过冲回位：颈/头先略低再落到枕面，结束帧 == _sleep_pose()。
+			# 膝盖不再翘起（旧 hip_r=0.55/knee_r=-1.00 是“一条腿举在空中”）：整段 hip_r 只到 0.16、knee_r 到 -0.28。
 			var bed := _bed_sit()
 			var lie := _sleep_pose()
 			return [
 				{"t": 0.0, "pose": bed},
-				{"t": 0.30, "pose": _merge(bed, {
-					&"body_pos": Vector3(0.0, 0.060, 0.0),
-					&"body_tilt": Vector3(-0.45, 0.0, 0.0),
-					&"torso": Vector3(0.06, 0.0, 0.0),
-					&"neck": Vector3(-0.12, 0.0, 0.0),
+				# 预备（anticipation）：轻微前倾，准备把重心移到手上
+				{"t": 0.08, "pose": _merge(bed, {
+					&"body_pos": Vector3(0.0, 0.028, 0.0),
+					&"torso": Vector3(0.04, 0.0, 0.0),
+					&"neck": Vector3(-0.08, 0.0, 0.0),
 					&"head": Vector3(-0.06, 0.0, 0.0),
-					&"shoulder_l": Vector3(-0.10, 0.0, -0.16),
-					&"shoulder_r": Vector3(-0.05, 0.0, 0.16),
-					&"elbow_l": Vector3(0.30, 0.0, 0.0),
-					&"elbow_r": Vector3(0.40, 0.0, 0.0),
-					&"hip_l": Vector3(-1.00, 0.0, 0.0),
-					&"hip_r": Vector3(-0.95, 0.0, 0.0),
-					&"knee_l": Vector3(0.75, 0.0, 0.0),
-					&"knee_r": Vector3(0.70, 0.0, 0.0),
-					&"foot_l": Vector3(0.30, 0.0, 0.0),
-					&"foot_r": Vector3(0.30, 0.0, 0.0),
+					&"shoulder_l": Vector3(-0.30, 0.0, -0.12),
+					&"shoulder_r": Vector3(-0.30, 0.0, 0.12),
+					&"elbow_l": Vector3(0.34, 0.0, 0.0),
+					&"elbow_r": Vector3(0.34, 0.0, 0.0),
 				})},
-				{"t": 0.60, "pose": _merge(bed, {
-					&"body_pos": Vector3(0.0, 0.120, 0.0),
-					&"body_roll": Vector3(0.0, 0.0, 2.0),
-					&"body_tilt": Vector3(-1.15, 0.0, 0.0),
-					&"neck": Vector3(-0.20, 0.05, 0.0),
-					&"head": Vector3(0.0, 0.05, 0.0),
-					&"shoulder_l": Vector3(0.0, 0.0, -0.24),
-					&"shoulder_r": Vector3(0.05, 0.0, 0.20),
-					&"elbow_l": Vector3(0.20, 0.0, 0.0),
-					&"elbow_r": Vector3(0.30, 0.0, 0.0),
-					&"hip_l": Vector3(-0.40, 0.0, 0.0),
+				# 搬腿上床：双腿抬平（世界水平 → hip = -PI/2 - body_tilt），躯干后仰 0.55，双手向后撑
+				{"t": 0.30, "pose": _merge(bed, {
+					&"body_pos": Vector3(0.0, 0.030, 0.0),
+					&"body_roll": Vector3(0.0, 0.0, PI),
+					&"body_tilt": Vector3(-0.55, 0.0, 0.0),
+					&"torso": Vector3(0.02, 0.0, 0.0),
+					&"neck": Vector3(-0.18, 0.02, 0.06),
+					&"head": Vector3(-0.10, 0.02, 0.04),
+					&"shoulder_l": Vector3(-0.85, 0.0, -0.16),
+					&"shoulder_r": Vector3(-0.85, 0.0, 0.16),
+					&"elbow_l": Vector3(0.75, 0.0, 0.0),
+					&"elbow_r": Vector3(0.75, 0.0, 0.0),
+					&"hand_l": Vector3(0.20, 0.0, 0.0),
+					&"hand_r": Vector3(0.20, 0.0, 0.0),
+					&"hip_l": Vector3(-1.02, 0.0, 0.0),
+					&"hip_r": Vector3(-1.02, 0.0, 0.0),
+					&"knee_l": Vector3(0.06, 0.0, 0.0),
+					&"knee_r": Vector3(0.02, 0.0, 0.0),
+					&"foot_l": Vector3(0.22, 0.0, 0.0),
+					&"foot_r": Vector3(0.22, 0.0, 0.0),
+				})},
+				# 后仰中段：躯干 -1.25，双腿保持水平，手滑向身侧
+				{"t": 0.62, "pose": _merge(bed, {
+					&"body_pos": Vector3(0.0, 0.058, 0.0),
+					&"body_roll": Vector3(0.0, 0.0, PI),
+					&"body_tilt": Vector3(-1.25, 0.0, 0.0),
+					&"torso": Vector3(0.02, 0.0, 0.0),
+					&"neck": Vector3(-0.42, 0.03, 0.12),
+					&"head": Vector3(-0.02, 0.03, 0.08),
+					&"shoulder_l": Vector3(-0.40, 0.0, -0.26),
+					&"shoulder_r": Vector3(-0.38, 0.0, 0.20),
+					&"elbow_l": Vector3(0.48, 0.0, 0.0),
+					&"elbow_r": Vector3(0.52, 0.0, 0.0),
+					&"hand_l": Vector3(0.12, 0.0, 0.0),
+					&"hand_r": Vector3(0.12, 0.0, 0.0),
+					&"hip_l": Vector3(-0.33, 0.0, 0.0),
 					&"hip_r": Vector3(-0.30, 0.0, 0.0),
-					&"knee_l": Vector3(0.30, 0.0, 0.0),
-					&"knee_r": Vector3(0.20, 0.0, 0.0),
-					&"foot_l": Vector3(0.35, 0.0, 0.0),
-					&"foot_r": Vector3(0.35, 0.0, 0.0),
+					&"knee_l": Vector3(-0.10, 0.0, 0.0),
+					&"knee_r": Vector3(-0.16, 0.0, 0.0),
+					&"foot_l": Vector3(0.34, 0.0, 0.0),
+					&"foot_r": Vector3(0.26, 0.0, 0.0),
 				})},
+				# 躺平（头还略抬）：躯干 -1.50，腿落到被面，双臂放松
 				{"t": 0.85, "pose": _merge(bed, {
-					&"body_pos": Vector3(0.0, 0.106, 0.0),
-					&"body_roll": Vector3(0.0, 0.0, 3.05),
-					&"body_tilt": Vector3(-1.52, 0.0, 0.0),
-					&"neck": Vector3(-0.78, 0.05, 0.22),
-					&"head": Vector3(0.10, 0.04, 0.14),
-					&"shoulder_l": Vector3(0.05, 0.0, -0.30),
-					&"shoulder_r": Vector3(0.10, 0.0, 0.16),
-					&"elbow_l": Vector3(0.20, 0.0, 0.0),
-					&"elbow_r": Vector3(0.50, 0.0, 0.0),
+					&"body_pos": Vector3(0.0, 0.089, 0.0),
+					&"body_roll": Vector3(0.0, 0.0, PI),
+					&"body_tilt": Vector3(-1.50, 0.0, 0.0),
+					&"torso": Vector3(0.0, 0.0, 0.0),
+					&"neck": Vector3(-0.66, 0.03, 0.20),
+					&"head": Vector3(0.04, 0.03, 0.10),
+					&"shoulder_l": Vector3(-0.10, 0.0, -0.28),
+					&"shoulder_r": Vector3(-0.04, 0.0, 0.16),
+					&"elbow_l": Vector3(0.24, 0.0, 0.0),
+					&"elbow_r": Vector3(0.48, 0.0, 0.0),
 					&"hand_r": Vector3(0.10, 0.0, 0.0),
-					&"hip_l": Vector3(0.0, 0.0, 0.0),
-					&"hip_r": Vector3(0.40, 0.0, 0.0),
-					&"knee_l": Vector3(-0.04, 0.0, 0.0),
-					&"knee_r": Vector3(-0.80, 0.0, 0.0),
-					&"foot_l": Vector3(0.40, 0.0, 0.0),
-					&"foot_r": Vector3(0.20, 0.0, 0.0),
+					&"hip_l": Vector3(0.04, 0.0, 0.0),
+					&"hip_r": Vector3(0.10, 0.0, 0.0),
+					&"knee_l": Vector3(-0.05, 0.0, 0.0),
+					&"knee_r": Vector3(-0.20, 0.0, 0.0),
+					&"foot_l": Vector3(0.38, 0.0, 0.0),
+					&"foot_r": Vector3(0.14, 0.0, 0.0),
+				})},
+				# 头落枕 overshoot：颈略低 0.05，随即回位 → 后脑在枕面上“落定”
+				{"t": 0.92, "pose": _merge(lie, {
+					&"body_pos": Vector3(0.0, 0.092, 0.0),
+					&"neck": Vector3(-0.67, 0.03, 0.22),
+					&"head": Vector3(0.10, 0.03, 0.13),
 				})},
 				{"t": 1.0, "pose": lie},
 			]
@@ -1037,66 +1179,225 @@ func _clip_frames(clip_name: StringName) -> Array:
 				{"t": 6.0, "pose": slp},
 			]
 		&"get_up":
+			# P9 / P7-FINALIZE 起床重做（C 报告 D6 提到 get_up 是死代码）：旧版结束时直接“站到地上”，
+			# 和睡姿 root（床垫顶）矛盾，所以从未被使用。新版改为 **睡姿 → 撑起 → 坐起 → 坐回床沿**，
+			# 结束帧 == _bed_sit()，由控制器在 LIE_OUT 里把 root 从躺姿锚点移回床沿，再由 bed_sit_up 站起。
+			# 这样“醒来→坐起→离床→站起”每一段都有独立姿势且首尾连续（无瞬移/无跳变）。
 			var slp2 := _sleep_pose()
-			var stand2 := _stand()
+			var bed2 := _bed_sit()
 			return [
 				{"t": 0.0, "pose": slp2},
-				{"t": 0.35, "pose": _merge(slp2, {
-					&"body_pos": Vector3(0.0, 0.118, 0.0),
-					&"body_roll": Vector3(0.0, 0.0, 2.40),
-					&"body_tilt": Vector3(-1.20, 0.0, 0.0),
-					&"neck": Vector3(-0.72, 0.04, 0.18),
-					&"head": Vector3(0.10, 0.03, 0.12),
-					&"hip_l": Vector3(0.10, 0.0, 0.0),
-					&"hip_r": Vector3(0.20, 0.0, 0.0),
-					&"knee_l": Vector3(-0.30, 0.0, 0.0),
-					&"knee_r": Vector3(-0.40, 0.0, 0.0),
+				# 0.12：睁眼 + 微微抬头（预备），手开始往身侧收
+				{"t": 0.12, "pose": _merge(slp2, {
+					&"body_pos": Vector3(0.0, 0.098, 0.0),
+					&"neck": Vector3(-0.62, 0.03, 0.20),
+					&"head": Vector3(0.12, 0.03, 0.12),
+					&"shoulder_l": Vector3(-0.20, 0.0, -0.26),
+					&"shoulder_r": Vector3(-0.14, 0.0, 0.16),
+					&"elbow_l": Vector3(0.40, 0.0, 0.0),
+					&"elbow_r": Vector3(0.50, 0.0, 0.0),
 					&"eyelid_l": EYELID_OPEN,
 					&"eyelid_r": EYELID_OPEN,
 				})},
-				{"t": 0.65, "pose": _merge(slp2, {
-					&"body_pos": Vector3(0.0, 0.100, 0.0),
-					&"body_roll": Vector3(0.0, 0.0, 1.20),
-					&"body_tilt": Vector3(-0.80, 0.0, 0.0),
-					&"neck": Vector3(-0.10, 0.0, 0.0),
-					&"head": Vector3(-0.05, 0.0, 0.0),
-					&"shoulder_l": Vector3(-0.10, 0.0, -0.14),
-					&"shoulder_r": Vector3(-0.05, 0.0, 0.14),
-					&"elbow_l": Vector3(0.30, 0.0, 0.0),
-					&"elbow_r": Vector3(0.35, 0.0, 0.0),
-					&"hip_l": Vector3(-0.60, 0.0, 0.0),
-					&"hip_r": Vector3(-0.55, 0.0, 0.0),
-					&"knee_l": Vector3(0.50, 0.0, 0.0),
-					&"knee_r": Vector3(0.45, 0.0, 0.0),
+				# 0.32：双手撑床把上身推起（腿部仍搭在床上，hip 保持“世界水平”）
+				{"t": 0.32, "pose": _merge(slp2, {
+					&"body_pos": Vector3(0.0, 0.115, 0.0),
+					&"body_roll": Vector3(0.0, 0.0, PI),
+					&"body_tilt": Vector3(-1.15, 0.0, 0.0),
+					&"torso": Vector3(0.04, 0.0, 0.0),
+					&"neck": Vector3(-0.50, 0.03, 0.14),
+					&"head": Vector3(0.06, 0.03, 0.10),
+					&"shoulder_l": Vector3(-0.90, 0.0, -0.20),
+					&"shoulder_r": Vector3(-0.88, 0.0, 0.18),
+					&"elbow_l": Vector3(0.95, 0.0, 0.0),
+					&"elbow_r": Vector3(0.92, 0.0, 0.0),
+					&"hand_l": Vector3(0.22, 0.0, 0.0),
+					&"hand_r": Vector3(0.22, 0.0, 0.0),
+					&"hip_l": Vector3(-0.42, 0.0, 0.0),
+					&"hip_r": Vector3(-0.40, 0.0, 0.0),
+					&"knee_l": Vector3(-0.20, 0.0, 0.0),
+					&"knee_r": Vector3(-0.24, 0.0, 0.0),
+					&"foot_l": Vector3(0.18, 0.0, 0.0),
+					&"foot_r": Vector3(0.12, 0.0, 0.0),
+					&"eyelid_l": EYELID_OPEN,
+					&"eyelid_r": EYELID_OPEN,
+				})},
+				# 0.58：坐起在床沿上方（躯干 -0.35，大腿水平，小腿开始垂下）
+				{"t": 0.58, "pose": _merge(bed2, {
+					&"body_pos": Vector3(0.0, 0.087, 0.0),
+					&"body_roll": Vector3(0.0, 0.0, PI),
+					&"body_tilt": Vector3(-0.35, 0.0, 0.0),
+					&"torso": Vector3(0.06, 0.0, 0.0),
+					&"neck": Vector3(-0.05, 0.02, 0.06),
+					&"head": Vector3(-0.05, 0.02, 0.04),
+					&"shoulder_l": Vector3(0.35, 0.0, -0.12),
+					&"shoulder_r": Vector3(0.35, 0.0, 0.12),
+					&"elbow_l": Vector3(0.50, 0.0, 0.0),
+					&"elbow_r": Vector3(0.50, 0.0, 0.0),
+					&"hand_l": Vector3(0.10, 0.0, 0.0),
+					&"hand_r": Vector3(0.10, 0.0, 0.0),
+					&"hip_l": Vector3(-1.05, 0.0, 0.0),
+					&"hip_r": Vector3(-1.05, 0.0, 0.0),
+					&"knee_l": Vector3(0.55, 0.0, 0.0),
+					&"knee_r": Vector3(0.55, 0.0, 0.0),
 					&"foot_l": Vector3(0.30, 0.0, 0.0),
 					&"foot_r": Vector3(0.30, 0.0, 0.0),
 					&"eyelid_l": EYELID_OPEN,
 					&"eyelid_r": EYELID_OPEN,
 				})},
-				{"t": 0.85, "pose": _merge(slp2, {
-					&"body_pos": Vector3(0.0, 0.060, 0.0),
-					&"body_roll": Vector3(0.0, 0.0, 0.20),
-					&"body_tilt": Vector3(-0.15, 0.0, 0.0),
-					&"pelvis": Vector3(0.10, 0.0, 0.0),
-					&"torso": Vector3(0.12, 0.0, 0.0),
-					&"neck": Vector3(-0.04, 0.0, 0.0),
-					&"head": Vector3(-0.04, 0.0, 0.0),
-					&"shoulder_l": Vector3(0.20, 0.0, -0.08),
-					&"shoulder_r": Vector3(0.20, 0.0, 0.08),
-					&"elbow_l": Vector3(0.20, 0.0, 0.0),
-					&"elbow_r": Vector3(0.20, 0.0, 0.0),
-					&"hand_l": Vector3.ZERO,
-					&"hand_r": Vector3.ZERO,
-					&"hip_l": Vector3(1.10, 0.0, 0.0),
-					&"hip_r": Vector3(1.05, 0.0, 0.0),
-					&"knee_l": Vector3(-1.00, 0.0, 0.0),
-					&"knee_r": Vector3(-0.95, 0.0, 0.0),
-					&"foot_l": Vector3(-0.20, 0.0, 0.0),
-					&"foot_r": Vector3(-0.20, 0.0, 0.0),
+				# 0.80：躯干回正、双腿垂到床边，手撑一下床沿准备站起（follow-through）
+				{"t": 0.80, "pose": _merge(bed2, {
+					&"body_pos": Vector3(0.0, 0.058, 0.0),
+					&"body_tilt": Vector3(-0.10, 0.0, 0.0),
+					&"torso": Vector3(0.10, 0.0, 0.0),
+					&"neck": Vector3(-0.06, 0.0, 0.0),
+					&"head": Vector3(-0.06, 0.0, 0.0),
+					&"shoulder_l": Vector3(-0.50, 0.0, -0.12),
+					&"shoulder_r": Vector3(-0.50, 0.0, 0.12),
+					&"elbow_l": Vector3(0.60, 0.0, 0.0),
+					&"elbow_r": Vector3(0.60, 0.0, 0.0),
+					&"hand_l": Vector3(0.16, 0.0, 0.0),
+					&"hand_r": Vector3(0.16, 0.0, 0.0),
+					&"hip_l": Vector3(-0.95, 0.0, 0.0),
+					&"hip_r": Vector3(-0.95, 0.0, 0.0),
+					&"knee_l": Vector3(0.64, 0.0, 0.0),
+					&"knee_r": Vector3(0.64, 0.0, 0.0),
+					&"foot_l": Vector3(0.32, 0.0, 0.0),
+					&"foot_r": Vector3(0.32, 0.0, 0.0),
 					&"eyelid_l": EYELID_OPEN,
 					&"eyelid_r": EYELID_OPEN,
 				})},
-				{"t": 1.0, "pose": stand2},
+				{"t": 1.0, "pose": bed2},
+			]
+		&"fish_hold":
+			# 站立持竿待机 4 s：右手抬竿基本不动，躯干/头做一次“呼吸 + 左右看水”的微摆；
+			# 首尾帧完全一致（t=4.0 == t=0.0），循环无缝。
+			var fh := _fish_hold_pose()
+			return [
+				{"t": 0.0, "pose": fh},
+				{"t": 1.0, "pose": _fish_hold_pose(1.0, 0.65)},
+				{"t": 2.0, "pose": _fish_hold_pose(0.0, 1.0)},
+				{"t": 3.0, "pose": _fish_hold_pose(-1.0, 0.65)},
+				{"t": 4.0, "pose": fh},
+			]
+		&"fish_cast":
+			# P9 / P6-VISUAL-FIX：抛竿 1.2 s 重写为“过顶前抛”，与 FishingRig 的竿仰角曲线同步：
+			#   0.00 持竿（竿尖前指海面）→ 0.24 收臂调节 → 0.36 上抬过肩蓄力（竿尖抬到 77°）
+			#   → 0.50 向前甩出释放（手臂前伸、竿尖压到水平下方 18°）→ 0.64 跟随
+			#   → 0.90 收势 → 1.20 回到持竿帧（无跳变）。
+			# 与旧版的关键差别：右臂不再“向后下方拉”，而是先在身前抬起蓄力，再向前甩。
+			var fc := _fish_hold_pose()
+			return [
+				{"t": 0.0, "pose": fc},
+				{"t": 0.24, "pose": _merge(fc, {
+					&"body_pos": Vector3(0.0, 0.754, 0.0),
+					&"body_roll": Vector3(0.0, -0.10, 0.0),
+					&"torso": Vector3(0.05, -0.16, 0.02),
+					&"neck": Vector3(-0.02, 0.10, 0.0),
+					&"head": Vector3(-0.03, 0.16, 0.0),
+					&"hair": Vector3(0.0, 0.04, 0.0),
+					&"shoulder_r": Vector3(1.26, 0.02, 0.12),
+					&"elbow_r": Vector3(0.92, 0.0, 0.0),
+					&"hand_r": Vector3(-0.34, 0.0, 0.0),
+					&"shoulder_l": Vector3(0.60, 0.0, -0.13),
+					&"elbow_l": Vector3(1.05, 0.0, 0.0),
+					&"hand_l": Vector3(0.22, 0.0, 0.0),
+				})},
+				{"t": 0.36, "pose": _merge(fc, {
+					&"body_pos": Vector3(0.0, 0.748, 0.0),
+					&"body_roll": Vector3(0.0, -0.16, 0.0),
+					&"torso": Vector3(0.12, -0.26, 0.02),
+					&"neck": Vector3(-0.02, 0.16, 0.0),
+					&"head": Vector3(-0.04, 0.22, 0.0),
+					&"hair": Vector3(0.0, 0.06, 0.0),
+					&"shoulder_r": Vector3(1.46, 0.02, 0.14),
+					&"elbow_r": Vector3(1.26, 0.0, 0.0),
+					&"hand_r": Vector3(-0.50, 0.0, 0.0),
+					&"shoulder_l": Vector3(0.66, 0.0, -0.15),
+					&"elbow_l": Vector3(1.18, 0.0, 0.0),
+					&"hand_l": Vector3(0.24, 0.0, 0.0),
+				})},
+				{"t": 0.50, "pose": _merge(fc, {
+					&"body_pos": Vector3(0.0, 0.762, 0.0),
+					&"body_roll": Vector3(0.0, 0.08, 0.0),
+					&"torso": Vector3(-0.16, 0.20, 0.0),
+					&"neck": Vector3(0.02, -0.10, 0.0),
+					&"head": Vector3(0.04, -0.14, 0.0),
+					&"hair": Vector3(0.0, -0.05, 0.0),
+					&"shoulder_r": Vector3(1.68, 0.0, 0.10),
+					&"elbow_r": Vector3(0.22, 0.0, 0.0),
+					&"hand_r": Vector3(0.08, 0.0, 0.0),
+					&"shoulder_l": Vector3(0.30, 0.0, -0.10),
+					&"elbow_l": Vector3(0.60, 0.0, 0.0),
+					&"hand_l": Vector3(0.12, 0.0, 0.0),
+				})},
+				{"t": 0.64, "pose": _merge(fc, {
+					&"body_pos": Vector3(0.0, 0.760, 0.0),
+					&"body_roll": Vector3(0.0, 0.04, 0.0),
+					&"torso": Vector3(-0.09, 0.12, 0.0),
+					&"neck": Vector3(0.0, -0.05, 0.0),
+					&"head": Vector3(0.01, -0.08, 0.0),
+					&"hair": Vector3(0.0, -0.02, 0.0),
+					&"shoulder_r": Vector3(1.44, 0.0, 0.11),
+					&"elbow_r": Vector3(0.34, 0.0, 0.0),
+					&"hand_r": Vector3(-0.14, 0.0, 0.0),
+					&"shoulder_l": Vector3(0.44, 0.0, -0.11),
+					&"elbow_l": Vector3(0.78, 0.0, 0.0),
+				})},
+				{"t": 0.90, "pose": _merge(fc, {
+					&"torso": Vector3(-0.06, 0.04, 0.0),
+					&"shoulder_r": Vector3(1.20, 0.04, 0.12),
+					&"elbow_r": Vector3(0.42, 0.0, 0.0),
+					&"hand_r": Vector3(-0.28, 0.0, 0.0),
+					&"shoulder_l": Vector3(0.52, 0.0, -0.12),
+					&"elbow_l": Vector3(0.90, 0.0, 0.0),
+				})},
+				{"t": 1.2, "pose": fc},
+			]
+		&"fish_reel":
+			# 收线 1.4 s：持竿 → 先绷一下（0.16）→ 猛地往上后方提竿（0.34，肘大幅弯曲）→
+			# 小松（0.52）→ 第二把提竿（0.80）→ 1.4 回到持竿帧。
+			var fr := _fish_hold_pose()
+			var fr_pull := _merge(fr, {
+				&"body_pos": Vector3(0.0, 0.757, 0.0),
+				&"body_roll": Vector3(0.0, 0.03, 0.0),
+				&"torso": Vector3(0.14, 0.05, -0.02),
+				&"neck": Vector3(-0.08, -0.03, 0.0),
+				&"head": Vector3(-0.10, -0.04, 0.0),
+				&"hair": Vector3(0.0, -0.02, 0.0),
+				&"shoulder_r": Vector3(0.80, 0.0, 0.13),
+				&"elbow_r": Vector3(1.90, 0.0, 0.0),
+				&"hand_r": Vector3(-0.55, 0.0, 0.0),
+				&"shoulder_l": Vector3(0.62, 0.0, -0.14),
+				&"elbow_l": Vector3(1.05, 0.0, 0.0),
+				&"hand_l": Vector3(0.20, 0.0, 0.0),
+			})
+			return [
+				{"t": 0.0, "pose": fr},
+				{"t": 0.16, "pose": _merge(fr, {
+					&"body_pos": Vector3(0.0, 0.758, 0.0),
+					&"torso": Vector3(0.02, 0.02, 0.0),
+					&"shoulder_r": Vector3(0.98, 0.04, 0.12),
+					&"elbow_r": Vector3(0.60, 0.0, 0.0),
+					&"hand_r": Vector3(-0.34, 0.0, 0.0),
+				})},
+				{"t": 0.34, "pose": fr_pull},
+				{"t": 0.52, "pose": _merge(fr, {
+					&"torso": Vector3(0.05, 0.02, 0.0),
+					&"neck": Vector3(-0.05, -0.01, 0.0),
+					&"head": Vector3(-0.06, -0.02, 0.0),
+					&"shoulder_r": Vector3(1.00, 0.04, 0.12),
+					&"elbow_r": Vector3(1.15, 0.0, 0.0),
+					&"hand_r": Vector3(-0.40, 0.0, 0.0),
+				})},
+				{"t": 0.80, "pose": fr_pull},
+				{"t": 1.05, "pose": _merge(fr, {
+					&"torso": Vector3(0.04, 0.01, 0.0),
+					&"shoulder_r": Vector3(1.02, 0.05, 0.12),
+					&"elbow_r": Vector3(0.75, 0.0, 0.0),
+					&"hand_r": Vector3(-0.34, 0.0, 0.0),
+				})},
+				{"t": 1.4, "pose": fr},
 			]
 		_:
 			return [{"t": 0.0, "pose": _stand()}]
@@ -1148,6 +1449,27 @@ static func _walk_passing(swing: float) -> Dictionary:
 
 
 
+
+
+## 钓鱼持竿（P6）：右手抬到身前斜上举（握住竿柄），左手收到腰前扶线，其余沿用站姿。
+## sway ∈ [-1,1] 躯干/头左右微摆，breath ∈ [0,1] 呼吸起伏；两者只改极小量，
+## 让 4 s 循环有“站着等鱼”的活气，同时右手握竿点几乎不动（≤3 cm），方便鱼竿/鱼线锚定。
+static func _fish_hold_pose(sway: float = 0.0, breath: float = 0.0) -> Dictionary:
+	return _merge(_stand(), {
+		&"body_pos": Vector3(0.0, HIP_Y + 0.0035 * breath, 0.0),
+		&"torso": Vector3(-0.05 + 0.012 * breath, 0.060 * sway, 0.010 * sway),
+		&"neck": Vector3(-0.03, -0.045 * sway, 0.0),
+		&"head": Vector3(-0.02 + 0.008 * breath, -0.060 * sway, 0.0),
+		&"hair": Vector3(0.0, -0.020 * sway, 0.0),
+		# 右臂：肩抬到身前斜上（≈1.12 rad），肘再屈 0.42 rad，手心内下压握竿
+		&"shoulder_r": Vector3(1.12, 0.06, 0.12),
+		&"elbow_r": Vector3(0.42, 0.0, 0.0),
+		&"hand_r": Vector3(-0.30, 0.0, 0.0),
+		# 左臂：收到腰前扶线（手在胸腹前 ≈0.95 m 高）
+		&"shoulder_l": Vector3(0.55, 0.0, -0.12),
+		&"elbow_l": Vector3(0.95, 0.0, 0.0),
+		&"hand_l": Vector3(0.18, 0.0, 0.0),
+	})
 
 
 # =============================================================================

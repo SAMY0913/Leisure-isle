@@ -159,12 +159,24 @@ func _phase_pure() -> void:
 	_check(float(tg2["roll"]) <= -0.10, "S2 风向反转后 roll 目标为负（朝上风侧）")
 	var tg6: Dictionary = MainScript.swing_wind_targets(WIND_HURRICANE, WD_135, 3.0)
 	_check(float(tg6["roll"]) <= 0.42 + 0.0001 and float(tg6["roll"]) >= -0.18 - 0.0001, "S6 台风级 roll 目标仍被夹紧")
-	# S1 无风基准函数
+	# S1 无风基准函数（P7-FINALIZE：无风被动摆幅从 ±0.42rad(24°) 收到 7°/2°）
 	var idle0: Vector2 = MainScript.swing_idle_rot(0.0)
 	_near(idle0.x, 0.0, 1e-7, "S1 idle(0).x=0")
-	_near(idle0.y, sin(0.8) * 0.06, 1e-7, "S1 idle(0).z=sin(0.8)*0.06")
+	_near(idle0.y, sin(0.8) * MainScript.SWING_IDLE_ROLL, 1e-7, "S1 idle(0).z=sin(0.8)*SWING_IDLE_ROLL")
 	var idle1: Vector2 = MainScript.swing_idle_rot(1.0)
-	_near(idle1.x, sin(1.15) * 0.42, 1e-7, "S1 idle(1).x=sin(1.15)*0.42")
+	_near(idle1.x, sin(1.15) * MainScript.SWING_IDLE_PITCH, 1e-7, "S1 idle(1).x=sin(1.15)*SWING_IDLE_PITCH")
+	# 用户验收：无风最大摆角 5–10°（单侧、相对自然悬垂）；用合成倾角 sqrt(pitch²+roll²) 也须 <=10°。
+	var idle_max_pitch := 0.0
+	var idle_max_tilt := 0.0
+	for i in range(2000):
+		var tt := float(i) * 0.01
+		var iv: Vector2 = MainScript.swing_idle_rot(tt)
+		idle_max_pitch = maxf(idle_max_pitch, absf(iv.x))
+		idle_max_tilt = maxf(idle_max_tilt, sqrt(iv.x * iv.x + iv.y * iv.y))
+	_check(idle_max_pitch >= deg_to_rad(5.0) and idle_max_pitch <= deg_to_rad(10.0),
+		"S1 无风前后摆幅 5–10°（实际 %.2f°）" % rad_to_deg(idle_max_pitch))
+	_check(idle_max_tilt <= deg_to_rad(10.0),
+		"S1 无风合成最大倾角 <=10°（实际 %.2f°）" % rad_to_deg(idle_max_tilt))
 	# 弹簧收敛
 	var sx := 0.0
 	var sv := 0.0
@@ -388,7 +400,16 @@ func _phase_swing() -> void:
 		var idle: Vector2 = MainScript.swing_idle_rot(ft)
 		max_err = maxf(max_err, absf(_pivot.rotation.x - idle.x))
 		max_err = maxf(max_err, absf(_pivot.rotation.z - idle.y))
-	_check(max_err < 1e-6, "S1 wind=0 时逐帧退回旧 idle 公式（最大误差 %.8f < 1e-6）" % max_err)
+	_check(max_err < 1e-6, "S1 wind=0 时逐帧使用无风 idle 公式（最大误差 %.8f < 1e-6）" % max_err)
+	# 真实绑定场景：wind=0 连续 20s 无风，秋千实际旋转不得回到旧的 ±24°。
+	var real_max := 0.0
+	for i in range(240):
+		var ft2 := float(m.get("_frame_t")) + DT
+		m.set("_frame_t", ft2)
+		m.call("_update_props", DT)
+		real_max = maxf(real_max, absf(float(_pivot.rotation.x)))
+	_check(real_max <= deg_to_rad(10.0) + 1e-5,
+		"B1 真实无风 20s 最大前后摆 <=10°（实际 %.2f°）" % rad_to_deg(real_max))
 	# S2 强风受迫摆动：20s 统计
 	_set_weather(WIND_STRONG, WD_135)
 	m.set("_p81wind_legacy", false)

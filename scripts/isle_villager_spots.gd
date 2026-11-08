@@ -11,6 +11,8 @@ extends RefCounted
 ##   "flat"    - y is already the walk surface (interior floor / porch / landing)
 ##   "stair"   - y is a tread top; segment height lerps between tread tops
 ##   "terrain" - y follows IsleWorld.surface_y(x,z) every frame
+##   "yard"    - front-yard paved deck: y = IsleWorld._yard_pad_y()+YARD_FLOOR_LIFT
+##   "yard_bed"- top face of a raised soil bed: yard deck + YARD_BED_RISE (P4-CLOSE)
 ##
 ## Spot kinds: "bed" | "eat" | "sit" | "view".
 ## A spot anchor is where the villager root sits for the final pose
@@ -27,14 +29,103 @@ extends RefCounted
 ##                 wall benches / reading chair whose back is close to the roof slope).
 
 const W := preload("res://scripts/world.gd")
+const M := preload("res://scripts/isle_math.gd")
 
 const BODY_R := 0.10   # pathing guard radius: the sofa/coffee-table gap is only 0.45 m
                       # wide, so generous 0.2 m clearance would make the sofa unreachable
+
+# ---- P6 钓鱼：唯一钓位（码头木板上，面朝海面抛竿）------------------------------
+# P9 / P6-VISUAL-FIX：旧钓位 shore_stand 落在码头旁 0.96 m 高的沙滩斜坡上（地形高度
+# 由 W.surface_y 给出），岛民站在绿色斜坡上而不是码头木板上，验收截图因此明显错误。
+# 新钓位放在码头**船头端无栏杆区**（dock-local z=10.60 > 最后一根栏杆柱 z=10.40），
+# 双脚在木板可站立范围（x ∈ [-1.70,1.70]，z ∈ [1.80,11.23]，板面 y = 0.72）内。
+# 抛竿方向不能沿码头轴线：停泊帆船 Sailboat 的船体正好横在码头尽头
+# （dock-local x ∈ [-2.65,2.51]，z ∈ [13.15,15.62]），3.2 m 直线抛投会落进船体。
+# 因此 cast_dir = 码头向外轴线绕 +Y 偏 FISH_CAST_YAW_RAD，落到船体侧面的开阔海面。
+const FISH_SPOT_NODE := "dock_fishing_stand"
+const FISH_CAST_DIST := 3.2
+const FISH_CAST_YAW_RAD := 1.0821        # 62°：实测离船体最近点 clearance ≈ 2.1 m
+const FISH_DECK_Y := 0.72                # = IsleWorld.DECK_WORLD_Y（木板顶面世界高度）
+
+## 码头的真实空间框架（世界原点 / 向海轴线 / 偏航）。整张图里所有码头站位都从这一份
+## 数据派生，钓位朝向与抛竿落点也随之派生，避免"站位一套方向、抛竿另一套方向"。
+static func dock_frame() -> Dictionary:
+    var s := M.dock_start()
+    var d := M.dock_dir()
+    return {"origin": s, "dir": d, "yaw": atan2(d.x, d.z), "deck_y": FISH_DECK_Y}
+
+
+## 码头局部 (lx, lz) → 世界水平坐标。与 world.gd::_dock() 的 node.position/rotation.y 同源。
+static func dock_local_to_world(lx: float, lz: float) -> Vector3:
+    var f := dock_frame()
+    var o: Vector3 = f["origin"]
+    var b := Basis(Vector3.UP, float(f["yaw"]))
+    var rel: Vector3 = b * Vector3(lx, 0.0, lz)
+    return Vector3(o.x + rel.x, 0.0, o.z + rel.z)
+
+
+## 钓鱼点的事实快照（读图即可，不改变任何状态）。返回 {} = 图里没有钓位节点。
+## point = 岛民站位（甲板面）；cast_point = 水面浮漂落点（海面 y=0）；
+## cast_dir / face_yaw = 抛竿方向与岛民朝向（同一份数据派生）。
+static func fishing_spot(graph: Dictionary) -> Dictionary:
+    var nodes: Dictionary = graph.get("nodes", {})
+    if not nodes.has(FISH_SPOT_NODE):
+        return {}
+    var p: Vector3 = (nodes[FISH_SPOT_NODE] as Dictionary)["pos"]
+    var dock: Dictionary = graph.get("dock", {})
+    var axis := Vector3.ZERO
+    if dock.has("dir"):
+        var d: Vector3 = dock["dir"]
+        axis = Vector3(d.x, 0.0, d.z)
+    if axis.length() < 0.001:
+        axis = Vector3(p.x, 0.0, p.z)
+    if axis.length() < 0.001:
+        return {}
+    axis = axis.normalized()
+    var dir := axis.rotated(Vector3.UP, FISH_CAST_YAW_RAD)
+    dir = Vector3(dir.x, 0.0, dir.z).normalized()
+    var cast := Vector3(p.x + dir.x * FISH_CAST_DIST, 0.0, p.z + dir.z * FISH_CAST_DIST)
+    return {
+        "node": FISH_SPOT_NODE,
+        "point": p,
+        "cast_point": cast,
+        "cast_dir": dir,
+        "cast_axis": axis,
+        "face_yaw": atan2(-dir.x, -dir.z),
+    }
 
 const NODE_DEFS := [
     # ---- outdoor (world metres) -------------------------------------------------
     ["front_path_1", 2.20, 6.40, 0.0, "terrain", "outdoor"],
     ["front_path_2", 5.60, 8.60, 0.0, "terrain", "outdoor"],
+    # ---- P6 钓鱼：沿既有砾石主路（门廊→码头）走到岸线，再下到沙滩钓位 ----------------
+    # 主路中心线采样自 world.gd _prepare()（5.6,8.6 -> 9.6,10.2 -> 14.2,11.8 -> dock_start），
+    # 因此这三段与玩家可见小路重合，不穿越房屋/围栏/农田。dock_shoreside 就在码头根部
+    # 的砾石路终点；随后三个节点沿沙坡折向水面（地形高度由 surface_y 提供）。
+    ["shore_path_1", 9.60, 10.20, 0.0, "terrain", "outdoor"],
+    ["shore_path_2", 14.20, 11.80, 0.0, "terrain", "outdoor"],
+    ["dock_shoreside", 19.78485, 14.12459, 0.0, "terrain", "outdoor"],
+    # ---- P9 / P6-VISUAL-FIX：码头木板上的钓鱼站位 ------------------------------
+    # 全部用 **dock 局部坐标**（lx, lz）授权，世界坐标由 dock_local_to_world() 从
+    # isle_math.dock_start()/dock_dir() 派生，与 world.gd::_dock() 同一份几何，
+    # 不再出现“路径点写死世界坐标、和木板对不上”的问题：
+    #   dock_step_a/b：下沙滩的两级（y 取真实地形 surface_y，和码头石阶同一个坡）
+    #   dock_deck_in ：踏上第一块木板（板面 y = 0.72）
+    #   dock_walk_mid：木板中段（3.4 m 宽甲板的中线，离两侧栏杆 1.68 m）
+    #   dock_fishing_stand：船头端无栏杆区（z=10.60 > 最后一根栏杆柱 z=10.40），
+    #                        双脚在木板可站立范围 z ∈ [1.80, 11.23] 内。
+    ["dock_step_a", 0.0, 0.50, 0.0, "dock_terrain", "outdoor"],
+    ["dock_step_b", 0.0, 1.20, 0.0, "dock_terrain", "outdoor"],
+    ["dock_step_c", 0.0, 1.55, 0.0, "dock_terrain", "outdoor"],
+    ["dock_deck_in", 0.0, 1.95, 0.72, "dock", "outdoor"],
+    ["dock_walk_mid", 0.0, 6.40, 0.72, "dock", "outdoor"],
+    ["dock_fishing_stand", 0.0, 10.60, 0.72, "dock", "outdoor"],
+    # P9：码头尽头无栏杆区（z>10.40）的观海站位：面朝海面（dock +Z 轴）
+    ["dock_sea_watch", 0.0, 11.10, 0.72, "dock", "outdoor"],
+    # 旧沙滩钓位节点保留（不再作为钓位，供历史探针/P7 路线报告引用，避免删数据）。
+    ["shore_bank", 20.90, 13.35, 0.0, "terrain", "outdoor"],
+    ["shore_sand", 22.00, 12.90, 0.0, "terrain", "outdoor"],
+    ["shore_stand", 23.10915, 12.56604, 0.0, "terrain", "outdoor"],
     ["garden_0", 1.20, 7.10, 0.0, "terrain", "outdoor"],
     ["garden_1", -1.60, 6.55, 0.0, "terrain", "outdoor"],
     ["garden_2", -3.90, 4.90, 0.0, "terrain", "outdoor"],
@@ -47,6 +138,41 @@ const NODE_DEFS := [
     ["garden_cross", -6.20, -6.20, 0.0, "terrain", "outdoor"],
     ["tree_view", -8.47, 3.27, 0.0, "terrain", "outdoor"],
     ["swing_view", -8.06, 5.32, 0.0, "terrain", "outdoor"],
+    # P9：秋千座点的真实站位（秋千座在 (-7.90, y, 4.20)，摆平面是 Z 轴，所以从 +X 侧上座最安全）
+    ["swing_stand", -7.05, 4.20, 0.0, "terrain", "outdoor"],
+    # ---- P2-B front-yard farm: 9-bed walkway ring (yard-local metres) ------------
+    # P4: the islander must physically walk to each bed.  The approved 2.05-2.65 m
+    # walkway band is the only walkable surface between the raised beds (beds are
+    # 1.0 m wide with a 0.5 m gap that the P2-B plan treats as impassable), so every
+    # yard node below sits at the band centre line, 0.85 m out from the bed centre.
+    # Gate posts are on z = 8.99; the 1.10 m opening spans x = -4.90 .. -3.80.
+    ["yard_path_a", -1.60, 5.65, 0.0, "yard", "outdoor"],
+    ["yard_path_b", -2.98, 7.32, 0.0, "yard", "outdoor"],
+    ["yard_gate_out", -4.35, 8.90, 0.0, "yard", "outdoor"],
+    ["yard_gate_in", -4.35, 9.35, 0.0, "yard", "outdoor"],
+    ["yard_slot_0", -5.85, 9.35, 0.0, "yard", "outdoor"],
+    ["yard_slot_2", -2.85, 9.35, 0.0, "yard", "outdoor"],
+    ["yard_slot_5", -2.00, 11.70, 0.0, "yard", "outdoor"],
+    ["yard_slot_8", -2.85, 14.05, 0.0, "yard", "outdoor"],
+    ["yard_slot_7", -4.35, 14.05, 0.0, "yard", "outdoor"],
+    ["yard_slot_6", -5.85, 14.05, 0.0, "yard", "outdoor"],
+    ["yard_slot_3", -6.70, 11.70, 0.0, "yard", "outdoor"],
+    # P4：走道环 45° 圆角节点。环是圆角矩形带，直接连对角槽位会形成 2.499 m 弦，
+    # 实测斜穿土床角（偏离环中线 0.617 m、34/81 采样落床内）。四个角点把弦拆成
+    # 2.273 m + 0.776 m 两段，两段都贴合环中线且在环带内（P4-A 实测建议）。
+    ["yard_corner_ne", -2.0779, 9.4279, 0.0, "yard", "outdoor"],
+    ["yard_corner_se", -2.0779, 13.9721, 0.0, "yard", "outdoor"],
+    ["yard_corner_sw", -6.6221, 13.9721, 0.0, "yard", "outdoor"],
+    ["yard_corner_nw", -6.6221, 9.4279, 0.0, "yard", "outdoor"],
+    # P4-CLOSE：中心格 slot4 的真实可达性。九格之间的 0.5 m 草坪缝仍然不可通行
+    # （缝内没有任何节点/边），唯一被承认的「踩上台面」路径是前排北侧苗床：
+    #   yard_bed_step 走道带上（到中心格心 2.177 m，径向在 2.05–2.65 环带内）
+    #   yard_bed_up   床顶近边内侧（x=-4.80 处床顶 z 从约 9.79 起）
+    #   yard_slot_4   同床远边内侧，距中心格格心 1.235 m ≤ 1.30 m 交互臂展
+    # 上台只在 step→up 这段 0.23 m 内抬升 0.20 m，与走道/床面的真实高差一致。
+    ["yard_bed_step", -4.80, 9.57, 0.0, "yard", "outdoor"],
+    ["yard_bed_up", -4.80, 9.80, 0.0, "yard_bed", "outdoor"],
+    ["yard_slot_4", -4.80, 10.55, 0.0, "yard_bed", "outdoor"],
     # ---- porch / door (house-local) ---------------------------------------------
     ["lawn", 0.0, 5.95, 0.0, "terrain_local", "porch"],
     ["step3", 0.0, 5.45, 0.00, "flat", "porch"],
@@ -91,13 +217,57 @@ const NODE_DEFS := [
 
 const EDGE_DEFS := [
     ["front_path_1", "front_path_2"],
+    # P6 钓鱼：主路岸线段（与上方针脚同一条真实砾石路），再沿沙坡到钓位。
+    ["front_path_2", "shore_path_1"],
+    ["shore_path_1", "shore_path_2"],
+    ["shore_path_2", "dock_shoreside"],
+    # P9 / P6-VISUAL-FIX：码头登板链（下沙滩 → 石阶坡 → 第一块木板 → 甲板中段 → 钓位）
+    ["dock_shoreside", "dock_step_a"],
+    ["dock_step_a", "dock_step_b"],
+    ["dock_step_b", "dock_step_c"],
+    ["dock_step_c", "dock_deck_in"],
+    ["dock_deck_in", "dock_walk_mid"],
+    ["dock_walk_mid", "dock_fishing_stand"],
+    ["dock_fishing_stand", "dock_sea_watch"],
+    # 旧的沙滩支线（保留为观赏节点，不再通往钓位）
+    ["dock_shoreside", "shore_bank"],
+    ["shore_bank", "shore_sand"],
+    ["shore_sand", "shore_stand"],
     ["front_path_1", "lawn"],
     ["garden_0", "lawn"],
     ["garden_0", "garden_1"],
+    ["garden_1", "yard_path_a"],
+    # P7.1（用户反馈）：农田出口直连门廊草坪。此前农田→钓鱼必须沿花园支路绕到 garden_1/
+    # garden_0 再回门前（37.18 m / 15 跳 / 3 个 >120° 折返），只有一条通往田野的路。
+    # 现在 yard_path_a 直接接 lawn（1.63 m），出田后直奔门前主路；既有花园边全部保留，
+    # 绕行观赏路线与 P4 的九格走道完全不变。
+    ["yard_path_a", "lawn"],
+    ["yard_path_a", "yard_path_b"],
+    ["yard_path_b", "yard_gate_out"],
+    ["yard_gate_out", "yard_gate_in"],
+    ["yard_gate_in", "yard_slot_0"],
+    ["yard_gate_in", "yard_slot_2"],
+    ["yard_slot_2", "yard_corner_ne"],
+    ["yard_corner_ne", "yard_slot_5"],
+    ["yard_slot_5", "yard_corner_se"],
+    ["yard_corner_se", "yard_slot_8"],
+    ["yard_slot_8", "yard_slot_7"],
+    ["yard_slot_7", "yard_slot_6"],
+    ["yard_slot_6", "yard_corner_sw"],
+    ["yard_corner_sw", "yard_slot_3"],
+    ["yard_slot_3", "yard_corner_nw"],
+    ["yard_corner_nw", "yard_slot_0"],
+    # P4-CLOSE：上台路径（走道 → 北排中间苗床顶面 → 中心格操作站位）。只连到这一张
+    # 苗床，不跨 0.5 m 草缝、不连其它床，场地方案与草地缝规则保持不变。
+    ["yard_gate_in", "yard_bed_step"],
+    ["yard_slot_0", "yard_bed_step"],
+    ["yard_bed_step", "yard_bed_up"],
+    ["yard_bed_up", "yard_slot_4"],
     ["garden_1", "garden_2"],
     ["garden_2", "garden_3"],
     ["garden_2", "tree_view"],
     ["tree_view", "swing_view"],
+    ["swing_view", "swing_stand"],
     ["garden_3", "garden_4"],
     ["garden_4", "garden_5"],
     ["garden_5", "garden_6"],
@@ -174,16 +344,24 @@ const VIEW_DEFS := [
 ## x [-2.95, -1.05], z [-1.40, -0.40]; headboard is the +X end (nightstand at x -1.15).
 ## Sitting on the south edge faces +Z (world local yaw PI); lying down rotates the
 ## root to local yaw -PI/2 so the model's -Z (head) points at +X (headboard).
+## P9 / P7-FINALIZE（C 报告 D1/D4/D5，S1/S5）：
+## - 躺姿锚点从床心 (-2.00,-0.90) 移到枕头 A 正下方 (-1.842,-0.733)：头心（模型反算相对 root
+##   +0.502 x / +0.068 z，见 tools/probe_p9_life_anim.gd 实测）正好落在枕头 A（房屋局部
+##   x[-1.49,-1.19] / z[-0.885,-0.445]，中心 -1.34/-0.665）上方，不再卡在两枕之间的 3 cm 缝里。
+## - 坐床沿点 y 由 3.66 降到 3.62（root = 3.62+0.085 = 3.705），z 由 -0.55 放到 -0.42（床沿外沿
+##   z=-0.40 → 骨盆中心离沿内缩 0.02 m，腿真正垂在床边）；配合 _bed_sit() 放长腿让鞋底落地。
 const BED := {
     "id": "bed_attic",
     "kind": "bed",
     "node": "bed_stand",
-    "anchor_local": Vector3(-2.00, 3.66, -0.90),
-    "edge_sit_local": Vector3(-2.00, 3.66, -0.55),
+    "anchor_local": Vector3(-1.842, 3.66, -0.733),
+    "edge_sit_local": Vector3(-2.00, 3.62, -0.42),
     "sit_yaw_local": PI,
     "approach_local": Vector3(-2.00, 3.181, -0.10),
     "approach_yaw_local": PI,
     "yaw_local": -PI * 0.5,
+    # 床的“由床沿指向床心”方向（坐床沿 root 用；躺姿锚点已不在同一条法线上）
+    "inward_local": Vector3(0.0, 0.0, -1.0),
     "name": "阁楼床",
 }
 
@@ -254,6 +432,9 @@ static func _level_of_region(region: String) -> int:
 static func build(cottage: Dictionary) -> Dictionary:
     var root: Node3D = cottage["root"] as Node3D
     var house_yaw := root.rotation.y
+    var dock := dock_frame()
+    var dock_basis := Basis(Vector3.UP, float(dock["yaw"]))
+    var dock_origin: Vector3 = dock["origin"]
     var nodes: Dictionary = {}
     for d in NODE_DEFS:
         var id := String(d[0])
@@ -269,6 +450,30 @@ static func build(cottage: Dictionary) -> Dictionary:
         elif mode == "terrain_local":
             var w2 := root.to_global(Vector3(lx, 0.0, lz))
             world = Vector3(w2.x, W.surface_y(w2.x, w2.z), w2.z)
+            y = world.y
+        elif mode == "yard":
+            # P4: P2-B 门前土地台面。lx/lz 是门前方院局部坐标（与房屋局部同一帧），
+            # 高度取 world.gd 的台面规则 _yard_pad_y()+YARD_FLOOR_LIFT，与走道环/石板
+            # 小径完全同高，绝不能退回 surface_y()（那是填方前的老地形）。
+            var wy := W._yard_l2w(lx, lz)
+            world = Vector3(wy.x, W._yard_pad_y(lx, lz) + W.YARD_FLOOR_LIFT, wy.y)
+            y = world.y
+        elif mode == "yard_bed":
+            # P4-CLOSE: 土床顶面 = 台面 + YARD_BED_RISE（与 world.gd _yard_build_beds
+            # 的 top_p 完全同源，实测 bed_top_spread == 0，即九床顶面同一高度）。
+            var wyb := W._yard_l2w(lx, lz)
+            world = Vector3(wyb.x, W._yard_pad_y(lx, lz) + W.YARD_FLOOR_LIFT + W.YARD_BED_RISE, wyb.y)
+            y = world.y
+        elif mode == "dock":
+            # P9 / P6-VISUAL-FIX：码头局部坐标；y 是木板/石阶顶面的**世界**高度
+            # （甲板 0.72 由 world.gd DECK_WORLD_Y 给定，地形在这里已经是 -5 m 深水，
+            #  绝不能用 surface_y）。
+            var wd := dock_origin + dock_basis * Vector3(lx, 0.0, lz)
+            world = Vector3(wd.x, y, wd.z)
+        elif mode == "dock_terrain":
+            # 码头局部坐标 + 真实沙滩地形高度（登板前的下坡段）。
+            var wdt := dock_origin + dock_basis * Vector3(lx, 0.0, lz)
+            world = Vector3(wdt.x, W.surface_y(wdt.x, wdt.z), wdt.z)
             y = world.y
         else:
             world = root.to_global(Vector3(lx, y, lz))
@@ -346,6 +551,8 @@ static func build(cottage: Dictionary) -> Dictionary:
             "approach_local": ap_local,
             "approach_node": node_id,
             "approach_yaw": yaw_w,
+            # P9：坐具的进入方向（"back" = 从椅背后方接近，需要弧线/侧向过渡绕开靠背）
+            "approach_side": side,
             "seat_h": seat_y - floor_y,
             "level": _level_of_region(String(nodes[node_id]["region"])),
             "name": String(s[10]),
@@ -364,7 +571,10 @@ static func build(cottage: Dictionary) -> Dictionary:
             "view_tree":
                 patch_target = Vector3(-10.90, pos.y, 4.20)
             "view_swing":
-                patch_target = Vector3(-9.40, pos.y, 6.20)
+                # P9 / P7-FINALIZE：真实秋千吊点 = 大树 base + (3.0, SWING_LIMB_Y, 0) = (-7.90, y, 4.20)。
+                # 旧目标 (-9.40, 6.20) 是 isle_math.SWING_X/SWING_Z 的陈旧写死值，与真实秋千差 132°，
+                # 导致角色站在秋千旁却背对秋千。这里改为与 world.gd::_swing 同源派生。
+                patch_target = Vector3(M.BIG_TREE_X + 3.0, pos.y, M.BIG_TREE_Z)
             "view_garden":
                 patch_target = Vector3(-7.00, pos.y, -5.80)
             "view_front":
@@ -393,9 +603,65 @@ static func build(cottage: Dictionary) -> Dictionary:
             "region": String(node["region"]),
             "reserved": false,
         }
+    # ---- P9：秋千座点（真实世界几何由吊点/绳长推导，与 world.gd::_swing 同源）----
+    var sw_px := M.BIG_TREE_X + 3.0
+    var sw_pz := M.BIG_TREE_Z
+    var sw_pivot_y := W._h(M.BIG_TREE_X, M.BIG_TREE_Z) + W.SWING_LIMB_Y
+    var sw_ground := W._h(sw_px, sw_pz)
+    var sw_rope := maxf(2.6, sw_pivot_y - (sw_ground + 0.55))
+    var sw_seat_top := sw_pivot_y - sw_rope + 0.035
+    var sw_yaw := 0.0  # 摆平面沿世界 Z，人物面朝 -Z（模型正面）
+    var sw_stand_ground := W._h(sw_px + 0.85, sw_pz)
+    var sw_stand_pos := Vector3(sw_px + 0.85, sw_stand_ground, sw_pz)
+    # 站位 yaw：面向秋千座（-X 方向）
+    var sw_ap_yaw := _yaw_to_face(Vector3(-1.0, 0.0, 0.0))
+    spots["swing"] = {
+        "id": "swing",
+        "kind": "swing",
+        "anchor": Vector3(sw_px, sw_seat_top + 0.02, sw_pz),
+        "yaw": sw_yaw,
+        "sit_yaw": sw_yaw,
+        "approach": sw_stand_pos,
+        "approach_local": Vector3(sw_px + 0.85, sw_stand_ground, sw_pz),
+        "approach_node": "swing_stand",
+        "approach_yaw": sw_ap_yaw,
+        "approach_side": "side",
+        "seat_h": sw_seat_top - sw_stand_ground,
+        "level": 0,
+        "name": "大树秋千",
+        "region": "outdoor",
+        "reserved": false,
+        # 供探针/报告读取的几何事实
+        "pivot_y": sw_pivot_y,
+        "rope_len": sw_rope,
+        "seat_top_y": sw_seat_top,
+    }
+    # ---- P9：码头观海点（真实到达 dock_sea_watch，面朝海面）----
+    var sv_node: Dictionary = nodes["dock_sea_watch"]
+    var sv_dir: Vector3 = (dock["dir"] as Vector3)
+    sv_dir.y = 0.0
+    sv_dir = sv_dir.normalized()
+    spots["sea_view"] = {
+        "id": "sea_view",
+        "kind": "sea_view",
+        "anchor": sv_node["pos"],
+        "yaw": _yaw_to_face(sv_dir),
+        "approach": sv_node["pos"],
+        "approach_local": sv_node["local"],
+        "approach_node": "dock_sea_watch",
+        "approach_yaw": _yaw_to_face(sv_dir),
+        "seat_h": 0.0,
+        "level": 0,
+        "name": "码头观海",
+        "region": "outdoor",
+        "reserved": false,
+    }
     var bed_anchor: Vector3 = root.to_global(BED["anchor_local"])
     var bed_edge: Vector3 = root.to_global(BED["edge_sit_local"])
     var bed_ap: Vector3 = root.to_global(BED["approach_local"])
+    var bed_inward_w: Vector3 = (root.global_transform.basis * (BED["inward_local"] as Vector3))
+    bed_inward_w.y = 0.0
+    bed_inward_w = bed_inward_w.normalized() if bed_inward_w.length() > 0.001 else Vector3(0.0, 0.0, -1.0)
     spots[BED["id"]] = {
         "id": BED["id"],
         "kind": "bed",
@@ -403,6 +669,7 @@ static func build(cottage: Dictionary) -> Dictionary:
         "yaw": _yaw_from_local(house_yaw, float(BED["yaw_local"])),
         "sit_yaw": _yaw_from_local(house_yaw, float(BED["sit_yaw_local"])),
         "anchor_edge": bed_edge,
+        "inward": bed_inward_w,
         "approach": bed_ap,
         "approach_local": BED["approach_local"],
         "approach_node": String(BED["node"]),
@@ -420,6 +687,8 @@ static func build(cottage: Dictionary) -> Dictionary:
         "house_yaw": house_yaw,
         "root": root,
         "obstacles": OBSTACLES,
+        # 码头空间框架：钓位朝向 / 抛竿落点全部从这里派生（见 fishing_spot()）。
+        "dock": dock,
     }
 
 ## Build-time geometry sanity: returns human readable issues (empty = clean).
