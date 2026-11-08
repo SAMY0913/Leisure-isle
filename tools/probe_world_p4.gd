@@ -288,7 +288,12 @@ func _run() -> void:
     _check(perches.size() >= 20, "fewer than 20 perches")
     _check(fields_ok, "perch dictionary missing required fields")
     _check(not dup_id, "duplicate perch ids")
-    for need in ["tree_branch", "roof", "eave", "lighthouse_platform", "dock", "garden_post"]:
+    # P7-V3.2 T4：world.gd 只拥有户外栖点（tree_branch / lighthouse_platform / dock /
+    # garden_post / lamp）。屋面类栖点（ridge / eave / chimney / porch_beam / porch_rail）
+    # 由 scripts/cottage.gd._make_perches 拥有，main.gd 把 world["perches"] 与
+    # cottage["perches"] 合并后再交给 fx.BirdFlock；因此 world-only 探针不再要求
+    # roof/eave（它们仍存在于合并后的 36 点里，由 tools/probe_p7v2_perch.gd 覆盖）。
+    for need in ["tree_branch", "lighthouse_platform", "dock", "garden_post", "lamp"]:
         _check(kinds.has(need), "missing perch kind: " + need)
     print("[PERCH] total=%d kinds=%s ids_unique=%s first=%s" % [
         perches.size(), str(kinds), str(not dup_id), str((perches[0] as Dictionary)["id"])])

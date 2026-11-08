@@ -12,7 +12,17 @@ global uniform vec4 g_fog_color : source_color;
 global uniform float g_fog_near;
 global uniform float g_fog_far;
 global uniform float g_wind_time;
+// P8 阶段 6：天气共享参数
+global uniform vec4 g_weather;    // x rain, y snow, z wetness, w snow_cover
+global uniform vec4 g_weather2;   // x cloud, y storm, z wind, w indoor
+global uniform vec4 g_wind_dir;   // x/z 风向，z 风力 0..1
+global uniform float g_lightning; // 闪电瞬时亮度 0..1（雷暴/台风；与天空同一来源）
+// P8.1-06 室内外双池：室外池槽位 g_l0..g_l9（0..9），室内池槽位 g_l10..g_l15（10..15）。
+// g_light_count = 室外池激活盏数（0..10），g_light_indoor = 室内池激活盏数（0..6）；
+// 池内连续排列（室外 [0,count)、室内 [10,10+indoor)），槽位归属由 main.gd 决定。
+// 室内片元只吃室内池、室外片元只吃室外池（按 indoor_mask 世界体积判定，与摄像机无关）。
 global uniform float g_light_count;
+global uniform float g_light_indoor;
 global uniform vec4 g_l0_pos; // xyz world position, w range
 global uniform vec4 g_l0_col; // rgb color, w intensity
 global uniform vec4 g_l1_pos;
@@ -37,6 +47,14 @@ global uniform vec4 g_l10_pos;
 global uniform vec4 g_l10_col;
 global uniform vec4 g_l11_pos;
 global uniform vec4 g_l11_col;
+global uniform vec4 g_l12_pos;
+global uniform vec4 g_l12_col;
+global uniform vec4 g_l13_pos;
+global uniform vec4 g_l13_col;
+global uniform vec4 g_l14_pos;
+global uniform vec4 g_l14_col;
+global uniform vec4 g_l15_pos;
+global uniform vec4 g_l15_col;
 // lighthouse beam: origin (world), tilted direction, params.x strength / y cos_outer / z cos_inner / w range
 global uniform vec3 g_beam_origin;
 global uniform vec3 g_beam_dir;
@@ -61,6 +79,17 @@ global uniform float g_occ_y2;
 global uniform vec3 g_occ_c3;
 global uniform vec3 g_occ_h3;
 global uniform float g_occ_y3;
+// P8.1-03 冬季白化（季节进度驱动，与 g_weather.w 降雪积雪严格分离）：
+// x whiteness 0..1 室外白化度, y frost 霜, z ground_tint 地面泛灰, w foliage_desat 植被去饱和。
+// g_winter=0 时本 shader 所有冬季项为 0 → 与 P8 外观逐像素一致（可回滚/A-B）。
+global uniform vec4 g_winter;
+// 小屋室内体积（世界空间，main.gd 一次性写入；与摄像机无关）：
+// g_house = (origin.x, origin.y, origin.z, cos_yaw)
+// g_house2 = (sin_yaw, half_x=内墙面, half_z=内墙面, floor_local_y)
+// g_roof = (ridge_y, tan_pitch, under_margin, first_floor_top_local_y)（均为房屋局部 y）
+global uniform vec4 g_house;
+global uniform vec4 g_house2;
+global uniform vec4 g_roof;
 
 uniform vec4 albedo : source_color = vec4(1.0);
 uniform sampler2D albedo_tex : source_color, filter_linear_mipmap, repeat_enable;
@@ -79,8 +108,14 @@ uniform float glow = 0.0;
 uniform float self_lit = 0.0;
 uniform float light_wrap = 0.42;
 uniform float ambient_amount = 1.0;
+// 季节染色（P8）：树冠/灌木等顶点色植被统一乘色；默认白色=不改任何网格。
+// 由 main.gd 在季节变化时写入被复制出来的那几份材质，避免污染 isle_math 的共享材质缓存。
+uniform vec3 foliage_tint = vec3(1.0);
 // 远海淡出：<1 时按屏幕抖动剔除像素（船体/帆/索具统一淡出，不产生透明排序问题）
 uniform float fade_alpha = 1.0;
+// P8.1-03 材质类别冬季接收系数（main.gd 按对象身份/材质类别写入；默认全接受）：
+// x 积雪, y 霜, z 地面泛灰, w 植被去饱和。自发光灯罩/玻璃/海面/船/岛民/花等写入 0。
+uniform vec4 winter_recv = vec4(1.0, 1.0, 0.0, 0.0);
 
 varying vec3 v_world;
 varying vec2 v_uv;
@@ -106,8 +141,14 @@ void vertex() {
 	if (wind > 0.0) {
 		float h = max(v.y, 0.0);
 		float ph = g_wind_time * 1.7 + wind_phase + (MODEL_MATRIX[3].x + MODEL_MATRIX[3].z) * 0.45;
-		v.x += sin(ph) * 0.055 * h * wind;
-		v.z += cos(ph * 0.83 + 1.7) * 0.04 * h * wind;
+		// 风力同时放大摆幅并给一个顺风向的偏置：小风仍是原来的轻晃，大风/台风才明显歪向一侧。
+		float wamp = 0.55 + clamp(g_wind_dir.z, 0.0, 1.0) * 1.15;
+		float gust = 0.85 + 0.25 * sin(g_wind_time * 0.73 + wind_phase * 2.1);
+		float ox = sin(ph) * 0.055 + sin(ph * 2.7 + 1.3) * 0.016;
+		float oz = cos(ph * 0.83 + 1.7) * 0.040 + cos(ph * 3.1) * 0.012;
+		float push = clamp(g_wind_dir.z, 0.0, 1.0) * 0.055 * h * wind * gust;
+		v.x += (ox * h * wamp + g_wind_dir.x * push) * wind;
+		v.z += (oz * h * wamp + g_wind_dir.y * push) * wind;
 	}
 	VERTEX = v;
 	v_world = (MODEL_MATRIX * vec4(v, 1.0)).xyz;
@@ -166,6 +207,34 @@ float beam_occlusion(vec3 p, vec3 n) {
 	return occl;
 }
 
+// P8.1-03 室内体积掩码（0=室外/外壳, 1=一层室内或阁楼室内）。
+// 完全由物体的世界坐标与房屋几何决定，与摄像机位置无关：窗外看室内、走进室内、
+// 从阁楼洞口俯视一层都得到同一结果。房屋局部坐标：root 原点在室内地坪下方，
+// 一层地坪 y=0.55，内墙面 |x|=3.5 / |z|=2.8，屋脊 y=6.20，屋面斜率 tan=2.47/3.8。
+float indoor_mask(vec3 wp) {
+	vec3 d = wp - g_house.xyz;
+	float c = g_house.w;
+	float s = g_house2.x;
+	float lx = c * d.x - s * d.z;
+	float lz = s * d.x + c * d.z;
+	if (abs(lx) > g_house2.y || abs(lz) > g_house2.z) {
+		return 0.0;
+	}
+	if (d.y < g_house2.w) {
+		return 0.0;
+	}
+	// 一层室内（含天花板底面与阁楼楼板，均为室内构件）
+	if (d.y <= g_roof.w) {
+		return 1.0;
+	}
+	// 阁楼室内：屋面底板以下（外坡屋面/瓦片在阈值之上，判为室外）
+	float roof_under = g_roof.x - g_roof.y * abs(lx) - g_roof.z;
+	if (d.y <= roof_under) {
+		return 1.0;
+	}
+	return 0.0;
+}
+
 void fragment() {
 	if (fade_alpha < 0.999) {
 		if (screen_dither(FRAGCOORD.xy) > fade_alpha) {
@@ -188,6 +257,31 @@ void fragment() {
 	}
 	if (use_vertex_color > 0.5) {
 		base *= v_lcol;
+	}
+	base *= foliage_tint;
+	// 雨后的湿润：整体压暗一点，再在受光后加一层低强度湿面反光（不引入透明/排序问题）
+	float wet = clamp(g_weather.z, 0.0, 1.0);
+	base *= 1.0 - 0.26 * wet;
+	// ---- P8.1-03 冬季白化：室内体积掩码（摄像机无关）+ 材质类别接收系数 ----
+	// 顺序：wet -> frost/desaturate/ground_tint -> snow（见下面积雪块）。
+	// g_winter=0 时所有项为 0，外观与 P8 完全一致。
+	float indoor = indoor_mask(v_world);
+	float lit_exempt = 1.0 - step(0.5, self_lit);   // 自发光灯罩/炉火不吃白化
+	float winter_vis = g_winter.x * (1.0 - indoor) * lit_exempt;
+	float w_snow = clamp(winter_vis * winter_recv.x, 0.0, 1.0);
+	float w_frost = clamp(g_winter.y * (1.0 - indoor) * lit_exempt * winter_recv.y, 0.0, 1.0);
+	float w_ground = clamp(g_winter.z * (1.0 - indoor) * lit_exempt * winter_recv.z, 0.0, 1.0);
+	float w_desat = clamp(g_winter.w * (1.0 - indoor) * lit_exempt * winter_recv.w, 0.0, 1.0);
+	if (w_desat > 0.001) {
+		float luma = dot(base, vec3(0.2126, 0.7152, 0.0722));
+		base = mix(base, vec3(luma), w_desat * 0.55);
+	}
+	if (w_ground > 0.001) {
+		base = mix(base, mix(base, vec3(0.62, 0.64, 0.60), 0.50), w_ground * 0.70);
+	}
+	if (w_frost > 0.001) {
+		float upw = clamp(Nw.y * 0.5 + 0.5, 0.0, 1.0);
+		base = mix(base, base * 0.55 + vec3(0.72, 0.78, 0.87) * 0.45, w_frost * (0.28 + 0.72 * upw));
 	}
 	vec3 V = normalize(CAMERA_POSITION_WORLD - v_world);
 	vec3 col;
@@ -238,8 +332,42 @@ void fragment() {
 			float sndl = clamp(dot(Nw, normalize(g_spot_origin - v_world)) * 0.5 + 0.5, 0.0, 1.0);
 			col += base * g_spot_color.rgb * g_spot_color.a * scone * satt * (0.14 + 0.86 * sndl);
 		}
+		// 湿面反光：视线越掠射越亮，白天最明显，夜里几乎看不见
+		float wet_sheen = pow(1.0 - clamp(dot(Nw, V), 0.0, 1.0), 3.5) * wet * 0.16;
+		col += g_sun_color.rgb * wet_sheen;
+		// 积雪：只挂“朝上的面”，用世界坐标噪声打散边界；厚度 g_weather.w 越大，越斜的面也开始挂雪。
+		// 低处（沙滩/岸边）按世界高度淡出，避免整座岛像被白漆刷过一遍。
+		float snow_amt = clamp(g_weather.w, 0.0, 1.0);
+		float snow_cov = smoothstep(0.02, 0.42, snow_amt);
+		float up_mask = smoothstep(0.0, 1.0 - clamp(snow_amt, 0.0, 0.95) * 0.88, clamp(Nw.y, 0.0, 1.0));
+		float nz = detail_noise(v_world.xz * 0.42 + v_world.y * 0.7);
+		float patchy = 0.62 + 0.38 * nz;
+		patchy *= 0.82 + 0.18 * detail_noise(v_world.xz * 1.7 + v_world.y * 1.3);
+		// U11：这是海平面岸线淡出（海平面 y=0，岛面 y≈7.4-7.9 恒为 1），不是“岛面无雪”的判据；
+		// 岛面高程依据 isle_math.gd:77-110 profile_at。P8 降雪行为保持不变。
+		float snow_line = smoothstep(1.05, 3.20, v_world.y);
+		// 降雪积雪（g_weather.w）与季节白化（g_winter.x）严格分离，取 max 合成；室内不吃任何雪。
+		float snow_weather = clamp(up_mask * snow_cov * patchy * snow_line, 0.0, 1.0) * (1.0 - indoor);
+		float snow_winter = clamp(smoothstep(0.05, 0.72, clamp(Nw.y, 0.0, 1.0)) * w_snow
+			* patchy * smoothstep(0.50, 2.20, v_world.y), 0.0, 1.0);
+		float snow_m = max(snow_weather, snow_winter);
+		if (snow_m > 0.001) {
+			vec3 snow_col = vec3(0.90, 0.93, 0.99) * clamp(
+				ambient * 1.85 + g_sun_color.rgb * (0.26 + 0.52 * cel) + g_moon_color.rgb * 0.80, 0.0, 1.6);
+			col = mix(col, snow_col, snow_m * 0.84);
+		}
+		// P8.1-06 局部灯：室内外双池，按世界体积 indoor_mask 选池（与摄像机无关）。
+		// 室内片元只吃室内池（g_l10..g_l15），室外片元只吃室外池（g_l0..g_l9）→ 两池互不串光。
 		int lc_n = int(g_light_count);
-		if (lc_n > 0) {
+		int lc_in = int(g_light_indoor);
+		if (indoor > 0.5) {
+			if (lc_in > 0) { col += add_point_light(base, Nw, g_l10_pos, g_l10_col); }
+			if (lc_in > 1) { col += add_point_light(base, Nw, g_l11_pos, g_l11_col); }
+			if (lc_in > 2) { col += add_point_light(base, Nw, g_l12_pos, g_l12_col); }
+			if (lc_in > 3) { col += add_point_light(base, Nw, g_l13_pos, g_l13_col); }
+			if (lc_in > 4) { col += add_point_light(base, Nw, g_l14_pos, g_l14_col); }
+			if (lc_in > 5) { col += add_point_light(base, Nw, g_l15_pos, g_l15_col); }
+		} else if (lc_n > 0) {
 			col += add_point_light(base, Nw, g_l0_pos, g_l0_col);
 			if (lc_n > 1) { col += add_point_light(base, Nw, g_l1_pos, g_l1_col); }
 			if (lc_n > 2) { col += add_point_light(base, Nw, g_l2_pos, g_l2_col); }
@@ -250,12 +378,14 @@ void fragment() {
 			if (lc_n > 7) { col += add_point_light(base, Nw, g_l7_pos, g_l7_col); }
 			if (lc_n > 8) { col += add_point_light(base, Nw, g_l8_pos, g_l8_col); }
 			if (lc_n > 9) { col += add_point_light(base, Nw, g_l9_pos, g_l9_col); }
-			if (lc_n > 10) { col += add_point_light(base, Nw, g_l10_pos, g_l10_col); }
-			if (lc_n > 11) { col += add_point_light(base, Nw, g_l11_pos, g_l11_col); }
 		}
 	}
 	float dist = length(CAMERA_POSITION_WORLD - v_world);
 	float fogf = smoothstep(g_fog_near, g_fog_far, dist);
 	col = mix(col, g_fog_color.rgb, fogf);
+	// 闪电：按受光面反照率提亮（保持颜色，不给整屏刷白），朝上的面更亮；
+	// 远处被雾/霾罩住的物体不应和近景一样亮，否则远岛会像"浮空白块"。
+	col += (base * 0.44 + vec3(0.020, 0.024, 0.032)) * g_lightning
+		* (0.55 + 0.45 * clamp(Nw.y, 0.0, 1.0)) * (1.0 - fogf * 0.85);
 	ALBEDO = col;
 }

@@ -31,7 +31,56 @@ const CLICK_FISH_WINDOW := 2.5
 const PERCH_MIN_NORMAL_Y := 0.35      # 法线 y 分量下限（约 <=69.5° 坡）
 const PERCH_MAX_SLOPE := 1.047198     # 60°，超过视为不可停栖
 const BODY_TILT_MAX := 0.610865       # 35°，身体 up 最大倾角（与飞行 PITCH_MAX 一致）
-const PERCH_FOOT_LIFT := 0.02         # 脚底沿法线抬起，避免与瓦面 z-fighting
+const PERCH_FOOT_LIFT := 0.02         # 已废弃（P9 起脚底贴面由 perch_author_gap/perch_foot_lift 计算；仅保留常量供历史探针 import）
+
+# P7-V2：海鸥停栖待机 / 随机分散 / 烟囱禁停
+const BIRD_IDLE_GAP_MIN := 2.2
+const BIRD_IDLE_GAP_MAX := 7.5
+const BIRD_IDLE_NIGHT_GAP_MIN := 2.0
+const BIRD_IDLE_NIGHT_GAP_MAX := 6.0
+const BIRD_HOP_HEIGHT := 0.11
+const BIRD_HOP_DURATION := 0.34
+const BIRD_HOP_MAX_SLOPE := 0.174533        # 10°，轻跳只允许接近水平的安全面
+const BIRD_HOP_MIN_NORMAL_Y := 0.95
+const PERCH_ROOF_ZONE_MAX := 2              # 屋顶区（ridge/eave/chimney）同时占用上限
+const PERCH_RIDGE_ROW_MAX := 2              # 同一排屋脊同时占用上限
+const PERCH_ZONE_SAME_PENALTY := 0.35       # 同区已占用惩罚
+const PERCH_MIN_DIST_WEIGHT := 6.0          # 与其它落点最小距离评分尺度
+const PERCH_SMOKE_LEAD_BUFFER := 0.35       # 烟囱提前起飞安全缓冲（秒）
+
+# ---- P9 P7-FINALIZE：海鸥脚部模型 / 飞行运动学契约 ----
+# 模型局部约定不变：+Z 前向、+Y 上、+X 右翼；节点原点 = 脚底（脚掌接地面在节点 y=0）。
+# P9 改动一：腿网格枢轴从「脚底」改到「髋」（= 躯干网格下沿），飞行收腿/着陆伸腿围绕身体
+# 关节旋转，腿始终与躯干连续相连；停栖时 legs.position = (0, BIRD_LEG_HIP_Y, 0)，
+# 使脚底精确回到节点原点。改动二：前趾 0.052 -> 0.031，加脚掌 + 后趾 + 爪尖。
+const BIRD_LEG_HIP_Y := 0.118          # 髋关节高度（= body 网格下沿 y=0.118）
+const BIRD_TOE_LEN := 0.031            # 前趾长（旧 0.052：长爪观感的主因，验收 0.028~0.034）
+const BIRD_TOE_SPREAD := 0.30          # 前趾外张角（旧 0.42）
+const BIRD_FOOT_CLEARANCE := 0.002     # 脚底贴栖面净空（验收 0~0.005 m）
+const BIRD_TAKEOFF_PREP := 0.24        # 停驻准备（蹲伏，脚仍踩栖面）
+const BIRD_TAKEOFF_PUSH := 0.20        # 蹬离（竖直+前向加速，速度从 0 连续上升）
+const BIRD_TAKEOFF_MAX := 1.35         # 起飞硬上限（与烟囱提前量 TRANSITION_MAX+缓冲 对齐）
+const BIRD_TAKEOFF_LEAP := 2.05        # 蹬离速度（m/s，主要向上）
+const BIRD_LANDING_SPEED_MAX := 5.8    # 进近合速度绝对上限
+const BIRD_LANDING_DECEL := 3.4        # 进近减速度（m/s²，sqrt(2·a·d) 提前减速曲线）
+const BIRD_LANDING_TIMEOUT := 5.0      # 着陆硬上限（长距兜底：超时后直接位置伺服收尾，避免 8~10s 拖尾）
+const BIRD_LANDING_NEAR := 14.0        # 落点优先距离（近优先，超过则只在无近点时候选）
+const BIRD_LANDING_FAR := 22.0         # 落点兜底距离（> 此值仅在无更近候选时使用）
+const BIRD_LANDING_FLARE_DIST := 2.4   # 距栖点该距离内 + 离面 <1.5m 才开始展翼/伸腿
+const BIRD_FLARE_HEIGHT := 0.65        # 展翼/抬尾/伸腿的离栖面高度阈值
+const BIRD_TOUCH_SPEED := 0.30         # 触地合速度上限（验收 <0.3 m/s）
+const BIRD_MOTION_SUBSTEP := 1.0 / 120.0  # 运动积分子步（30/60/120Hz 同轨迹）
+const BIRD_CRUISE_KP := 2.4            # 巡航位置误差→速度增益（一阶收敛，速度连续）
+const BIRD_CRUISE_ACCEL := 8.0         # 巡航/起飞合并段加速度上限
+const BIRD_TAKEOFF_ACCEL := 9.0        # 蹬离段加速度上限
+const BIRD_LANDING_ACCEL := 6.0        # 进近/触地加速度上限（含转向；触地处由位置伺服收速）
+const BIRD_YAW_RATE_MAX := 3.4         # 朝向角速度上限（≈195°/s，禁止单帧硬转）
+const BIRD_PITCH_RATE_MAX := 2.2       # 俯仰角速度上限
+const BIRD_ROLL_RATE_MAX := 2.6        # 横滚角速度上限
+const BIRD_PERCH_TURN_RATE := 3.0      # 停栖落定后的转身上限（替代 _apply_perch_pose 硬切）
+const BIRD_WIND_GAIN := 1.0            # 风→空气速度偏移上限（m/s per wind_strength）
+const BIRD_WIND_SMOOTH := 2.2          # 风向量一阶平滑时间常数（秒，天气突变也只平滑过渡）
+
 
 # ============================================================
 # 共享资源缓存（全局只创建一次）
@@ -230,6 +279,25 @@ static func _gull_box(st: SurfaceTool, center: Vector3, size: Vector3, ca: Color
 	_gull_quad(st, p000, p010, p011, p001, ca, cb, false)
 	_gull_quad(st, p100, p110, p111, p101, ca, cb, false)
 
+# 绕 Y 轴旋转的轴对齐盒（脚趾/爪等沿趾向伸出的部件）
+static func _gull_box_rot(st: SurfaceTool, center: Vector3, size: Vector3, yaw: float, ca: Color, cb: Color) -> void:
+	var b := Basis(Vector3.UP, yaw)
+	var h: Vector3 = size * 0.5
+	var p000 := center + b * Vector3(-h.x, -h.y, -h.z)
+	var p100 := center + b * Vector3(h.x, -h.y, -h.z)
+	var p010 := center + b * Vector3(-h.x, h.y, -h.z)
+	var p110 := center + b * Vector3(h.x, h.y, -h.z)
+	var p001 := center + b * Vector3(-h.x, -h.y, h.z)
+	var p101 := center + b * Vector3(h.x, -h.y, h.z)
+	var p011 := center + b * Vector3(-h.x, h.y, h.z)
+	var p111 := center + b * Vector3(h.x, h.y, h.z)
+	_gull_quad(st, p000, p100, p110, p010, ca, cb, false)
+	_gull_quad(st, p001, p101, p111, p011, ca, cb, false)
+	_gull_quad(st, p000, p100, p101, p001, ca, cb, false)
+	_gull_quad(st, p010, p110, p111, p011, ca, cb, false)
+	_gull_quad(st, p000, p010, p011, p001, ca, cb, false)
+	_gull_quad(st, p100, p110, p111, p101, ca, cb, false)
+
 # 八面体（眼睛等小块，双面同色）
 static func _gull_octa(st: SurfaceTool, center: Vector3, radii: Vector3, col: Color) -> void:
 	var px := center + Vector3(radii.x, 0.0, 0.0)
@@ -352,6 +420,10 @@ static func _gull_tail_mesh() -> ArrayMesh:
 	_mesh_cache["gull_tail"] = mesh
 	return mesh
 
+# P9 腿脚网格：枢轴改到「髋」（腿网格局部 y=0 = 髋关节，脚底在 y=-BIRD_LEG_HIP_Y）。
+# 结构：大腿(髋→膝) / 小腿(膝→跗) / 跗跖 / 扁平脚掌 / 三根锥形前趾(含爪尖) / 后趾。
+# 目的：① 腿从躯干下沿连续接出、无断缝；② 前趾 0.052 -> BIRD_TOE_LEN(0.031) 消除"长爪"；
+#       ③ 脚掌/爪有明确体积（旧趾是零厚度薄片）；④ 飞行绕髋关节收腿，腿仍连在身体上。
 static func _gull_legs_mesh() -> ArrayMesh:
 	if _mesh_cache.has("gull_legs"):
 		return _mesh_cache["gull_legs"]
@@ -359,25 +431,61 @@ static func _gull_legs_mesh() -> ArrayMesh:
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
 	var orange := _gull_col("d98436")
 	var orange_d := _gull_col("b96f28")
+	var orange_l := _gull_col("e69a4a")
+	var claw_col := _gull_col("7a4a20")
+	var sole: float = -BIRD_LEG_HIP_Y      # 脚掌接地面（节点 y=0 处）
 	for side in [-1.0, 1.0]:
 		var sx: float = 0.030 * float(side)
-		_gull_box(st, Vector3(sx, 0.088, 0.016), Vector3(0.019, 0.070, 0.020), orange_d, orange)
-		_gull_box(st, Vector3(sx + 0.002 * float(side), 0.040, 0.014), Vector3(0.014, 0.072, 0.014), orange, orange_d)
+		# 大腿：顶端 17 mm 埋进躯干网格（躯干下沿 y=0.118），保证"腿从身体下连续接出"
+		_gull_box(st, Vector3(sx, 0.002, 0.012), Vector3(0.020, 0.030, 0.022), orange_d, orange)
+		# 小腿（膝→跗）：与大腿/跗跖各重叠 1 mm，无可见断缝
+		_gull_box(st, Vector3(sx + 0.001 * float(side), -0.045, 0.016), Vector3(0.015, 0.066, 0.015), orange, orange_d)
+		# 跗跖（最细一段）
+		_gull_box(st, Vector3(sx, -0.0965, 0.016), Vector3(0.012, 0.040, 0.012), orange, orange_d)
+		# 脚掌：明确扁平掌面（底面 y=sole）
+		_gull_box(st, Vector3(sx, sole + 0.0045, 0.021), Vector3(0.026, 0.009, 0.032), orange_l, orange)
+		# 后趾（向后的一小段，消除"三根耙子"）
+		_gull_box(st, Vector3(sx, sole + 0.004, 0.006), Vector3(0.009, 0.007, 0.018), orange, orange_d)
+		# 三根前趾：外张 ±BIRD_TOE_SPREAD，两段锥形 + 深色爪尖
 		for toe in [-1, 0, 1]:
 			var ang: float = 0.0
 			if toe == -1:
-				ang = -0.42
+				ang = -BIRD_TOE_SPREAD
 			elif toe == 1:
-				ang = 0.42
+				ang = BIRD_TOE_SPREAD
 			var dir := Vector3(sin(ang), 0.0, cos(ang))
-			var sidev := Vector3(cos(ang), 0.0, -sin(ang))
-			var base := Vector3(sx + 0.002 * float(side), 0.006, 0.028)
-			var tip_p := base + dir * 0.052
-			var hw := 0.009
-			_gull_quad(st, base - sidev * hw, base + sidev * hw, tip_p + sidev * hw * 0.45, tip_p - sidev * hw * 0.45, orange, orange_d, false)
+			var base := Vector3(sx, sole + 0.0045, 0.020)
+			# 趾根（宽 11 mm、厚 8 mm）
+			_gull_box_rot(st, base + dir * (BIRD_TOE_LEN * 0.275), Vector3(0.011, 0.008, BIRD_TOE_LEN * 0.55), ang, orange, orange_d)
+			# 趾中段（收窄）
+			_gull_box_rot(st, base + dir * (BIRD_TOE_LEN * 0.625), Vector3(0.008, 0.0065, BIRD_TOE_LEN * 0.35), ang, orange, orange_d)
+			# 爪尖（深色、再收窄、微向下）
+			_gull_box_rot(st, base + dir * (BIRD_TOE_LEN * 0.89) + Vector3(0.0, -0.0008, 0.0), Vector3(0.005, 0.005, BIRD_TOE_LEN * 0.22), ang, claw_col, orange_d)
 	var mesh: ArrayMesh = st.commit()
 	_mesh_cache["gull_legs"] = mesh
 	return mesh
+
+# ---- P9 栖面间隙契约（只读；world/cottage 栖点数据不动，只在鸟侧补偿） ----
+# 栖点 pos 是"脚点"语义，但不同作者族的 pos 相对真实支撑面有不同固定间隙；
+# 旧实现在此之上又叠 PERCH_FOOT_LIFT=0.02 + 腿网格最低点 0.004，导致屋顶/门廊/灯帽悬空 5.0~5.6 cm。
+# P9 规定：脚底接地面 = 真实支撑面 + BIRD_FOOT_CLEARANCE(0.002)，即净空 0~0.005 m。
+static func perch_author_gap(perch: Dictionary) -> float:
+	var kind := String(perch.get("kind", ""))
+	match kind:
+		"ridge", "eave", "chimney", "porch_beam", "porch_rail", "lamp":
+			return 0.03                                  # cottage.gd:1888 / world.gd:3813 的作者 gap
+		"lighthouse_platform":
+			return 0.0444                                # deck_top+1.02 vs 顶栏 deck_top+0.94+0.036
+		"garden_post":
+			return 0.0182                                # 门柱球顶 h+1.482 vs 栖点 h+1.50
+		"dock":
+			if String(perch.get("id", "")).begins_with("dock_bollard"):
+				return -0.035                            # 系缆桩帽顶比栖点高 3.5 cm
+			return 0.0075                                # 栏杆顶面（bar 中心 +0.92 + 半高 0.0375）
+	return 0.0
+
+static func perch_foot_lift(perch: Dictionary) -> float:
+	return -perch_author_gap(perch) + BIRD_FOOT_CLEARANCE
 
 # 翼面剖面插值：返回 x 处的后缘 z
 static func _gull_wing_te(secs: Array, x: float) -> float:
@@ -614,12 +722,34 @@ class ChimneySmoke extends Node3D:
 	var _ratio := 0.0
 	var _emitting := false
 	var _time_label := ""
+	var _hold := false
+	var _hold_count := 0
+	var _last_hold_reason := ""
 
 	func _exit_tree() -> void:
 		IsleFx._smoke_unregister(self)
 
+	## P8 阶段 7：风力/雨雪只调整既有炊烟粒子的方向、速度与透明度，不新建任何节点。
+	## wind/rain/snow/storm 均为 0..1 的共享天气参数（来自 main._weather_state）。
+	func set_weather(wind: float, rain: float, snow: float, storm: float) -> void:
+		if particles == null or not is_instance_valid(particles):
+			return
+		var w := clampf(wind, 0.0, 1.0)
+		var pm := particles.process_material as ParticleProcessMaterial
+		if pm != null:
+			pm.direction = Vector3(w * 2.2, 1.0, w * 0.35).normalized()
+			pm.gravity = Vector3(0.52 + w * 1.35, 0.12 + w * 0.20, 0.0)
+			pm.initial_velocity_min = 0.60 + w * 0.35
+			pm.initial_velocity_max = 1.30 + w * 0.85
+		if mat != null:
+			var wet := clampf(rain * 1.2 + snow * 1.0 + storm * 0.5, 0.0, 1.0)
+			mat.albedo_color = Color(0.72, 0.72, 0.75, lerpf(0.72, 0.30, wet))
+
 	## main 每帧调用；sim_seconds = 游戏内当天秒（0..86400），不用系统时间/独立计时器。
-	func set_sim_seconds(sim_seconds: float) -> void:
+	## main 每帧调用；sim_seconds = 游戏内当天秒（0..86400），不用系统时间/独立计时器。
+	## P7-V2：hold=true 时仍更新模拟时钟/窗口判断/time_label，但强制不冒烟
+	##（海鸥被时间跳转困在烟囱上、正在起飞的安全回退路径，避免粒子穿鸟）。
+	func set_sim_seconds(sim_seconds: float, hold: bool = false) -> void:
 		if particles == null or not is_instance_valid(particles):
 			return
 		var t: float = fposmod(sim_seconds, IsleFx.SMOKE_DAY_SECONDS)
@@ -642,7 +772,18 @@ class ChimneySmoke extends Node3D:
 			_ramp = 0.0
 		_in_window = in_win
 		_ratio = clampf(_ramp / IsleFx.SMOKE_RAMP_SECONDS, 0.0, 1.0) if in_win else 0.0
-		_emitting = in_win and _ratio > 0.001
+		var was_hold: bool = _hold
+		_hold = hold
+		if _hold:
+			# 安全回退：压住烟雾（每次压制只记一次 hold_count）
+			if not was_hold:
+				_hold_count += 1
+				_last_hold_reason = "bird_on_chimney"
+			_ramp = 0.0
+			_ratio = 0.0
+			_emitting = false
+		else:
+			_emitting = in_win and _ratio > 0.001
 		particles.amount_ratio = _ratio
 		if particles.emitting != _emitting:
 			particles.emitting = _emitting
@@ -667,6 +808,9 @@ class ChimneySmoke extends Node3D:
 			"created_count": created_count,
 			"ratio": _ratio,
 			"sim_seconds": _last_sim,
+			"hold": _hold,
+			"hold_count": _hold_count,
+			"hold_reason": _last_hold_reason,
 			"emitters": emitters,
 		}
 
@@ -787,12 +931,15 @@ static func fireflies(parent: Node3D, center: Vector3) -> Dictionary:
 	pm.color_ramp = gt
 	p.process_material = pm
 	var quad := QuadMesh.new()
-	quad.size = Vector2(0.42, 0.42)
+	# P8 修复：萤火原先 y 轴埋在岛面以下，从未真正可见；抬高后原 0.42 m 面片在近景
+	# 会像漂浮灯笼，收敛到 0.16 m 才是萤火虫尺度（亮度仍由 additive 颜色决定）。
+	quad.size = Vector2(0.16, 0.16)
 	var mat := M.additive_material(M.soft_dot_texture(64), Color(2.2, 1.9, 0.75))
 	quad.material = mat
 	p.draw_pass_1 = quad
 	parent.add_child(p)
-	return {"node": p, "mat": mat}
+	# P8.1-05：pm 一并返回，main 每帧按风/雨/风暴三通道写活动范围与速度（不重建系统）。
+	return {"node": p, "mat": mat, "pm": pm}
 
 static func petals(parent: Node3D, pos: Vector3) -> Dictionary:
 	var p := GPUParticles3D.new()
@@ -837,6 +984,76 @@ static func petals(parent: Node3D, pos: Vector3) -> Dictionary:
 	parent.add_child(p)
 	return {"node": p, "mat": mat}
 
+## P8 四季：秋叶慢速飘落。与花瓣同一套粒子思路（单个 GPUParticles3D，不为每片叶建节点），
+## 叶片用程序化贴图 + 广告牌四边形；颜色/密度/开关由 main.gd 按季节权重写入。
+static func leaves(parent: Node3D, pos: Vector3) -> Dictionary:
+	var p := GPUParticles3D.new()
+	p.name = "Leaves"
+	p.amount = 96
+	# P8.1-05：叶子实际落地时间 2.4—4.8s（见 wind_ui.md A.2），原 lifetime 9 会让叶片
+	# 落地后继续在地下停留 4—6s 无效模拟；截到 5.0 并把预热的粒子同步减半。
+	p.lifetime = 5.0
+	p.preprocess = 3.0
+	p.emitting = false
+	p.position = pos
+	# P8.1-05：强风横向输运明显加长（clear 1.4m → strong_wind 7m），AABB 同步放大，
+	# 否则粒子一旦离开原始视锥就会被整批剔除（视觉上像叶子突然消失）。
+	p.visibility_aabb = AABB(Vector3(-18, -14, -18), Vector3(36, 20, 36))
+	var pm := ParticleProcessMaterial.new()
+	pm.direction = Vector3(0.12, 1.0, 0.06)
+	# 强风方向更集中，叶片才会成片顺风走，而不是向四周乱飞。
+	pm.spread = 50.0
+	pm.initial_velocity_min = 0.05
+	pm.initial_velocity_max = 0.32
+	pm.gravity = Vector3(0.10, -0.55, 0.05)
+	pm.scale_min = 0.6
+	pm.scale_max = 1.25
+	pm.angular_velocity_min = -160.0
+	pm.angular_velocity_max = 160.0
+	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_SPHERE
+	pm.emission_sphere_radius = 3.6
+	var grad := Gradient.new()
+	# P8.1-05：offset 0.55 起 alpha 就开始收，保证 clear（落 4.83s/寿命 5s）在接地前
+	# 已淡到接近透明，不出现“叶堆埋进地面”的硬残留；强风（2.4—2.5s 落地）正好在
+	# offset 0.5 附近开始淡出，观感自然。
+	grad.offsets = PackedFloat32Array([0.0, 0.12, 0.55, 1.0])
+	grad.colors = PackedColorArray([Color(1, 1, 1, 0.0), Color(1, 1, 1, 0.95), Color(1, 1, 1, 0.30), Color(1, 1, 1, 0.0)])
+	var gt := GradientTexture1D.new()
+	gt.gradient = grad
+	pm.color_ramp = gt
+	p.process_material = pm
+	var quad := QuadMesh.new()
+	quad.size = Vector2(0.36, 0.24)
+	var mat := StandardMaterial3D.new()
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+	mat.albedo_texture = leaf_texture()
+	mat.vertex_color_use_as_albedo = true
+	mat.albedo_color = Color(0.95, 0.52, 0.18, 0.92)
+	mat.depth_draw_mode = BaseMaterial3D.DEPTH_DRAW_DISABLED
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	quad.material = mat
+	p.draw_pass_1 = quad
+	parent.add_child(p)
+	# pm 一并返回：main 每帧按共享风场改 direction/gravity，让落叶随风漂而不是固定方向
+	return {"node": p, "mat": mat, "pm": pm}
+
+## 32×32 程序化叶片贴图：两头尖、主脉略暗；不引入任何外部贴图资产。
+static func leaf_texture() -> ImageTexture:
+	var size := 32
+	var img := Image.create(size, size, false, Image.FORMAT_RGBA8)
+	for y in range(size):
+		for x in range(size):
+			var nx := (float(x) + 0.5) / float(size) * 2.0 - 1.0
+			var ny := (float(y) + 0.5) / float(size) * 2.0 - 1.0
+			# 叶片轮廓：椭圆主体 + 两端收尖（不再是菱形），避免落叶近看像纸片方块
+			var wdt := pow(maxf(0.0, 1.0 - ny * ny), 0.62) * 0.92
+			var a := 1.0 if absf(nx) <= wdt else 0.0
+			var shade := 0.82 + 0.18 * (1.0 - absf(nx) / maxf(wdt, 0.001))
+			img.set_pixel(x, y, Color(shade, shade, shade, a))
+	return ImageTexture.create_from_image(img)
+
 # ============================================================
 # 立体水花（池化，点击 / 鱼跃 / 船尾共用）
 # ============================================================
@@ -869,6 +1086,31 @@ class Splash extends Node3D:
 			"max_active": MAX_ACTIVE,
 			"max_units": MAX_UNITS,
 		}
+
+	## 退出/销毁时释放池内"已脱离场景树"的复用单元。
+	## 这些单元在 _finish() 里 remove_child() 后只由 _free 数组持有（运行期计入
+	## Performance.OBJECT_ORPHAN_NODE_COUNT），场景树退出/池节点销毁时父节点已不再
+	## 持有它们，若不显式 free() 会在退出阶段造成 ObjectDB/RID 泄漏（T1 生命周期修复）。
+	## 仅在池退出或销毁时执行，不影响运行期"只有活跃 unit 是子节点"的语义；可重复调用。
+	func _exit_tree() -> void:
+		_release_detached()
+
+	func _notification(what: int) -> void:
+		if what == NOTIFICATION_PREDELETE:
+			_release_detached()
+
+	func _release_detached() -> void:
+		for unit_v in _free:
+			var unit: Dictionary = unit_v
+			var root_v: Variant = unit.get("root")
+			if not is_instance_valid(root_v):
+				continue
+			var root: Node3D = root_v as Node3D
+			if root != null:
+				if root.get_parent() == self:
+					remove_child(root)
+				root.free()
+		_free.clear()
 
 	## 通用入口：power 1.0 ≈ 普通点击，>1.6 ≈ 大鱼跃出，<0.6 ≈ 船尾小水花。
 	func splash_at(p: Vector3, power: float = 1.0) -> void:
@@ -1258,6 +1500,27 @@ class Ripples extends Node3D:
 	func get_state_counts() -> Dictionary:
 		return {"ripples": _items.size(), "created": _created, "free": _free.size(), "fish": _fish.size(), "clicks": _click_times.size()}
 
+	## 退出/销毁时释放池内"已脱离场景树"的复用 MeshInstance3D（同 Splash._release_detached 说明）。
+	func _exit_tree() -> void:
+		_release_detached()
+
+	func _notification(what: int) -> void:
+		if what == NOTIFICATION_PREDELETE:
+			_release_detached()
+
+	func _release_detached() -> void:
+		for it_v in _free:
+			var it: Dictionary = it_v
+			var node_v: Variant = it.get("node")
+			if not is_instance_valid(node_v):
+				continue
+			var node: MeshInstance3D = node_v as MeshInstance3D
+			if node != null:
+				if node.get_parent() == self:
+					remove_child(node)
+				node.free()
+		_free.clear()
+
 	func ripple_at(p: Vector3, power: float = 1.0) -> void:
 		_ensure_init()
 		_add_ripple(p, clampf(power, 0.3, 2.4))
@@ -1430,6 +1693,66 @@ class BirdFlock extends Node3D:
 	var _landings_total := 0
 	var _takeoffs_night := 0
 	var _check_acc := 0.0
+	# ---- P7：生态节奏（黄昏归栖 + 船鸟联动）。只复用现有状态机并补最少事件状态，不另建时钟/状态机。 ----
+	const ROOST_NONE := 0
+	const ROOST_ACTIVE := 1
+	const ROOST_NIGHT := 2
+	const DUSK_START_ALT := 4.0       # 太阳高度向下穿过该值视为黄昏启动候选（度，isle_astro 太阳高度）
+	const DUSK_CANCEL_ALT := 6.0      # 时间回拖到白天时取消未完成归栖计划（不重演已消费事件）
+	const ROOST_GAP_MIN := 0.7        # 分批归栖最小间隔（真实帧时间秒）
+	const ROOST_GAP_MAX := 1.5
+	const BOAT_RESP_SHIFT := 10.0     # 船鸟联动：轨道中心朝船方位的水平偏移上限（米）
+	const BOAT_RESP_DROP := 4.0       # 船鸟联动：轨道高度下调上限（米）
+	const BOAT_RESP_UP_TIME := 1.8    # 响应权重上升时间
+	const BOAT_RESP_DOWN_TIME := 2.4  # 响应权重回落时间
+	const BOAT_RESP_DUR_MIN := 9.0
+	const BOAT_RESP_DUR_MAX := 15.0
+	const BOAT_RESP_MIN_ALT := 8.0    # 太阳高度低于此值（黄昏/夜间）不响应船只
+	var _roost_state: int = ROOST_NONE
+	var _roost_day: int = -999999
+	var _roost_timer := 0.0
+	var _roost_landings := 0
+	var _roost_starts := 0
+	var _roost_skips := 0
+	var _roost_skip_reason := ""
+	var _sun_prev := 0.0
+	var _sun_prev_valid := false
+	var _boat_trip_handled := -1
+	var _boat_pass_attempts := 0
+	var _boat_pass_birds := 0
+	var _boat_skip_reason := ""
+	var _eco_paused := false
+
+	# P8 阶段 7：海鸥天气权重（来自 main._eco_ctx()["weather"]；坏天气不回栖枝、缩短飞行）
+	var _wx_bad := false
+	var _wx_wind := 0.0
+	var _wx_wind_x := 0.0
+	var _wx_wind_z := -1.0
+	var _wx_storm := 0.0
+	# P9：风向量一阶平滑（天气突变/时间跳转时风力连续，不产生单帧速度跳变）
+	var _wind_cur := Vector3.ZERO
+
+	# P8.1：季节栖点门控（来自 main._eco_ctx()["season"]）与传送计数（测试断言用）
+	var _winter_perch_open := false
+	var _leafy_perch_open := true
+	var _teleports_total := 0
+	var _season_evictions := 0
+
+	# P7-V2：停栖待机 / 随机分布 / 烟囱禁停 状态
+	var _perch_rng := RandomNumberGenerator.new()
+	var _sim_seconds_cur := -1.0
+	var _sim_seconds_prev := -1.0
+	var _sim_rate_cur := 60.0
+	var _sun_alt_cur := 0.0
+	var _chimney_evictions := 0
+	var _cap_fallbacks := 0
+	var _no_slot_skips := 0
+	var _idle_active_count := 0
+	var _idle_counts: Dictionary = {}
+	var _smoke_hold_t := 0.0
+	var _smoke_hold_count := 0
+	var _smoke_hold_reason := ""
+
 
 	func _ready() -> void:
 		_ensure_ready()
@@ -1440,6 +1763,7 @@ class BirdFlock extends Node3D:
 		_inited = true
 		_rng.seed = 55021
 		_vis_rng.seed = 77123
+		_perch_rng.seed = 90210
 
 	# ---------------- public API ----------------
 	## 由 main 传入 world + cottage 合并后的栖枝数组；元素可为
@@ -1507,7 +1831,383 @@ class BirdFlock extends Node3D:
 			"takeoffs": _takeoffs_total,
 			"landings": _landings_total,
 			"takeoffs_night": _takeoffs_night,
+			"roost_state": _roost_state,
+			"roost_day": _roost_day,
+			"roost_landings": _roost_landings,
+			"roost_starts": _roost_starts,
+			"roost_skips": _roost_skips,
+			"boat_trip_handled": _boat_trip_handled,
+			"boat_pass_attempts": _boat_pass_attempts,
 		}
+
+	## P7：生态事件可观测状态（只读；探针 / --p7shots / 日志使用）。只含原生类型，便于 JSON.stringify。
+	func debug_eco_state() -> Dictionary:
+		return {
+			"night": _night,
+			"roost_state": _roost_state,
+			"roost_day": _roost_day,
+			"roost_timer": _roost_timer,
+			"roost_landings": _roost_landings,
+			"roost_starts": _roost_starts,
+			"roost_skips": _roost_skips,
+			"roost_skip_reason": _roost_skip_reason,
+			"boat_trip_handled": _boat_trip_handled,
+			"boat_pass_attempts": _boat_pass_attempts,
+			"boat_pass_birds": _boat_pass_birds,
+			"boat_skip_reason": _boat_skip_reason,
+			"paused": _eco_paused,
+		}
+
+	## P7：每鸟状态快照（只读；探针验证「不瞬移 / 栖点互斥 / 响应后恢复」）。
+	func debug_snapshot() -> Array:
+		var out: Array = []
+		for b_v in _birds:
+			var b: Dictionary = b_v
+			var node: Node3D = b["node"]
+			out.append({
+				"index": _bird_index(b),
+				"state": int(b["state"]),
+				"waiting": bool(b.get("waiting", false)),
+				"perch_id": String(b.get("perch_id", "")),
+				"perch_slot": int(b.get("perch_slot", -1)),
+				"timer": float(b.get("timer", 0.0)),
+				"resp_timer": float(b.get("resp_timer", 0.0)),
+				"resp_w": float(b.get("resp_w", 0.0)),
+				"pos": node.position,
+
+				"idle_action": String(b.get("idle_action", "none")),
+				"idle_active": bool(b.get("idle_active", false)),
+				"perch_zone": _bird_perch_zone(b),
+
+
+			})
+		return out
+
+	## P7：帆船经过近海航段时的一次性海鸥联动。trip 为 main 的航次号；
+	## 同一次航行最多启动一次（成功或跳过都记为已处理，船在范围内持续移动时不会逐帧重试）。
+	## 只调用既有起飞/飞行/降落接口，不新建飞行 AI。返回 {ok, birds, reason, trip}。
+
+	# ============================================================
+	# P7-V2：调试接口（test-verify / 验收探针依赖）
+	# ============================================================
+	func debug_idle_state() -> Array:
+		var out: Array = []
+		for b_v in _birds:
+			var b: Dictionary = b_v
+			out.append({
+				"index": _bird_index(b),
+				"state": int(b["state"]),
+				"action": String(b.get("idle_action", "none")),
+				"active": bool(b.get("idle_active", false)),
+				"t": float(b.get("idle_t", 0.0)),
+				"dur": float(b.get("idle_dur", 0.0)),
+				"cool": float(b.get("idle_cool", 0.0)),
+				"night": _night,
+				"hop_safe": _idle_hop_safe(b),
+				"perch_id": String(b.get("perch_id", "")),
+				"perch_zone": _bird_perch_zone(b),
+			})
+		return out
+
+	func debug_perch_availability(sim_seconds: float = -1.0, sun_alt: float = 0.0, night: bool = false, sim_rate: float = -1.0) -> Array:
+		var sim: float = sim_seconds if sim_seconds >= 0.0 else _sim_seconds_cur
+		var out: Array = []
+		for p_v in _perches:
+			var p: Dictionary = p_v
+			var ev: Dictionary = _perch_eligible(p, sim, sun_alt, night, true, sim_rate)
+			var used: Array = _perch_used.get(String(p["id"]), [])
+			out.append({
+				"id": String(p["id"]),
+				"kind": String(p["kind"]),
+				"zone": _perch_zone(String(p["kind"])),
+				"eligible": bool(ev["eligible"]),
+				"reason": String(ev["reason"]),
+				"lead_left": float(ev.get("lead_left", -1.0)),
+				"slots": int(p["slots"]),
+				"slots_free": int(p["slots"]) - used.size(),
+			})
+		return out
+
+	func debug_perch_stats() -> Dictionary:
+		var zones: Dictionary = {}
+		var roof := 0
+		var ridge := 0
+		var slots_total := 0
+		for p_v in _perches:
+			var p: Dictionary = p_v
+			var zone: String = _perch_zone(String(p["kind"]))
+			zones[zone] = int(zones.get(zone, 0)) + 1
+			slots_total += int(p["slots"])
+			if zone == "roof":
+				roof += 1
+			if String(p["kind"]) == "ridge":
+				ridge += 1
+		var used_slots := 0
+		for pid in _perch_used.keys():
+			used_slots += (_perch_used[pid] as Array).size()
+		var idle_active := 0
+		var idle_counts: Dictionary = {}
+		var perched := 0
+		for b_v in _birds:
+			var b: Dictionary = b_v
+			if int(b["state"]) == State.PERCH:
+				perched += 1
+			if bool(b.get("idle_active", false)):
+				idle_active += 1
+				var act: String = String(b.get("idle_action", "none"))
+				idle_counts[act] = int(idle_counts.get(act, 0)) + 1
+		return {
+			"perch_count": _perches.size(),
+			"total_slots": slots_total,
+			"used_slots": used_slots,
+			"roof_count": roof,
+			"ridge_count": ridge,
+			"zones": zones,
+			"perched": perched,
+			"idle_active": idle_active,
+			"idle_counts": idle_counts,
+			"chimney_evictions": _chimney_evictions,
+			"season_evictions": _season_evictions,
+			"teleports": _teleports_total,
+			"winter_open": _winter_perch_open,
+			"leafy_open": _leafy_perch_open,
+			"cap_fallbacks": _cap_fallbacks,
+			"no_slot_skips": _no_slot_skips,
+			"night": _night,
+			"roost_state": _roost_state,
+			"sim_seconds": _sim_seconds_cur,
+			"sim_rate": _sim_rate_cur,
+			"smoke_hold": _smoke_hold_t,
+			"smoke_hold_count": _smoke_hold_count,
+			"hold_reason": _smoke_hold_reason,
+			"perches": debug_perch_availability(_sim_seconds_cur, _sun_alt_cur, _night),
+		}
+
+	func debug_force_perch(index: int, perch_id: String) -> bool:
+		if index < 0 or index >= _birds.size():
+			return false
+		var p: Dictionary = _find_perch(perch_id)
+		if p.is_empty():
+			return false
+		var used: Array = _perch_used.get(perch_id, [])
+		var slot: int = -1
+		for s in range(int(p["slots"])):
+			if not used.has(s):
+				slot = s
+				break
+		if slot < 0:
+			return false
+		var b: Dictionary = _birds[index]
+		_cancel_idle(b)
+		_release_perch(b)
+		_reserve_slot(perch_id, slot)
+		b["perch_id"] = perch_id
+		b["perch_slot"] = slot
+		var sp: Vector3 = _slot_position(p, slot)
+		b["perch_pos"] = sp
+		b["state"] = State.PERCH
+		b["waiting"] = false
+		b["idle_off"] = Vector3.ZERO
+		var node: Node3D = b["node"]
+		node.position = sp
+		b["prev_pos"] = sp
+		b["teleport"] = true
+		_teleports_total += 1
+		b["fold"] = 1.0
+		b["timer"] = 999.0 if _night else IsleFx.BIRD_TIMER_MIN
+		b["crouch"] = 0.0
+		b["idle_off"] = Vector3.ZERO
+		_apply_perch_pose(b, p)
+		_reset_rest_state(b, sp)
+		return true
+
+	## P9 探针接口：逐鸟运动学快照（真实状态机/速度/朝向/腿脚姿态，供 K1-K15 断言）。
+	func debug_motion_state() -> Array:
+		var out: Array = []
+		for b_v in _birds:
+			var b: Dictionary = b_v
+			var node: Node3D = b["node"]
+			var legs_node: Node3D = b["legs"]
+			var body_node := b.get("body", null) as Node3D
+			var legs_mi := legs_node as MeshInstance3D
+			var foot_local_y: float = 0.0
+			if legs_mi != null and legs_mi.mesh != null:
+				foot_local_y = legs_node.position.y + legs_mi.mesh.get_aabb().position.y
+			var vel: Vector3 = b.get("vel", Vector3.ZERO)
+			var body_rot := Vector3.ZERO
+			if body_node != null:
+				body_rot = body_node.rotation
+			out.append({
+				"index": _bird_index(b),
+				"state": int(b["state"]),
+				"stage": int(b.get("takeoff_stage", 0)),
+				"perch_id": String(b.get("perch_id", "")),
+				"pos": node.position,
+				"vel": vel,
+				"speed": vel.length(),
+				"yaw": float(b.get("yaw", 0.0)),
+				"pitch": float(b.get("pitch", 0.0)),
+				"roll": float(b.get("roll", 0.0)),
+				"yaw_deg": rad_to_deg(float(b.get("yaw", 0.0))),
+				"pitch_deg": rad_to_deg(float(b.get("pitch", 0.0))),
+				"tk": float(b.get("tk", 0.0)),
+				"land_t": float(b.get("land_t", 0.0)),
+				"flare": float(b.get("flare", 0.0)),
+				"land_align": float(b.get("land_align", 0.0)),
+				"legs_reach": float(b.get("legs_reach", 0.0)),
+				"legs_plant": float(b.get("legs_plant", 0.0)),
+				"crouch": float(b.get("crouch", 0.0)),
+				"legs_rot_x": legs_node.rotation.x,
+				"body_rot": body_rot,
+				"head_rot": (b["head"] as Node3D).rotation,
+				"foot_local_y": foot_local_y,
+				"teleport": bool(b.get("teleport", false)),
+				"wind": _wind_cur,
+			})
+		return out
+
+	## P9 探针接口：栖点脚部契约（作者 gap / 鸟侧补偿 / 槽点 / 净空）。
+	func debug_foot_contract(perch_id: String) -> Dictionary:
+		var p: Dictionary = _find_perch(perch_id)
+		if p.is_empty():
+			return {}
+		var n: Vector3 = _perch_normal(p)
+		var gap: float = IsleFx.perch_author_gap(p)
+		var lift: float = IsleFx.perch_foot_lift(p)
+		var slot: Vector3 = _slot_position(p, 0)
+		return {
+			"id": perch_id,
+			"kind": String(p.get("kind", "")),
+			"pos": p["pos"],
+			"normal": n,
+			"author_gap": gap,
+			"foot_lift": lift,
+			"slot": slot,
+			"slot_gap_along_normal": (slot - (p["pos"] as Vector3)).dot(n),
+			"support_gap": gap + lift,
+		}
+
+	## P9 探针接口：强制指定鸟进入起飞流程（截图/运动学探针；不改变生态规则）。
+	func debug_force_takeoff(index: int) -> bool:
+		if index < 0 or index >= _birds.size():
+			return false
+		var b: Dictionary = _birds[index]
+		if int(b["state"]) != State.PERCH:
+			return false
+		_begin_takeoff(b)
+		return true
+
+	## P9 探针接口：强制指定鸟降落指定栖点（截图/运动学探针；不改变生态规则）。
+	func debug_force_landing(index: int, perch_id: String) -> bool:
+		if index < 0 or index >= _birds.size():
+			return false
+		var p: Dictionary = _find_perch(perch_id)
+		if p.is_empty():
+			return false
+		var used: Array = _perch_used.get(perch_id, [])
+		var slot: int = -1
+		for s in range(int(p["slots"])):
+			if not used.has(s):
+				slot = s
+				break
+		if slot < 0:
+			return false
+		var b: Dictionary = _birds[index]
+		var node: Node3D = b["node"]
+		_cancel_idle(b)
+		_release_perch(b)
+		_reserve_slot(perch_id, slot)
+		b["perch_id"] = perch_id
+		b["perch_slot"] = slot
+		b["perch_pos"] = _slot_position(p, slot)
+		b["state"] = State.LANDING
+		b["t"] = 0.0
+		b["dur"] = IsleFx.BIRD_TRANSITION_MAX
+		b["land_t"] = 0.0
+		b["land_align"] = 0.0
+		b["flare"] = 0.0
+		b["legs_reach"] = 0.0
+		b["legs_plant"] = 0.0
+		b["pitch_bias"] = 0.0
+		b["from_p"] = node.position
+		b["to_p"] = b["perch_pos"]
+		b["land_up"] = _perch_normal(p)
+		b["land_facing"] = float(p["facing"])
+		b["waiting"] = false
+		b["resp_delay"] = 0.0
+		b["resp_timer"] = 0.0
+		b["resp_w"] = 0.0
+		_landings_total += 1
+		return true
+
+
+
+	func on_boat_shore_pass(trip: int, boat_pos: Vector3, sun_alt: float) -> Dictionary:
+		_ensure_ready()
+		_boat_pass_attempts += 1
+		if _birds.is_empty():
+			_boat_skip_reason = "no_birds"
+			return {"ok": false, "birds": 0, "reason": "no_birds", "trip": trip}
+		if trip == _boat_trip_handled:
+			_boat_skip_reason = "trip_done"
+			return {"ok": false, "birds": 0, "reason": "trip_done", "trip": trip}
+		_boat_trip_handled = trip
+		if _night:
+			_boat_skip_reason = "night"
+			return {"ok": false, "birds": 0, "reason": "night", "trip": trip}
+		if _roost_state != ROOST_NONE:
+			_boat_skip_reason = "dusk_roost"
+			return {"ok": false, "birds": 0, "reason": "dusk_roost", "trip": trip}
+		if sun_alt < BOAT_RESP_MIN_ALT:
+			_boat_skip_reason = "low_sun"
+			return {"ok": false, "birds": 0, "reason": "low_sun", "trip": trip}
+		# 候选：已停栖的鸟优先（从原栖点正常起飞）；不足时用可安全打断的空闲巡航个体。
+		var perched: Array = []
+		var flying: Array = []
+		for b_v in _birds:
+			var b: Dictionary = b_v
+			var st: int = int(b["state"])
+			if st == State.PERCH:
+				if float(b.get("resp_delay", 0.0)) > 0.0:
+					continue
+				perched.append(b)
+			elif st == State.FLY and not bool(b.get("waiting", false)):
+				if _t - float(b.get("fly_since", -100.0)) < 1.2:
+					continue
+				flying.append(b)
+		var pool: Array = perched if not perched.is_empty() else flying
+		if pool.is_empty():
+			_boat_skip_reason = "no_candidate"
+			return {"ok": false, "birds": 0, "reason": "no_candidate", "trip": trip}
+		var count := 1
+		if pool.size() >= 2 and _rng.randf() < 0.62:
+			count = 2
+		var boat_az: float = atan2(boat_pos.z, boat_pos.x)
+		var picked := 0
+		var guard := 0
+		while picked < count and guard < 10 and not pool.is_empty():
+			guard += 1
+			var pick_i: int = _rng.randi_range(0, pool.size() - 1)
+			var b: Dictionary = pool[pick_i]
+			pool.remove_at(pick_i)
+			b["resp_az"] = boat_az + _rng.randf_range(-0.16, 0.16)
+			b["resp_timer"] = _rng.randf_range(BOAT_RESP_DUR_MIN, BOAT_RESP_DUR_MAX)
+			b["resp_w"] = 0.0
+			if int(b["state"]) == State.PERCH:
+				# 第二只错峰起飞：延迟到期后由 _update_perched 走既有起飞接口
+				b["resp_delay"] = _rng.randf_range(0.5, 1.1) if picked > 0 else 0.0
+				if float(b["resp_delay"]) <= 0.0:
+					_begin_takeoff(b)
+			else:
+				b["resp_delay"] = _rng.randf_range(0.4, 0.9) if picked > 0 else 0.0
+			picked += 1
+		if picked <= 0:
+			_boat_skip_reason = "no_candidate"
+			return {"ok": false, "birds": 0, "reason": "no_candidate", "trip": trip}
+		_boat_pass_birds = picked
+		_boat_skip_reason = ""
+		print("[ECO] boat_pass trip=", trip, " birds=", picked, " boat_az=", snappedf(boat_az, 0.01), " sun_alt=", snappedf(sun_alt, 0.1))
+		return {"ok": true, "birds": picked, "reason": "ok", "trip": trip}
 
 	# ---------------- perches ----------------
 	func _normalize_perches(raw_perches: Array) -> Array:
@@ -1650,8 +2350,8 @@ class BirdFlock extends Node3D:
 			lateral = Vector3(cos(yaw), 0.0, -sin(yaw))
 		lateral = lateral.normalized()
 		var base: Vector3 = perch["pos"]
-		# 脚底沿法线抬起 PERCH_FOOT_LIFT，避免贴面 z-fighting/穿瓦
-		return base + lateral * off + up * IsleFx.PERCH_FOOT_LIFT
+		# P9：按作者 gap 反补偿，使脚底接地面落在真实支撑面 + BIRD_FOOT_CLEARANCE（净空 0~0.005 m）。
+		return base + lateral * off + up * IsleFx.perch_foot_lift(perch)
 
 	func _perch_normal(perch: Dictionary) -> Vector3:
 		var n_v = perch.get("normal", null)
@@ -1697,42 +2397,454 @@ class BirdFlock extends Node3D:
 				return p
 		return {}
 
-	func _find_free_slot(from_pos: Vector3) -> Dictionary:
-		var best: Dictionary = {}
-		var best_d := 1.0e30
+
+	# ============================================================
+	# P7-V2：停栖点区域 / 可用性（烟囱禁停） / 随机分散选点
+	# ============================================================
+	func _perch_zone(kind: String) -> String:
+		match kind:
+			"tree_branch", "tree":
+				return "tree"
+			"lighthouse_platform", "lighthouse":
+				return "lighthouse"
+			"dock", "dock_rail", "dock_bollard", "bollard":
+				return "dock"
+			"garden_post", "garden":
+				return "garden"
+			"ridge", "eave", "chimney", "roof":
+				return "roof"
+			"porch_rail", "porch_beam", "porch":
+				return "porch"
+			"lamp", "lamp_post", "street_lamp":
+				return "lamp"
+			"winter_branch":
+				return "winter_branch"
+		return "other"
+
+	func _perch_zone_weight(zone: String) -> float:
+		# 夜里更安静：树冠/屋顶/灯塔权重提高，靠人活动区的门廊/路灯/码头降低。
+		if _night:
+			match zone:
+				"tree":
+					return 1.25
+				"lighthouse":
+					return 1.10
+				"roof":
+					return 1.00
+				"porch":
+					return 0.60
+				"dock":
+					return 0.55
+				"garden":
+					return 0.45
+				"lamp":
+					return 0.40
+				"winter_branch":
+					return 1.35
+			return 0.50
+		match zone:
+			"lighthouse":
+				return 1.05
+			"tree":
+				return 1.00
+			"roof":
+				return 0.95
+			"dock":
+				return 0.90
+			"porch":
+				return 0.80
+			"garden":
+				return 0.65
+			"lamp":
+				return 0.55
+			"winter_branch":
+				return 1.20
+		return 0.50
+
+	func _seconds_to_next_smoke_start(sim_seconds: float) -> float:
+		if sim_seconds < 0.0:
+			return 1.0e30
+		var t: float = fposmod(sim_seconds, IsleFx.SMOKE_DAY_SECONDS)
+		var a0: float = IsleFx.SMOKE_WINDOW_A_START
+		var a1: float = IsleFx.SMOKE_WINDOW_A_END
+		var b0: float = IsleFx.SMOKE_WINDOW_B_START
+		var b1: float = IsleFx.SMOKE_WINDOW_B_END
+		if t < a0:
+			return a0 - t
+		if t < a1:
+			return 0.0
+		if t < b0:
+			return b0 - t
+		if t < b1:
+			return 0.0
+		return IsleFx.SMOKE_DAY_SECONDS - t + a0
+
+	func _smoke_lead_seconds(sim_rate: float = -1.0) -> float:
+		var rate: float = sim_rate if sim_rate > 0.0 else _sim_rate_cur
+		return (IsleFx.BIRD_TRANSITION_MAX + IsleFx.PERCH_SMOKE_LEAD_BUFFER) * maxf(rate, 0.001)
+
+	func _perch_eligible(p: Dictionary, sim_seconds: float, sun_alt: float, night: bool, include_lead: bool = true, sim_rate: float = -1.0) -> Dictionary:
+		var kind: String = String(p.get("kind", ""))
+		if String(p.get("id", "")) == "":
+			return {"eligible": false, "reason": "invalid", "lead_left": -1.0}
+		# P8.1：季节门控——冬季裸枝点仅冬季开放；冠面树栖点在落叶后不可用（避免海鸥悬空）。
+		if kind == "winter_branch" and not _winter_perch_open:
+			return {"eligible": false, "reason": "season_off", "lead_left": -1.0}
+		if kind == "tree_branch" and not _leafy_perch_open:
+			return {"eligible": false, "reason": "season_off", "lead_left": -1.0}
+		if kind != "chimney":
+			return {"eligible": true, "reason": "ok", "lead_left": -1.0}
+		if night:
+			return {"eligible": false, "reason": "night", "lead_left": -1.0}
+		if sim_seconds < 0.0:
+			return {"eligible": false, "reason": "time_unknown", "lead_left": -1.0}
+		if IsleFx.is_smoke_window(sim_seconds):
+			return {"eligible": false, "reason": "smoke", "lead_left": 0.0}
+		var d: float = _seconds_to_next_smoke_start(sim_seconds)
+		if include_lead and d <= _smoke_lead_seconds(sim_rate):
+			return {"eligible": false, "reason": "smoke_lead", "lead_left": d}
+		return {"eligible": true, "reason": "ok", "lead_left": d}
+
+	func _perch_eligible_now(p: Dictionary) -> bool:
+		return bool(_perch_eligible(p, _sim_seconds_cur, _sun_alt_cur, _night)["eligible"])
+
+	func _update_clock_cache(delta: float, ctx: Dictionary) -> void:
+		var sim: float = -1.0
+		if ctx.has("sim_seconds"):
+			sim = float(ctx["sim_seconds"])
+		var rate: float = -1.0
+		if ctx.has("sim_rate"):
+			rate = float(ctx["sim_rate"])
+		if rate > 0.0:
+			_sim_rate_cur = clampf(rate, 0.01, 100000.0)
+		elif sim >= 0.0 and _sim_seconds_cur >= 0.0 and delta > 0.0:
+			var d: float = sim - _sim_seconds_cur
+			if d > 0.0:
+				var est: float = d / delta
+				if est >= 0.25 and est <= 4000.0:
+					# 时间跳转/拖拽会给出离谱倍率，只在相对稳定时采纳差分估计。
+					if absf(est - _sim_rate_cur) <= maxf(_sim_rate_cur * 0.75, 1.0):
+						_sim_rate_cur = est
+		if sim >= 0.0:
+			_sim_seconds_prev = _sim_seconds_cur
+			_sim_seconds_cur = sim
+
+	func _bird_perch_zone(b: Dictionary) -> String:
+		var pid: String = String(b.get("perch_id", ""))
+		if pid == "":
+			return ""
+		var p: Dictionary = _find_perch(pid)
+		if p.is_empty():
+			return ""
+		return _perch_zone(String(p.get("kind", "")))
+
+	func _used_zone_counts() -> Dictionary:
+		var out: Dictionary = {}
+		for b_v in _birds:
+			var b: Dictionary = b_v
+			var st: int = int(b["state"])
+			if st != State.PERCH and st != State.LANDING:
+				continue
+			var pid: String = String(b.get("perch_id", ""))
+			if pid == "":
+				continue
+			var p: Dictionary = _find_perch(pid)
+			if p.is_empty():
+				continue
+			var kind: String = String(p.get("kind", ""))
+			var zone: String = _perch_zone(kind)
+			out[zone] = int(out.get(zone, 0)) + 1
+			if kind == "ridge":
+				out["__ridge"] = int(out.get("__ridge", 0)) + 1
+		return out
+
+	func _slot_weight(p: Dictionary, sp: Vector3, from_pos: Vector3, zone_counts: Dictionary) -> float:
+		var zone: String = _perch_zone(String(p.get("kind", "")))
+		var w: float = _perch_zone_weight(zone)
+		# P8.1：裸枝栖点只有 5 个且是冬季主景，同区惩罚放缓，避免全挤到 1-2 根枝上。
+		var same_penalty: float = 0.80 if zone == "winter_branch" else IsleFx.PERCH_ZONE_SAME_PENALTY
+		var same_zone: int = int(zone_counts.get(zone, 0))
+		if same_zone > 0:
+			w *= pow(same_penalty, float(same_zone))
+		var used_same: int = (_perch_used.get(String(p["id"]), []) as Array).size()
+		if used_same > 0:
+			w *= pow(same_penalty, float(used_same))
+		var min_d: float = IsleFx.PERCH_MIN_DIST_WEIGHT
+		for b_v in _birds:
+			var b: Dictionary = b_v
+			var st: int = int(b["state"])
+			if st != State.PERCH and st != State.LANDING:
+				continue
+			min_d = minf(min_d, (b["node"] as Node3D).position.distance_to(sp))
+		w *= 0.20 + 0.80 * clampf(min_d / IsleFx.PERCH_MIN_DIST_WEIGHT, 0.0, 1.0)
+		w *= 0.85 + 0.30 * clampf(1.0 - from_pos.distance_to(sp) / 60.0, 0.0, 1.0)
+		return maxf(w, 0.000001)
+
+	func _collect_free_slots(from_pos: Vector3, kind_filter: String, relax_caps: bool) -> Array:
+		var cands: Array = []
+		var zone_counts: Dictionary = _used_zone_counts()
 		for p_v in _perches:
 			var p: Dictionary = p_v
-			var used: Array = _perch_used.get(String(p["id"]), [])
-			var slots: int = int(p["slots"])
-			for s in range(slots):
+			var pid: String = String(p["id"])
+			var kind: String = String(p["kind"])
+			if kind_filter != "" and kind != kind_filter:
+				continue
+			if not _perch_eligible_now(p):
+				continue
+			var zone: String = _perch_zone(kind)
+			if not relax_caps:
+				if zone == "roof" and int(zone_counts.get("roof", 0)) >= IsleFx.PERCH_ROOF_ZONE_MAX:
+					continue
+				if kind == "ridge" and int(zone_counts.get("__ridge", 0)) >= IsleFx.PERCH_RIDGE_ROW_MAX:
+					continue
+			var used: Array = _perch_used.get(pid, [])
+			for s in range(int(p["slots"])):
 				if used.has(s):
 					continue
-				var pos: Vector3 = _slot_position(p, s)
-				var d: float = pos.distance_squared_to(from_pos)
-				if d < best_d:
-					best_d = d
-					best = {"id": p["id"], "slot": s, "pos": pos}
-		return best
+				var sp: Vector3 = _slot_position(p, s)
+				cands.append({"id": pid, "slot": s, "pos": sp, "weight": _slot_weight(p, sp, from_pos, zone_counts), "zone": zone})
+		return cands
+
+	func _find_free_slot(from_pos: Vector3, kind_filter: String = "") -> Dictionary:
+		var cands: Array = _collect_free_slots(from_pos, kind_filter, false)
+		if cands.is_empty():
+			# 兜底：分散硬上限把可用点滤空时放宽上限；烟囱/夜间禁停由可用性判定把守，永不放宽。
+			cands = _collect_free_slots(from_pos, kind_filter, true)
+			if not cands.is_empty():
+				_cap_fallbacks += 1
+		# P9：近优先落点（着陆时长/进近速度与距离强相关）：按距离分档降权而不是硬过滤，
+		# 保证 40 个栖点仍然都有机会被用到（探针要求 ≥8 栖枝 / ≥4 kind / ≥4 区域 / lamp 参与）。
+		if not cands.is_empty():
+			for c_v in cands:
+				var c2: Dictionary = c_v
+				var dd: float = from_pos.distance_to(c2["pos"] as Vector3)
+				# 连续距离窗：近点权重高、远点仍可被抽到（保证 40 个栖点/全部区域仍有机会）
+				var mult: float = clampf(1.25 - dd / 22.0, 0.06, 1.25)
+				c2["weight"] = float(c2["weight"]) * mult
+		if cands.is_empty():
+			_no_slot_skips += 1
+			return {}
+		var total: float = 0.0
+		for c_v in cands:
+			total += float((c_v as Dictionary)["weight"])
+		var r: float = _perch_rng.randf() * total
+		var acc: float = 0.0
+		var chosen: Dictionary = cands[cands.size() - 1]
+		for c_v in cands:
+			var c: Dictionary = c_v
+			acc += float(c["weight"])
+			if r <= acc:
+				chosen = c
+				break
+		return {"id": chosen["id"], "slot": int(chosen["slot"]), "pos": chosen["pos"]}
+
+	# ---------- P7-V2：停栖待机动作（单一调度器，无每鸟 Timer/Tween） ----------
+	func _init_bird_idle(b: Dictionary) -> void:
+		if b.has("idle_action"):
+			return
+		var node: Node3D = b["node"]
+		b["body"] = node.get_node_or_null("body")
+		b["idle_action"] = "none"
+		b["idle_active"] = false
+		b["idle_t"] = 0.0
+		b["idle_dur"] = 0.0
+		b["idle_env"] = 0.0
+		b["idle_cool"] = 0.25 + _vis_rng.randf() * 1.6
+		b["idle_side"] = 1.0 if _vis_rng.randf() < 0.5 else -1.0
+		b["idle_hop_h"] = IsleFx.BIRD_HOP_HEIGHT
+		b["idle_off"] = Vector3.ZERO
+
+	func _idle_hop_safe(b: Dictionary) -> bool:
+		var p: Dictionary = _find_perch(String(b.get("perch_id", "")))
+		if p.is_empty():
+			return false
+		var n: Vector3 = (p["normal"] as Vector3).normalized()
+		return float(p.get("slope", 0.0)) <= IsleFx.BIRD_HOP_MAX_SLOPE and n.y >= IsleFx.BIRD_HOP_MIN_NORMAL_Y
+
+	func _idle_next_cool() -> float:
+		if _night:
+			return _vis_rng.randf_range(IsleFx.BIRD_IDLE_NIGHT_GAP_MIN, IsleFx.BIRD_IDLE_NIGHT_GAP_MAX)
+		return _vis_rng.randf_range(IsleFx.BIRD_IDLE_GAP_MIN, IsleFx.BIRD_IDLE_GAP_MAX)
+
+	func _cancel_idle(b: Dictionary) -> void:
+		if not b.has("idle_action"):
+			return
+		var was_active: bool = bool(b["idle_active"])
+		b["idle_action"] = "none"
+		b["idle_active"] = false
+		b["idle_t"] = 0.0
+		b["idle_dur"] = 0.0
+		b["idle_env"] = 0.0
+		b["idle_off"] = Vector3.ZERO
+		if was_active:
+			b["idle_cool"] = _idle_next_cool()
+
+	func _finish_idle(b: Dictionary) -> void:
+		b["idle_action"] = "none"
+		b["idle_active"] = false
+		b["idle_t"] = 0.0
+		b["idle_dur"] = 0.0
+		b["idle_env"] = 0.0
+		b["idle_off"] = Vector3.ZERO
+		b["idle_cool"] = _idle_next_cool()
+
+	func _idle_hop_offset(b: Dictionary, p: Dictionary) -> Vector3:
+		if String(b["idle_action"]) != "hop" or not bool(b["idle_active"]):
+			return Vector3.ZERO
+		var q: float = clampf(float(b["idle_t"]) / maxf(float(b["idle_dur"]), 0.0001), 0.0, 1.0)
+		var n: Vector3 = (p["normal"] as Vector3).normalized()
+		return n * (float(b["idle_hop_h"]) * sin(PI * q))
+
+	func _idle_pick_action(b: Dictionary) -> void:
+		var names: Array = []
+		var weights: Array = []
+		if int(_roost_state) == ROOST_ACTIVE:
+			# 黄昏归栖中保持安静：只做无需位移的动作（不破坏停栖槽位/脚点验收）。
+			names = ["look_around", "preen", "rest"]
+			weights = [1.0, 1.2, 1.0]
+		elif _night:
+			names = ["rest", "look_around", "preen"]
+			weights = [8.0, 1.2, 0.8]
+		else:
+			names = ["look_around", "preen", "shake", "adjust_stance"]
+			weights = [3.0, 2.0, 1.2, 1.0]
+			if _idle_hop_safe(b):
+				names.append("hop")
+				weights.append(1.3)
+		var total: float = 0.0
+		for w_v in weights:
+			total += float(w_v)
+		var r: float = _vis_rng.randf() * total
+		var acc: float = 0.0
+		var pick: String = String(names[0])
+		for i in range(names.size()):
+			acc += float(weights[i])
+			if r <= acc:
+				pick = String(names[i])
+				break
+		b["idle_action"] = pick
+		b["idle_active"] = true
+		b["idle_t"] = 0.0
+		b["idle_env"] = 0.0
+		b["idle_side"] = 1.0 if _vis_rng.randf() < 0.5 else -1.0
+		match pick:
+			"hop":
+				b["idle_dur"] = IsleFx.BIRD_HOP_DURATION
+				b["idle_hop_h"] = IsleFx.BIRD_HOP_HEIGHT * _vis_rng.randf_range(0.75, 1.15)
+			"look_around":
+				b["idle_dur"] = _vis_rng.randf_range(1.1, 2.2)
+			"preen":
+				b["idle_dur"] = _vis_rng.randf_range(1.2, 2.4)
+			"shake":
+				b["idle_dur"] = _vis_rng.randf_range(0.45, 0.75)
+			"adjust_stance":
+				b["idle_dur"] = _vis_rng.randf_range(0.8, 1.4)
+			"rest":
+				b["idle_dur"] = _vis_rng.randf_range(2.4, 4.5)
+
+	func _update_idle(delta: float) -> void:
+		var active: int = 0
+		var counts: Dictionary = {}
+		for b_v in _birds:
+			var b: Dictionary = b_v
+			if not b.has("idle_action"):
+				_init_bird_idle(b)
+			if int(b["state"]) != State.PERCH:
+				if bool(b["idle_active"]):
+					_cancel_idle(b)
+				continue
+			var p: Dictionary = _find_perch(String(b.get("perch_id", "")))
+			if p.is_empty():
+				_cancel_idle(b)
+				continue
+			if bool(b["idle_active"]):
+				b["idle_t"] = float(b["idle_t"]) + delta
+				b["idle_off"] = _idle_hop_offset(b, p)
+				var act: String = String(b["idle_action"])
+				active += 1
+				counts[act] = int(counts.get(act, 0)) + 1
+				if float(b["idle_t"]) >= float(b["idle_dur"]):
+					_finish_idle(b)
+					active -= 1
+					counts[act] = maxi(int(counts.get(act, 0)) - 1, 0)
+			else:
+				b["idle_cool"] = float(b["idle_cool"]) - delta
+				if float(b["idle_cool"]) <= 0.0:
+					_idle_pick_action(b)
+					b["idle_off"] = _idle_hop_offset(b, p)
+					active += 1
+					var act2: String = String(b["idle_action"])
+					counts[act2] = int(counts.get(act2, 0)) + 1
+		_idle_active_count = active
+		_idle_counts = counts
+
+	func _snap_perch_foot(b: Dictionary) -> void:
+		b["idle_off"] = Vector3.ZERO
+		var pid: String = String(b.get("perch_id", ""))
+		if pid == "":
+			return
+		var p: Dictionary = _find_perch(pid)
+		if p.is_empty():
+			return
+		(b["node"] as Node3D).position = _slot_position(p, int(b.get("perch_slot", 0)))
+
+	## P9：把刚落到栖枝/被强制摆位的鸟的运动状态归零（避免旧速度/阶段残留到下一次起飞）。
+	func _reset_rest_state(b: Dictionary, pos: Vector3) -> void:
+		var node: Node3D = b["node"]
+		node.position = pos
+		b["vel"] = Vector3.ZERO
+		b["prev_vel"] = Vector3.ZERO
+		b["motion_pos"] = pos
+		b["prev_pos"] = pos
+		b["crouch"] = 0.0
+		b["tk"] = 0.0
+		b["takeoff_stage"] = 0
+		b["land_t"] = 0.0
+		b["flare"] = 0.0
+		b["land_align"] = 0.0
+		b["legs_reach"] = 0.0
+		b["legs_plant"] = 0.0
+		b["pitch_bias"] = 0.0
+		b["yaw"] = node.rotation.y
+		b["pitch"] = node.rotation.x
+		b["roll"] = node.rotation.z
+		b["yaw_hold"] = node.rotation.y
+
+	func smoke_hold_remaining() -> float:
+		return _smoke_hold_t
+
+	## P7-V2：烟囱即将冒烟/正在冒烟/夜间时，把停在上面的鸟按正常起飞驱逐；
+	## 若已处于冒烟窗口（时间跳转场景），同帧设置烟雾压制 hold 作为安全回退。
+	func _update_perch_evictions() -> void:
+		for b_v in _birds:
+			var b: Dictionary = b_v
+			if int(b["state"]) != State.PERCH:
+				continue
+			var pid: String = String(b.get("perch_id", ""))
+			if pid == "":
+				continue
+			var p: Dictionary = _find_perch(pid)
+			if p.is_empty():
+				continue
+			if _perch_eligible_now(p):
+				continue
+			if String(p.get("kind", "")) == "chimney":
+				# 时间跳入冒烟窗口而鸟仍占用烟囱：同一帧启动烟雾压制（安全回退；正常提前起飞不会走到这里）。
+				if _sim_seconds_cur >= 0.0 and IsleFx.is_smoke_window(_sim_seconds_cur):
+					if _smoke_hold_t <= 0.0:
+						_smoke_hold_count += 1
+						_smoke_hold_reason = "bird_on_chimney"
+					_smoke_hold_t = maxf(_smoke_hold_t, IsleFx.BIRD_TRANSITION_MAX + 0.6)
+				# 烟囱即将冒烟/正在冒烟/夜间：按正常起飞离开，飞行阶段会重新选有效栖点。
+				_chimney_evictions += 1
+			else:
+				# P8.1：季节门控关闭的栖点（冬季裸枝点 / 落叶后的冠面点）按正常起飞驱逐，不传送。
+				_season_evictions += 1
+			_begin_takeoff(b)
 
 	func _find_free_slot_kind(from_pos: Vector3, kind: String) -> Dictionary:
-		# 只在指定 kind 的栖枝空位里选（用于初始停栖把少数海鸥安排到屋脊）
-		var best: Dictionary = {}
-		var best_d := 1.0e30
-		for p_v in _perches:
-			var p: Dictionary = p_v
-			if String(p.get("kind", "")) != kind:
-				continue
-			var used: Array = _perch_used.get(String(p["id"]), [])
-			var slots: int = int(p["slots"])
-			for s in range(slots):
-				if used.has(s):
-					continue
-				var pos: Vector3 = _slot_position(p, s)
-				var d: float = pos.distance_squared_to(from_pos)
-				if d < best_d:
-					best_d = d
-					best = {"id": p["id"], "slot": s, "pos": pos}
-		return best
+		# 兼容旧接口（保留给探针/调试）；P7-V2 起所有选点统一走 _find_free_slot 的分散评分。
+		return _find_free_slot(from_pos, kind)
 
 	func _reserve_slot(id: String, slot: int) -> void:
 		if not _perch_used.has(id):
@@ -1744,10 +2856,14 @@ class BirdFlock extends Node3D:
 		arr.append(slot)
 
 	func _release_perch(b: Dictionary) -> void:
+		_cancel_idle(b)
 		var id: String = String(b["perch_id"])
 		if id != "" and _perch_used.has(id):
 			var arr: Array = _perch_used[id]
 			arr.erase(int(b["perch_slot"]))
+			# P8.1：预约表不留空数组键（"不残留预约"断言按 key 判定）。
+			if arr.is_empty():
+				_perch_used.erase(id)
 		b["perch_id"] = ""
 		b["perch_slot"] = -1
 		b["perch_pos"] = Vector3.ZERO
@@ -1773,6 +2889,7 @@ class BirdFlock extends Node3D:
 		return conflicts
 
 	# ---------------- birds ----------------
+
 	func _ensure_bird_nodes(n: int) -> void:
 		if _birds.size() == n:
 			return
@@ -1784,7 +2901,10 @@ class BirdFlock extends Node3D:
 			node.free()
 		_birds.clear()
 		for i in range(n):
-			_birds.append(_make_bird(i))
+			var b2: Dictionary = _make_bird(i)
+			_init_bird_idle(b2)
+			_birds.append(b2)
+
 
 	func _make_bird(idx: int) -> Dictionary:
 		var node := Node3D.new()
@@ -1828,6 +2948,8 @@ class BirdFlock extends Node3D:
 		legs.name = "legs"
 		legs.mesh = IsleFx._gull_legs_mesh()
 		legs.material_override = vc
+		# P9：腿网格枢轴在髋；节点抬高 BIRD_LEG_HIP_Y 后脚底正好落在节点原点（栖点脚点语义不变）
+		legs.position = Vector3(0.0, IsleFx.BIRD_LEG_HIP_Y, 0.0)
 		node.add_child(legs)
 		# 双翼：翼根(肩) → 内翼 → 肘 → 外翼(含初级飞羽)，左右镜像。
 		var wing_l := Node3D.new()
@@ -1868,8 +2990,37 @@ class BirdFlock extends Node3D:
 		wr_out.material_override = vc
 		wr_out.set_meta("primary_count", IsleFx._gull_primary_count())
 		elbow_r.add_child(wr_out)
+		# P9：记录可动部件基准位置（起飞蹲伏/接地时整体下压，腿保持踩地）
+		var head_base: Vector3 = head.position
+		var tail_base: Vector3 = tail.position
+		var wing_l_base: Vector3 = wing_l.position
+		var wing_r_base: Vector3 = wing_r.position
 		return {
 			"node": node,
+			"body_node": body,
+			"head_base": head_base,
+			"tail_base": tail_base,
+			"wing_l_base": wing_l_base,
+			"wing_r_base": wing_r_base,
+			"vel": Vector3.ZERO,
+			"yaw": 0.0,
+			"pitch": 0.0,
+			"roll": 0.0,
+			"yaw_hold": 0.0,
+			"crouch": 0.0,
+			"tk": 0.0,
+			"takeoff_stage": 0,
+			"takeoff_start": Vector3.ZERO,
+			"takeoff_slot": Vector3.ZERO,
+			"takeoff_angle": 0.0,
+			"land_t": 0.0,
+			"land_align": 0.0,
+			"land_up": Vector3.UP,
+			"land_facing": 0.0,
+			"flare": 0.0,
+			"legs_reach": 0.0,
+			"legs_plant": 0.0,
+			"pitch_bias": 0.0,
 			"wing_l": wing_l,
 			"wing_r": wing_r,
 			"state": State.PERCH,
@@ -1910,6 +3061,7 @@ class BirdFlock extends Node3D:
 		return int(b.get("index", 0))
 
 	func _set_fly(b: Dictionary, idx: int) -> void:
+		_cancel_idle(b)
 		var angle: float = _rng.randf_range(0.0, TAU)
 		var node: Node3D = b["node"]
 		b["state"] = State.FLY
@@ -1917,9 +3069,43 @@ class BirdFlock extends Node3D:
 		b["phase"] = angle - _t * float(b["speed"]) * float(b["dir"])
 		node.position = _orbit_point(b, angle)
 		b["prev_pos"] = node.position
-		b["prev_vel"] = Vector3.ZERO
+		# P9：入巡航就带解析速度与朝向，避免位置模型首帧"先刹停再加速"。
+		var ov: Vector3 = _orbit_velocity(b, angle)
+		b["vel"] = ov
+		b["prev_vel"] = ov
+		b["yaw"] = atan2(ov.x, ov.z)
+		b["pitch"] = clampf(-atan2(ov.y, maxf(sqrt(ov.x * ov.x + ov.z * ov.z), 0.0001)), -PITCH_MAX, PITCH_MAX)
+		b["roll"] = 0.0
+		b["yaw_hold"] = b["yaw"]
+		node.rotation = Vector3(b["pitch"], b["yaw"], 0.0)
 		b["teleport"] = true
+		_teleports_total += 1
 		b["timer"] = _rng.randf_range(1.0, 4.0)
+		b["fly_since"] = _t
+
+	## P8.1：原地转入飞行（不瞬移）——用于栖点季节失效/落地目标失效时中止，保留当前位置连续飞走。
+	func _enter_fly_inplace(b: Dictionary) -> void:
+		_cancel_idle(b)
+		var node: Node3D = b["node"]
+		b["state"] = State.FLY
+		b["waiting"] = true
+		var ang: float = atan2(node.position.z, node.position.x)
+		b["phase"] = ang - _t * float(b["speed"]) * float(b["dir"])
+		b["timer"] = _rng.randf_range(0.8, 1.6)
+		b["prev_pos"] = node.position
+		# P9：原地转入飞行保留当前速度/朝向，不重置为 0（避免"空中原地急停"硬切）。
+		var vel: Vector3 = b.get("vel", Vector3.ZERO)
+		if vel.length_squared() > 0.0001:
+			b["yaw"] = atan2(vel.x, vel.z)
+		else:
+			var fwd := Vector3(sin(node.rotation.y), 0.0, cos(node.rotation.y))
+			var av: Vector3 = _orbit_velocity(b, ang)
+			b["vel"] = av
+			b["yaw"] = atan2(av.x, av.z)
+		b["prev_vel"] = b.get("vel", Vector3.ZERO)
+		b["teleport"] = false
+		b["fly_since"] = _t
+
 
 	func _reseat_all(initial: bool) -> void:
 		_clear_allocations()
@@ -1928,7 +3114,7 @@ class BirdFlock extends Node3D:
 			_release_perch(b)
 			b["waiting"] = false
 			if initial:
-				# 白天场景初始 ≈60% 已在空中，其余先停在栖枝上
+				# 白天场景初始 ≈60% 已在空中；停栖鸟落点由 P7-V2 分散评分随机抽取。
 				if _bird_index(b) < 4:
 					b["state"] = State.PERCH
 				else:
@@ -1943,13 +3129,7 @@ class BirdFlock extends Node3D:
 			var b2: Dictionary = b2_v
 			if int(b2["state"]) != State.PERCH:
 				continue
-			var slot: Dictionary = {}
-			if initial and _bird_index(b2) < 3:
-				# 初始 3 只优先落在屋脊：白天稳态 airborne=BIRD_DAY_TARGET，已停栖的鸟不会主动起飞，
-				# 因此 06_bird_roof 的白天镜头能稳定看到海鸥落在屋脊瓦面上。
-				slot = _find_free_slot_kind((b2["node"] as Node3D).position, "ridge")
-			if slot.is_empty():
-				slot = _find_free_slot((b2["node"] as Node3D).position)
+			var slot: Dictionary = _find_free_slot((b2["node"] as Node3D).position)
 			if slot.is_empty():
 				_set_fly(b2, _bird_index(b2))
 				b2["waiting"] = true
@@ -1966,7 +3146,9 @@ class BirdFlock extends Node3D:
 			var perch: Dictionary = _find_perch(String(slot["id"]))
 			if not perch.is_empty():
 				_apply_perch_pose(b2, perch)
+			_reset_rest_state(b2, slot["pos"])
 			b2["timer"] = _rng.randf_range(IsleFx.BIRD_TIMER_MIN, IsleFx.BIRD_TIMER_MAX)
+
 
 	# ---------------- motion helpers ----------------
 	func _orbit_point(b: Dictionary, angle: float) -> Vector3:
@@ -1982,6 +3164,29 @@ class BirdFlock extends Node3D:
 		var r: float = float(b["radius"])
 		return Vector3(-sin(angle) * r * omega, cos(angle * 2.0) * 2.2 * omega, cos(angle) * r * omega)
 
+	## P7：船只响应期间的飞行目标 = 原轨道点 + 朝船方位的水平偏移 - 高度下沉；权重平滑过渡，无瞬移。
+	func _flight_target(b: Dictionary, angle: float) -> Vector3:
+		var p: Vector3 = _orbit_point(b, angle)
+		var w: float = float(b.get("resp_w", 0.0))
+		if w <= 0.0001:
+			return p
+		var az: float = float(b.get("resp_az", 0.0))
+		return p + Vector3(cos(az) * BOAT_RESP_SHIFT * w, -BOAT_RESP_DROP * w, sin(az) * BOAT_RESP_SHIFT * w)
+
+	## P7：响应权重生命周期（延迟 → 上升 → 保持 → 回落）。只改飞行目标，不参与世界时间。
+	func _update_boat_response(b: Dictionary, delta: float) -> void:
+		var delay: float = float(b.get("resp_delay", 0.0))
+		if delay > 0.0:
+			b["resp_delay"] = maxf(0.0, delay - delta)
+			return
+		var timer: float = float(b.get("resp_timer", 0.0))
+		var w: float = float(b.get("resp_w", 0.0))
+		if timer > 0.0:
+			b["resp_timer"] = maxf(0.0, timer - delta)
+			b["resp_w"] = minf(1.0, w + delta / BOAT_RESP_UP_TIME)
+		elif w > 0.0:
+			b["resp_w"] = maxf(0.0, w - delta / BOAT_RESP_DOWN_TIME)
+
 	func _airborne_count() -> int:
 		var n := 0
 		for b_v in _birds:
@@ -1991,34 +3196,80 @@ class BirdFlock extends Node3D:
 				n += 1
 		return n
 
+	## P9 起飞入口：分阶段运动学（停驻准备 → 蹬离 → 逐渐加速爬升 → 并入巡航）。
+	## 不再使用固定 0.6~1.0 s 的 smoothstep 位置插值；位置由速度积分得到（子步 1/120 s）。
+	## RNG 流保持：仍抽取「标称时长 + 方向抖动」两次随机，保证后续状态机随机序列不变。
 	func _begin_takeoff(b: Dictionary) -> void:
-		_release_perch(b)
 		var node: Node3D = b["node"]
+		var start: Vector3 = node.position
+		var slot_pos: Vector3 = b.get("perch_pos", start)
+		if slot_pos == Vector3.ZERO:
+			slot_pos = start
+		var nominal_dur: float = _rng.randf_range(IsleFx.BIRD_TRANSITION_MIN, IsleFx.BIRD_TRANSITION_MAX)
+		var a: float = atan2(start.z, start.x) + _rng.randf_range(-0.25, 0.25)
+		_cancel_idle(b)
+		_release_perch(b)
 		b["state"] = State.TAKEOFF
 		b["t"] = 0.0
-		b["dur"] = _rng.randf_range(IsleFx.BIRD_TRANSITION_MIN, IsleFx.BIRD_TRANSITION_MAX)
-		b["from_p"] = node.position
-		var a: float = atan2(node.position.z, node.position.x) + _rng.randf_range(-0.25, 0.25)
+		b["dur"] = nominal_dur
+		b["tk"] = 0.0
+		b["takeoff_stage"] = 0
+		b["takeoff_start"] = start
+		b["takeoff_slot"] = slot_pos
+		b["takeoff_angle"] = a
+		b["from_p"] = start
 		b["to_p"] = _orbit_point(b, a + 0.30 * float(b["dir"]))
+		b["vel"] = Vector3.ZERO
+		b["prev_vel"] = Vector3.ZERO
+		b["crouch"] = 0.0
+		b["pitch_bias"] = 0.0
+		b["teleport"] = false
+		# 续接停栖朝向（可用带倾斜的栖面基；node.rotation 的欧拉分解与此基一一对应）
+		b["yaw"] = node.rotation.y
+		b["pitch"] = node.rotation.x
+		b["roll"] = node.rotation.z
+		b["yaw_hold"] = node.rotation.y
 		_takeoffs_total += 1
 		if _night:
 			_takeoffs_night += 1
 
+	## P9 着陆入口：记录目标栖点与栖面法线/朝向；位置/速度由 _step_landing 连续积分。
+	## RNG 流保持：仍只抽一次标称时长随机。
 	func _begin_landing(b: Dictionary) -> bool:
-		var slot: Dictionary = _find_free_slot((b["node"] as Node3D).position)
+		_cancel_idle(b)
+		var node: Node3D = b["node"]
+		var slot: Dictionary = _find_free_slot(node.position)
 		if slot.is_empty():
 			b["waiting"] = true
 			return false
 		_reserve_slot(String(slot["id"]), int(slot["slot"]))
+		var nominal_dur: float = _rng.randf_range(IsleFx.BIRD_TRANSITION_MIN, IsleFx.BIRD_TRANSITION_MAX)
 		b["perch_id"] = slot["id"]
 		b["perch_slot"] = slot["slot"]
 		b["perch_pos"] = slot["pos"]
 		b["state"] = State.LANDING
 		b["t"] = 0.0
-		b["dur"] = _rng.randf_range(IsleFx.BIRD_TRANSITION_MIN, IsleFx.BIRD_TRANSITION_MAX)
-		b["from_p"] = (b["node"] as Node3D).position
+		b["dur"] = nominal_dur
+		b["land_t"] = 0.0
+		b["land_align"] = 0.0
+		b["flare"] = 0.0
+		b["legs_reach"] = 0.0
+		b["legs_plant"] = 0.0
+		b["pitch_bias"] = 0.0
+		b["from_p"] = node.position
 		b["to_p"] = slot["pos"]
+		var perch: Dictionary = _find_perch(String(slot["id"]))
+		if not perch.is_empty():
+			b["land_up"] = _perch_normal(perch)
+			b["land_facing"] = float(perch["facing"])
+		else:
+			b["land_up"] = Vector3.UP
+			b["land_facing"] = node.rotation.y
 		b["waiting"] = false
+		# P7：一旦转入降落，结束船只响应偏置，避免响应状态残留到下一次日常飞行。
+		b["resp_delay"] = 0.0
+		b["resp_timer"] = 0.0
+		b["resp_w"] = 0.0
 		_landings_total += 1
 		return true
 
@@ -2060,23 +3311,158 @@ class BirdFlock extends Node3D:
 				b["timer"] = _rng.randf_range(0.2, 2.2)
 
 	func _on_dawn() -> void:
+		_roost_state = ROOST_NONE
+		_roost_timer = 0.0
+		_roost_skip_reason = ""
 		for b_v in _birds:
 			var b: Dictionary = b_v
 			if int(b["state"]) == State.PERCH:
 				b["timer"] = _rng.randf_range(2.0, 14.0)
 
+	# ---------------- P7：生态节奏（黄昏归栖 / 船鸟联动） ----------------
+	## 黄昏归栖的空中目标数：太阳从 +4° 降到 -2° 时由 6 递减到 0（沿用现有 BIRD_DAY_TARGET）。
+	func _roost_target_airborne(sun_alt: float) -> int:
+		var p: float = clampf((DUSK_START_ALT - sun_alt) / (DUSK_START_ALT + 2.0), 0.0, 1.0)
+		return int(round(float(IsleFx.BIRD_DAY_TARGET) * (1.0 - p)))
+
+	## 选择一只可安全转入降落的鸟：只动巡航态（不打断起飞/降落/停栖），并尊重落点占用。
+	func _pick_roost_bird() -> Dictionary:
+		var pool: Array = []
+		for b_v in _birds:
+			var b: Dictionary = b_v
+			if int(b["state"]) != State.FLY:
+				continue
+			if bool(b.get("waiting", false)):
+				continue
+			if _t - float(b.get("fly_since", -100.0)) < 1.0:
+				continue
+			pool.append(b)
+		if pool.is_empty():
+			return {}
+		return pool[_rng.randi_range(0, pool.size() - 1)]
+
+	## 每帧生态事件推进：世界阶段→触发资格→事件生命周期只依赖权威时间（sun_alt / rising / day），
+	## 动画与缓动只消费这些状态，不反向决定世界时间。
+	func _update_eco(delta: float, sun_alt: float, ctx: Dictionary) -> void:
+		var has_rising: bool = ctx.has("rising")
+		var descending: bool
+		if has_rising:
+			descending = not bool(ctx["rising"])
+		else:
+			descending = _sun_prev_valid and sun_alt < _sun_prev - 0.0005
+		var first_sample := not _sun_prev_valid
+		_sun_prev = sun_alt
+		_sun_prev_valid = true
+		var has_day: bool = ctx.has("day")
+		var day: int = int(ctx.get("day", -999999))
+		# 夜间：进行中的归栖转为夜间稳定状态，由既有 _request_night_landings 收尾，不补演已错过动画。
+		if _night:
+			if _roost_state == ROOST_ACTIVE:
+				_roost_state = ROOST_NIGHT
+				print("[ECO] dusk_roost -> night alt=", snappedf(sun_alt, 0.01))
+			_roost_timer = 0.0
+			return
+		if _roost_state == ROOST_NIGHT:
+			_roost_state = ROOST_NONE
+		# 时间回拖到白天：取消未完成的归栖计划；但保留 _roost_day，同一模拟日不重演。
+		if _roost_state == ROOST_ACTIVE and sun_alt > DUSK_CANCEL_ALT:
+			_roost_state = ROOST_NONE
+			_roost_timer = 0.0
+			_roost_skip_reason = "cancel_return_day"
+			print("[ECO] dusk_roost cancel (back to day) alt=", snappedf(sun_alt, 0.01))
+			return
+		var start_ok: bool = descending and sun_alt <= DUSK_START_ALT and not first_sample
+		if _roost_state == ROOST_NONE:
+			if start_ok and (not has_day or day != _roost_day):
+				_roost_state = ROOST_ACTIVE
+				_roost_day = day
+				_roost_timer = 0.0
+				_roost_starts += 1
+				print("[ECO] dusk_roost start day=", day, " alt=", snappedf(sun_alt, 0.01), " target=", _roost_target_airborne(sun_alt))
+			return
+		# ROOST_ACTIVE：时间前跳跨过午夜后落在新一天的黄昏时，允许新一天重新开始（每日一次）。
+		if start_ok and has_day and day != _roost_day:
+			_roost_day = day
+			_roost_timer = 0.0
+			_roost_starts += 1
+			print("[ECO] dusk_roost restart new day=", day, " alt=", snappedf(sun_alt, 0.01))
+		if _eco_paused:
+			return
+		var target: int = _roost_target_airborne(sun_alt)
+		if _airborne_count() <= target:
+			_roost_timer = 0.0
+			return
+		_roost_timer = float(_roost_timer) - delta
+		if _roost_timer > 0.0:
+			return
+		_roost_timer = _rng.randf_range(ROOST_GAP_MIN, ROOST_GAP_MAX)
+		var pick: Dictionary = _pick_roost_bird()
+		if pick.is_empty():
+			_roost_skips += 1
+			_roost_skip_reason = "no_eligible_bird"
+			return
+		if not _begin_landing(pick):
+			_roost_skips += 1
+			_roost_skip_reason = "no_free_slot"
+			_roost_timer = maxf(float(_roost_timer), 0.9)
+			return
+		_roost_landings += 1
+		_roost_skip_reason = ""
+		if _airborne_count() == 0:
+			print("[ECO] dusk_roost complete landings=", _roost_landings, " alt=", snappedf(sun_alt, 0.01))
+
 	# ---------------- per-bird state updates ----------------
+	## P8 阶段 7：坏天气时海鸥留在栖枝；风力只作为飞行漂移，不改变栖点分配算法。
+	func _update_weather_eco(ctx: Dictionary) -> void:
+		var wx: Dictionary = ctx.get("weather", {})
+		if wx.is_empty():
+			_wx_storm = 0.0
+			_wx_wind = 0.0
+			_wx_bad = false
+			return
+		var precip := String(wx.get("precip_type", "none"))
+		var p_int := float(wx.get("precip_intensity", 0.0))
+		_wx_storm = clampf(float(wx.get("storm", 0.0)), 0.0, 1.0)
+		_wx_wind = clampf(float(wx.get("wind_strength", 0.0)), 0.0, 1.0)
+		_wx_wind_x = float(wx.get("wind_x", 0.0))
+		_wx_wind_z = float(wx.get("wind_z", -1.0))
+		# 雷暴/台风/大雨/大雪：不外出；中雨以下仍可短时飞行。
+		_wx_bad = _wx_storm > 0.60 or (precip != "none" and p_int > 0.62)
+		if _eco_paused:
+			_wx_bad = false
+
+	## P8.1：季节栖点门控。winter 权重 >=0.60 才开放冬季裸枝点；canopy_keep <0.40 时冠面点关闭。
+	func _update_season_eco(ctx: Dictionary) -> void:
+		var s: Dictionary = ctx.get("season", {})
+		_winter_perch_open = float(s.get("winter", 0.0)) >= 0.60
+		_leafy_perch_open = float(s.get("canopy_keep", 1.0)) >= 0.40
+
+	## 测试钩子：直接设置两个季节门控（不经过 ctx），供 selftest / probe 断言用。
+	func set_season_gate(winter: float, canopy_keep: float) -> void:
+		_winter_perch_open = winter >= 0.60
+		_leafy_perch_open = canopy_keep >= 0.40
+
 	func _update_perched(b: Dictionary, delta: float) -> void:
 		if _night:
 			return
-		# 白天停在屋脊上的海鸥做「长时间歇脚」：不主动起飞，其他栖枝仍按原节奏轮换，
-		# 保证空中鸟数/起飞降落动画不变，同时白天屋顶始终有海鸥（验收：实际观察降落屋顶）。
-		var pid := String(b.get("perch_id", ""))
-		if pid != "":
-			var roof_p: Dictionary = _find_perch(pid)
-			if not roof_p.is_empty() and String(roof_p.get("kind", "")) == "ridge":
-				b["timer"] = _rng.randf_range(IsleFx.BIRD_TIMER_MIN, IsleFx.BIRD_TIMER_MAX)
-				return
+		# 坏天气不起飞：留在栖枝避风避雨（船鸟联动的起飞请求同样被压住）。
+		if _wx_bad:
+			return
+		# P7：船鸟联动的第二只响应鸟延迟起飞（到期后走既有起飞接口）。
+		var resp_delay: float = float(b.get("resp_delay", 0.0))
+		if resp_delay > 0.0:
+			b["resp_delay"] = maxf(0.0, resp_delay - delta)
+			if float(b["resp_delay"]) <= 0.0:
+				if _roost_state == ROOST_NONE:
+					_begin_takeoff(b)
+				else:
+					b["resp_delay"] = 0.0
+			return
+		# P7：黄昏归栖进行中不再让停栖鸟起飞；保留既有休息状态，等夜间/清晨规则接管。
+		if _roost_state == ROOST_ACTIVE:
+			b["timer"] = _rng.randf_range(IsleFx.BIRD_TIMER_MIN, IsleFx.BIRD_TIMER_MAX)
+			return
+		# P7-V2：不再固定屋脊歇脚；屋顶鸟与其它栖枝同样轮换（白天分布由选点分散评分决定）。
 		b["timer"] = float(b["timer"]) - delta
 		if float(b["timer"]) > 0.0:
 			return
@@ -2084,25 +3470,283 @@ class BirdFlock extends Node3D:
 		if _airborne_count() < IsleFx.BIRD_DAY_TARGET:
 			_begin_takeoff(b)
 
-	func _update_takeoff(b: Dictionary, delta: float) -> void:
-		b["t"] = float(b["t"]) + delta / maxf(float(b["dur"]), 0.05)
-		var k: float = clampf(float(b["t"]), 0.0, 1.0)
-		var e: float = k * k * (3.0 - 2.0 * k)
-		var node: Node3D = b["node"]
-		var from_p: Vector3 = b["from_p"]
-		var to_p: Vector3 = b["to_p"]
-		node.position = from_p.lerp(to_p, e) + Vector3(0.0, sin(PI * k) * 0.55, 0.0)
-		if k >= 1.0:
-			b["state"] = State.FLY
-			b["phase"] = atan2(node.position.z, node.position.x) - _t * float(b["speed"]) * float(b["dir"])
-			b["timer"] = _rng.randf_range(0.2, 1.2) if _night else _rng.randf_range(IsleFx.BIRD_TIMER_MIN, IsleFx.BIRD_TIMER_MAX)
+	# ============================================================
+	# P9 飞行运动学：固定子步速度积分（30/60/120Hz 同轨迹）
+	# ============================================================
+	# 约定：
+	#  * 所有位移都由 b["vel"] 积分得到；朝向由速度驱动并按角速度上限收敛；
+	#  * 子步 h = delta/n，n = ceil(delta / BIRD_MOTION_SUBSTEP)，60Hz->2、30Hz->4、120Hz->1，
+	#    因此同一绝对时间下三种步长的位置/速度/朝向一致（探针 K13 验证）；
+	#  * 不在任何状态切换时硬赋位置/朝向/垂直速度。
+	func _motion_substeps(delta: float) -> int:
+		return maxi(1, int(ceil(delta / IsleFx.BIRD_MOTION_SUBSTEP)))
 
-	func _update_flying(b: Dictionary, delta: float) -> void:
+	func _accel_toward(v: Vector3, target: Vector3, accel: float, h: float) -> Vector3:
+		var dv: Vector3 = target - v
+		var max_dv: float = maxf(accel, 0.0) * maxf(h, 0.0)
+		var dl: float = dv.length()
+		if dl > max_dv and dl > 0.000001:
+			dv = dv * (max_dv / dl)
+		return v + dv
+
+	func _turn_toward_angle(cur: float, target: float, rate_max: float, h: float, k_rate: float = 20.0) -> float:
+		var d: float = wrapf(target - cur, -PI, PI)
+		var step: float = d * (1.0 - exp(-maxf(k_rate, 0.001) * h))
+		var lim: float = maxf(rate_max, 0.001) * h
+		if absf(step) > lim:
+			step = signf(step) * lim
+		return wrapf(cur + step, -PI, PI)
+
+	func _move_toward_limited(cur: float, target: float, rate_max: float, h: float, k_rate: float = 12.0) -> float:
+		var d: float = target - cur
+		var step: float = d * (1.0 - exp(-maxf(k_rate, 0.001) * h))
+		var lim: float = maxf(rate_max, 0.001) * h
+		if absf(step) > lim:
+			step = signf(step) * lim
+		return cur + step
+
+	## 风：天气权重变化时先一阶平滑成连续风向量，再作为空气速度偏移叠加（无跳变）。
+	func _wind_vel() -> Vector3:
+		return _wind_cur * IsleFx.BIRD_WIND_GAIN
+
+	## 朝向积分：yaw/pitch/roll 一律「按角速度上限 + 指数收敛」逼近目标，绝不硬赋。
+	## 目标由真实速度驱动；着陆后段把 yaw 混向栖枝 facing（避免落地瞬间硬切）。
+	func _integrate_orientation(b: Dictionary, h: float) -> void:
 		var node: Node3D = b["node"]
-		var angle: float = _t * float(b["speed"]) * float(b["dir"]) + float(b["phase"])
-		var target: Vector3 = _orbit_point(b, angle)
-		var k: float = 1.0 - exp(-3.2 * delta)
-		node.position = node.position.lerp(target, k)
+		var st: int = int(b["state"])
+		var vel: Vector3 = b.get("vel", Vector3.ZERO)
+		var speed: float = vel.length()
+		var yaw: float = float(b.get("yaw", node.rotation.y))
+		var pitch: float = float(b.get("pitch", node.rotation.x))
+		var roll: float = float(b.get("roll", node.rotation.z))
+		var yaw_t: float = yaw
+		var pitch_t: float = pitch
+		if speed > 0.08:
+			var hh: float = sqrt(vel.x * vel.x + vel.z * vel.z)
+			yaw_t = atan2(vel.x, vel.z)
+			pitch_t = clampf(-atan2(vel.y, maxf(hh, 0.0001)), -PITCH_MAX, PITCH_MAX)
+		else:
+			yaw_t = float(b.get("yaw_hold", yaw))
+			pitch_t = 0.0
+		if st == State.LANDING:
+			var align: float = clampf(float(b.get("land_align", 0.0)), 0.0, 1.0)
+			yaw_t = lerp_angle(yaw_t, float(b.get("land_facing", yaw_t)), align)
+		pitch_t = clampf(pitch_t + float(b.get("pitch_bias", 0.0)), -PITCH_MAX, PITCH_MAX)
+		var yaw_before: float = yaw
+		yaw = _turn_toward_angle(yaw, yaw_t, IsleFx.BIRD_YAW_RATE_MAX, h, 20.0)
+		pitch = _move_toward_limited(pitch, pitch_t, IsleFx.BIRD_PITCH_RATE_MAX, h, 11.0)
+		var yaw_rate: float = wrapf(yaw - yaw_before, -PI, PI) / maxf(h, 0.000001)
+		var roll_t: float = clampf(-yaw_rate * 0.42, -ROLL_MAX, ROLL_MAX)
+		if st == State.LANDING:
+			roll_t *= 1.0 - clampf(float(b.get("flare", 0.0)), 0.0, 1.0) * 0.70
+		roll = _move_toward_limited(roll, roll_t, IsleFx.BIRD_ROLL_RATE_MAX, h, 6.0)
+		b["yaw"] = yaw
+		b["pitch"] = pitch
+		b["roll"] = roll
+		node.rotation = Vector3(pitch, yaw, roll)
+
+	func _finish_takeoff(b: Dictionary, sub_t: float) -> void:
+		var node: Node3D = b["node"]
+		b["state"] = State.FLY
+		var angle: float = atan2(node.position.z, node.position.x)
+		b["phase"] = angle - sub_t * float(b["speed"]) * float(b["dir"])
+		b["takeoff_stage"] = 3
+		b["crouch"] = 0.0
+		b["pitch_bias"] = 0.0
+		b["timer"] = _rng.randf_range(0.2, 1.2) if _night else _rng.randf_range(IsleFx.BIRD_TIMER_MIN, IsleFx.BIRD_TIMER_MAX)
+		b["fly_since"] = sub_t
+		# 保留 b["vel"] 与 yaw/pitch/roll：入巡航时速度连续，朝向不再硬吸附。
+		b["yaw_hold"] = float(b.get("yaw", node.rotation.y))
+
+	func _finish_landing(b: Dictionary) -> void:
+		var node: Node3D = b["node"]
+		node.position = b.get("to_p", node.position)
+		b["vel"] = Vector3.ZERO
+		b["prev_vel"] = Vector3.ZERO
+		b["prev_pos"] = node.position
+		b["motion_pos"] = node.position
+		b["state"] = State.PERCH
+		b["t"] = 0.0
+		b["land_t"] = 0.0
+		b["flare"] = 0.0
+		b["legs_reach"] = 0.0
+		b["legs_plant"] = 0.0
+		b["pitch_bias"] = 0.0
+		b["crouch"] = 0.0
+		b["timer"] = 999.0 if _night else _rng.randf_range(IsleFx.BIRD_TIMER_MIN, IsleFx.BIRD_TIMER_MAX)
+		# 落地稳定后先短暂停留再做待机动作（不要沿用飞行前的冷却）
+		b["idle_cool"] = _vis_rng.randf_range(0.8, 2.4)
+		if not _night and _roost_state == ROOST_NONE and _airborne_count() < IsleFx.BIRD_DAY_TARGET:
+			_nudge_takeoff()
+
+	## 起飞子步：停驻准备(蹲伏、脚踩地) → 蹬离(从 0 连续加速) → 加速爬升 → 并入巡航。
+	func _step_takeoff(b: Dictionary, h: float, sub_t: float) -> void:
+		var node: Node3D = b["node"]
+		var prep: float = IsleFx.BIRD_TAKEOFF_PREP
+		var push_end: float = prep + IsleFx.BIRD_TAKEOFF_PUSH
+		b["tk"] = float(b.get("tk", 0.0)) + h
+		var tk: float = float(b["tk"])
+		var vel: Vector3 = b.get("vel", Vector3.ZERO)
+		var start: Vector3 = b.get("takeoff_start", node.position)
+		var slot_p: Vector3 = b.get("takeoff_slot", start)
+		var to_p: Vector3 = b.get("to_p", node.position)
+		var hdir := Vector3(to_p.x - start.x, 0.0, to_p.z - start.z)
+		if hdir.length_squared() < 0.000001:
+			var aa: float = float(b.get("takeoff_angle", 0.0))
+			hdir = Vector3(sin(aa), 0.0, cos(aa))
+		hdir = hdir.normalized()
+		var cruise_speed: float = maxf(float(b["radius"]) * absf(float(b["speed"])), 0.8)
+		var merge_vel: Vector3 = _orbit_velocity(b, float(b.get("takeoff_angle", 0.0)))
+		if tk < prep:
+			# 停驻准备：脚仍踩在栖面上（位置保持），身体蹲伏；若刚从 hop 偏移开始，平滑回到槽点。
+			var q: float = clampf(tk / maxf(prep, 0.0001), 0.0, 1.0)
+			b["crouch"] = sin(PI * q)
+			var back: Vector3 = start - slot_p
+			node.position = slot_p + back * (1.0 - smoothstep(0.0, 1.0, q))
+			vel = Vector3.ZERO
+			b["takeoff_stage"] = 0
+		elif tk < push_end:
+			# 蹬离：竖直为主 + 朝航线方向前移；加速度受限 → 首帧速度≈0，无"弹跳"。
+			var q2: float = clampf((tk - prep) / maxf(IsleFx.BIRD_TAKEOFF_PUSH, 0.0001), 0.0, 1.0)
+			b["crouch"] = maxf(0.0, 1.0 - q2 * 2.0)
+			var leap: Vector3 = Vector3.UP * (IsleFx.BIRD_TAKEOFF_LEAP * 0.85) + hdir * (IsleFx.BIRD_TAKEOFF_LEAP * 0.55)
+			vel = _accel_toward(vel, leap, IsleFx.BIRD_TAKEOFF_ACCEL, h)
+			b["takeoff_stage"] = 1
+		else:
+			# 加速爬升 → 平滑并入巡航：目标速度从"爬升"混到轨道解析速度，加速度受限。
+			b["crouch"] = 0.0
+			var mw: float = smoothstep(push_end, push_end + 0.55, tk)
+			var climb_h := Vector3(to_p.x - node.position.x, 0.0, to_p.z - node.position.z)
+			if climb_h.length_squared() < 0.000001:
+				climb_h = hdir
+			else:
+				climb_h = climb_h.normalized()
+			var climb_v: Vector3 = climb_h * (cruise_speed * 0.90) + Vector3.UP * (cruise_speed * 0.35)
+			var want: Vector3 = climb_v.lerp(merge_vel, mw)
+			var wl: float = want.length()
+			var wcap: float = cruise_speed * 1.35
+			if wl > wcap and wl > 0.000001:
+				want = want * (wcap / wl)
+			vel = _accel_toward(vel, want, IsleFx.BIRD_CRUISE_ACCEL, h)
+			b["takeoff_stage"] = 2 if mw < 0.999 else 3
+		node.position += vel * h
+		b["vel"] = vel
+		_integrate_orientation(b, h)
+		# 完成条件：蹬离后速度/方向已贴近巡航解析速度 → 进 FLY（速度连续，无瞬移/硬转向）。
+		var speed_v: float = vel.length()
+		if tk >= IsleFx.BIRD_TAKEOFF_MAX:
+			_finish_takeoff(b, sub_t)
+			return
+		if tk > push_end + 0.18:
+			var hv := Vector3(vel.x, 0.0, vel.z)
+			var mv := Vector3(merge_vel.x, 0.0, merge_vel.z)
+			var heading_ok: bool = hv.length_squared() > 0.0001 and mv.length_squared() > 0.0001 and hv.normalized().dot(mv.normalized()) >= 0.80
+			if speed_v >= cruise_speed * 0.80 and heading_ok:
+				_finish_takeoff(b, sub_t)
+
+	## 巡航子步：解析轨道点 + 一阶位置误差反馈 → 期望速度；加速度受限积分。
+	## 速度连续、朝向跟随速度、转弯由 yaw 角速度上限与 roll 侧倾共同限制。
+	func _step_cruise(b: Dictionary, h: float, sub_t: float) -> void:
+		var node: Node3D = b["node"]
+		var angle: float = sub_t * float(b["speed"]) * float(b["dir"]) + float(b["phase"])
+		var target: Vector3 = _flight_target(b, angle)
+		var tv: Vector3 = _orbit_velocity(b, angle)
+		var cruise_speed: float = maxf(float(b["radius"]) * absf(float(b["speed"])), 0.5)
+		var err: Vector3 = target - node.position
+		var want: Vector3 = tv + err * IsleFx.BIRD_CRUISE_KP + _wind_vel()
+		var wl: float = want.length()
+		var wcap: float = cruise_speed * 1.35
+		if wl > wcap and wl > 0.000001:
+			want = want * (wcap / wl)
+		var vel: Vector3 = b.get("vel", tv)
+		vel = _accel_toward(vel, want, IsleFx.BIRD_CRUISE_ACCEL, h)
+		node.position += vel * h
+		b["vel"] = vel
+		_integrate_orientation(b, h)
+
+	## 着陆子步：提前减速 + 逐步下降 + 展翼/抬尾 + 伸腿；触地由位置伺服把速度平滑收敛到 0。
+	func _step_landing(b: Dictionary, h: float, sub_t: float) -> void:
+		var node: Node3D = b["node"]
+		var to_p: Vector3 = b.get("to_p", node.position)
+		var up: Vector3 = b.get("land_up", Vector3.UP)
+		if up.length_squared() < 0.000001:
+			up = Vector3.UP
+		up = up.normalized()
+		var dvec: Vector3 = to_p - node.position
+		var dist: float = dvec.length()
+		var height: float = dvec.dot(up)
+		b["land_t"] = float(b.get("land_t", 0.0)) + h
+		var lt: float = float(b["land_t"])
+		var cruise_speed: float = maxf(float(b["radius"]) * absf(float(b["speed"])), 0.8)
+		# 进近速度上限 = 1.15×巡航：入场速度（可能因追赶航线略高于巡航）先受控减速，
+		# 此后 sqrt(2·a·d) 曲线单调减到触地，不会在中段再加速。
+		var v_cap: float = clampf(cruise_speed * 1.25, 2.8, IsleFx.BIRD_LANDING_SPEED_MAX)
+		# 展翼/抬尾/伸腿只在"接近栖点 + 离面低"时触发（远距离平飞时不误展翼）
+		var near_ok: float = 1.0 - smoothstep(0.60, IsleFx.BIRD_LANDING_FLARE_DIST, dist)
+		var low_ok: float = 1.0 - smoothstep(0.55, 1.50, maxf(height, 0.0))
+		var flare: float = clampf(minf(near_ok, low_ok), 0.0, 1.0)
+		b["flare"] = flare
+		# 朝向提前对齐栖枝 facing（避免落地瞬间硬切）：按离栖点距离推进，进近段完成转身
+		b["land_align"] = clampf(1.0 - smoothstep(0.40, 5.00, dist), 0.0, 1.0)
+		b["legs_reach"] = clampf(1.0 - smoothstep(0.35, 1.40, dist), 0.0, 1.0)
+		b["legs_plant"] = clampf(1.0 - smoothstep(0.04, 0.30, dist), 0.0, 1.0)
+		b["pitch_bias"] = -0.30 * flare
+		var vel: Vector3 = b.get("vel", Vector3.ZERO)
+		var want: Vector3
+		var approach_ok: bool = dist > 0.50 and lt <= IsleFx.BIRD_LANDING_TIMEOUT
+		if approach_ok:
+			# 进近：合速度 = sqrt(2·a·剩余距离)（自巡航起单调减速），方向直指栖点 →
+			# 水平分量接近、竖直分量逐步下降（不会先抬升再俯冲）。
+			var v_des: float = clampf(sqrt(2.0 * IsleFx.BIRD_LANDING_DECEL * maxf(dist - 0.12, 0.0)) + 0.25, 0.30, v_cap)
+			var dir: Vector3 = dvec / maxf(dist, 0.0001)
+			want = dir * v_des
+		else:
+			# 展翼减速 / 触地接管：速度正比于剩余误差 → 平滑收敛到 0（末速 < 0.3 m/s）。
+			want = dvec * 8.0
+			var wl: float = want.length()
+			var cap: float = 1.30 if dist > 0.50 else 0.85
+			if lt > IsleFx.BIRD_LANDING_TIMEOUT:
+				cap = 3.60
+			if wl > cap and wl > 0.000001:
+				want = want * (cap / wl)
+		want += _wind_vel() * 0.35
+		vel = _accel_toward(vel, want, IsleFx.BIRD_LANDING_ACCEL, h)
+		var vmax: float = maxf(v_cap * 1.10, cruise_speed * 1.50)
+		if vel.length() > vmax:
+			vel = vel.normalized() * vmax
+		node.position += vel * h
+		b["vel"] = vel
+		_integrate_orientation(b, h)
+		# 触地判定：位置与速度同时收敛（无瞬移、无垂直速度跳变）。
+		var d2: Vector3 = to_p - node.position
+		if d2.length() < 0.03 and vel.length() < IsleFx.BIRD_TOUCH_SPEED:
+			if d2.length() < 0.006 and vel.length() < 0.09 and lt > 0.20:
+				_finish_landing(b)
+
+	## 空中推进：按固定子步积分；子步内发生状态切换后立即用新状态继续推进（帧步长无关）。
+	func _advance_airborne(b: Dictionary, delta: float, frame_start: float) -> void:
+		var n: int = _motion_substeps(delta)
+		var h: float = delta / float(n)
+		for i in range(n):
+			var sub_t: float = frame_start + h * (float(i) + 0.5)
+			var st: int = int(b["state"])
+			if st == State.TAKEOFF:
+				_step_takeoff(b, h, sub_t)
+			elif st == State.FLY:
+				_step_cruise(b, h, sub_t)
+			elif st == State.LANDING:
+				_step_landing(b, h, sub_t)
+			else:
+				break
+
+	## 飞行帧级逻辑（计时/坏天气/夜间/船响应）：不参与运动积分，保持原状态机启发。
+	func _flying_frame_logic(b: Dictionary, delta: float, still_fly: bool) -> void:
+		if not still_fly:
+			return
+		_update_boat_response(b, delta)
+		if _wx_bad:
+			# 坏天气收短滞空：把剩余绕飞时间压到 1.2s 内，尽快落回栖枝。
+			b["timer"] = minf(float(b["timer"]), 1.2)
 		b["timer"] = float(b["timer"]) - delta
 		if float(b["timer"]) > 0.0:
 			return
@@ -2110,43 +3754,19 @@ class BirdFlock extends Node3D:
 			if not _begin_landing(b):
 				b["timer"] = 0.8
 			return
+		# P7：船只响应期间不因日常计时器提前收场；响应结束后恢复原有随机降落启发。
+		if float(b.get("resp_w", 0.0)) > 0.05:
+			b["timer"] = 1.0
+			return
 		b["timer"] = _rng.randf_range(IsleFx.BIRD_TIMER_MIN, IsleFx.BIRD_TIMER_MAX)
 		var airborne: int = _airborne_count()
 		if airborne > IsleFx.BIRD_FLY_HIGH:
 			_begin_landing(b)
-		elif airborne >= IsleFx.BIRD_DAY_TARGET and _rng.randf() < 0.20:
+		# P9：着陆时长从旧固定 0.6~1.0s 插值改为物理减速（实测 2~5s），空中停留节奏相应补偿，
+		# 使每分钟着陆启动次数与旧观感一致（原 0.20 → 0.26）。
+		elif airborne >= IsleFx.BIRD_DAY_TARGET and _rng.randf() < 0.30:
 			_begin_landing(b)
 
-	func _update_landing(b: Dictionary, delta: float) -> void:
-		var node: Node3D = b["node"]
-		if _find_perch(String(b["perch_id"])).is_empty():
-			# 目标栖枝失效 → 中止并重新选点/盘旋
-			_release_perch(b)
-			_set_fly(b, _bird_index(b))
-			b["waiting"] = true
-			return
-		b["t"] = float(b["t"]) + delta / maxf(float(b["dur"]), 0.05)
-		var k: float = clampf(float(b["t"]), 0.0, 1.0)
-		var e: float = k * k * (3.0 - 2.0 * k)
-		var from_p: Vector3 = b["from_p"]
-		var to_p: Vector3 = b["to_p"]
-		node.position = from_p.lerp(to_p, e) + Vector3(0.0, sin(PI * k) * 0.40, 0.0)
-		if k >= 1.0:
-			node.position = to_p
-			var perch: Dictionary = _find_perch(String(b["perch_id"]))
-			if perch.is_empty():
-				_release_perch(b)
-				_set_fly(b, _bird_index(b))
-				b["waiting"] = true
-				return
-			_apply_perch_pose(b, perch)
-			b["prev_pos"] = node.position
-			b["teleport"] = true
-			b["state"] = State.PERCH
-			b["t"] = 0.0
-			b["timer"] = 999.0 if _night else _rng.randf_range(IsleFx.BIRD_TIMER_MIN, IsleFx.BIRD_TIMER_MAX)
-			if not _night and _airborne_count() < IsleFx.BIRD_DAY_TARGET:
-				_nudge_takeoff()
 
 	func _separate() -> void:
 		# 只对 FLY 状态的鸟做空中分离，保证任意两只鸟间距 >= BIRD_MIN_AIR_GAP。
@@ -2198,33 +3818,54 @@ class BirdFlock extends Node3D:
 		if _check_acc < 2.0:
 			return
 		_check_acc = 0.0
-		var valid: Dictionary = {}
+		var known: Dictionary = {}
+		var usable: Dictionary = {}
 		for p_v in _perches:
 			var p: Dictionary = p_v
-			valid[String(p["id"])] = true
+			known[String(p["id"])] = true
+			# P8.1：季节门控关闭的栖点视为暂不可用（但不算不存在，不清预约表）。
+			usable[String(p["id"])] = _perch_eligible_now(p)
 		var stale: Array = []
 		for id_v in _perch_used.keys():
-			if not valid.has(String(id_v)):
+			if not known.has(String(id_v)):
 				stale.append(id_v)
 		for s_v in stale:
 			_perch_used.erase(s_v)
 		for b_v in _birds:
 			var b: Dictionary = b_v
 			var pid: String = String(b["perch_id"])
-			if pid == "" or valid.has(pid):
+			if pid == "" or bool(usable.get(pid, false)):
 				continue
 			_release_perch(b)
 			var st: int = int(b["state"])
 			if st == State.PERCH or st == State.LANDING:
-				_set_fly(b, _bird_index(b))
-				b["waiting"] = true
+				_enter_fly_inplace(b)
 
 	# 朝向限幅（契约）：俯仰 ±35°，横滚 ±0.55 rad
 	const PITCH_MAX: float = 0.610865
 	const ROLL_MAX: float = 0.55
 
+	# P9：把"身体整体下压"（蹲伏）应用到 body/head/tail/双翼，腿保持踩地。
+	# 只在起飞准备阶段非 0；其余时刻传入 0 保证姿态归位。
+	func _apply_body_crouch(b: Dictionary, c: float) -> void:
+		var dy: float = -0.022 * clampf(c, 0.0, 1.0)
+		var off := Vector3(0.0, dy, 0.0)
+		var body := b.get("body", null) as Node3D
+		if body != null:
+			body.position = (b.get("body_base", Vector3.ZERO) as Vector3) + off
+		var head := b["head"] as Node3D
+		head.position = (b.get("head_base", head.position) as Vector3) + off
+		var tail := b["tail"] as Node3D
+		tail.position = (b.get("tail_base", tail.position) as Vector3) + off * 0.90
+		var wl: Node3D = b["wing_l"]
+		wl.position = (b.get("wing_l_base", wl.position) as Vector3) + off
+		var wr: Node3D = b["wing_r"]
+		wr.position = (b.get("wing_r_base", wr.position) as Vector3) + off
+
 	# 停栖姿态：收翼贴体、尾巴略翘、偶尔左右张望
+
 	func _pose_perched(b: Dictionary, d: float) -> void:
+		_apply_body_crouch(b, 0.0)
 		var wl: Node3D = b["wing_l"]
 		var wr: Node3D = b["wing_r"]
 		var el: Node3D = b["elbow_l"]
@@ -2235,22 +3876,87 @@ class BirdFlock extends Node3D:
 		var fold: float = move_toward(float(b.get("fold", 1.0)), 1.0, d * 3.0)
 		b["fold"] = fold
 		var k: float = 1.0 - exp(-9.0 * d)
+		# P7-V2：停栖待机动作（单一调度器 _update_idle 驱动；结束 env→0 完全归位）
+		var act: String = String(b.get("idle_action", "none"))
+		var is_on: bool = bool(b.get("idle_active", false))
+		var it: float = float(b.get("idle_t", 0.0))
+		var iq: float = clampf(it / maxf(float(b.get("idle_dur", 1.0)), 0.0001), 0.0, 1.0)
+		var env: float = 0.0
+		if is_on:
+			env = smoothstep(0.0, 0.16, iq) * (1.0 - smoothstep(0.80, 1.0, iq))
+		b["idle_env"] = env
+		var side: float = float(b.get("idle_side", 1.0))
+		var look: float = sin(_t * 0.65 + float(b["phase"]) * 2.7) * 0.26
+		var head_y: float = look
+		var head_x: float = 0.0
+		var head_z: float = 0.0
+		var tail_x: float = -0.16
+		var wl_z: float = 0.10
+		var wr_z: float = -0.10
+		var el_y: float = -0.72
+		var er_y: float = 0.72
+		var el_z: float = 0.16
+		var er_z: float = -0.16
+		var legs_x: float = 0.0
+		var body_x: float = 0.0
+		var body_z: float = 0.0
+		match act:
+			"look_around":
+				head_y = look + side * sin(it * 2.1) * 0.55 * env
+				head_x = -0.18 * env
+			"preen":
+				head_x = 0.72 * env
+				head_y = look + side * 0.95 * env
+				if side > 0.0:
+					wl_z = 0.10 + 0.42 * env
+					el_y = -0.72 + 0.25 * env
+				else:
+					wr_z = -0.10 - 0.42 * env
+					er_y = 0.72 - 0.25 * env
+			"shake":
+				var f: float = sin(it * 46.0) * env
+				var f_l: float = sin(it * 46.0 + 2.2) * env
+				var f_r: float = sin(it * 46.0 + 3.9) * env
+				body_z = f * 0.10
+				head_y = look + f * 0.34
+				tail_x = -0.16 + f * 0.10
+				# 抖羽：双翼高频小幅错相位抖动（收拢翼面 +Z 方向），env→0 完全归位
+				wl_z = 0.10 + f_l * 0.075
+				wr_z = -0.10 - f_r * 0.075
+			"hop":
+				legs_x = -0.30 * env
+				body_x = -0.10 * env
+			"adjust_stance":
+				body_z = side * 0.07 * env
+				tail_x = -0.16 + sin(_t * 5.0 + float(b["phase"])) * 0.10 * env
+				head_x = -0.08 * env
+			"rest":
+				head_x = 0.62 * env
+				head_y = look * (1.0 - 0.85 * env)
+				head_z = side * 0.16 * env
+				legs_x = -0.18 * env
+				body_x = 0.06 * env
 		# 翼根沿身体轴向后收，肘部继续向后折，翼面略上抬贴住身体两侧
 		wl.rotation.y = lerpf(wl.rotation.y, lerpf(0.0, -1.42, fold), k)
 		wr.rotation.y = lerpf(wr.rotation.y, lerpf(0.0, 1.42, fold), k)
-		wl.rotation.z = lerpf(wl.rotation.z, lerpf(0.0, 0.10, fold), k)
-		wr.rotation.z = lerpf(wr.rotation.z, lerpf(0.0, -0.10, fold), k)
-		el.rotation.y = lerpf(el.rotation.y, lerpf(0.0, -0.72, fold), k)
-		er.rotation.y = lerpf(er.rotation.y, lerpf(0.0, 0.72, fold), k)
-		el.rotation.z = lerpf(el.rotation.z, lerpf(0.0, 0.16, fold), k)
-		er.rotation.z = lerpf(er.rotation.z, lerpf(0.0, -0.16, fold), k)
-		legs.rotation.x = lerpf(legs.rotation.x, 0.0, k)
-		tail.rotation.x = lerpf(tail.rotation.x, -0.16, k)
-		var look: float = sin(_t * 0.65 + float(b["phase"]) * 2.7) * 0.26
-		head.rotation.y = lerpf(head.rotation.y, look, 1.0 - exp(-3.0 * d))
-		head.rotation.x = lerpf(head.rotation.x, 0.0, k)
+		wl.rotation.z = lerpf(wl.rotation.z, lerpf(0.0, wl_z, fold), k)
+		wr.rotation.z = lerpf(wr.rotation.z, lerpf(0.0, wr_z, fold), k)
+		el.rotation.y = lerpf(el.rotation.y, lerpf(0.0, el_y, fold), k)
+		er.rotation.y = lerpf(er.rotation.y, lerpf(0.0, er_y, fold), k)
+		el.rotation.z = lerpf(el.rotation.z, lerpf(0.0, el_z, fold), k)
+		er.rotation.z = lerpf(er.rotation.z, lerpf(0.0, er_z, fold), k)
+		legs.rotation.x = lerpf(legs.rotation.x, legs_x, k)
+		tail.rotation.x = lerpf(tail.rotation.x, tail_x, k)
+		head.rotation.y = lerpf(head.rotation.y, head_y, 1.0 - exp(-3.0 * d))
+		head.rotation.x = lerpf(head.rotation.x, head_x, 1.0 - exp(-6.0 * d))
+		head.rotation.z = lerpf(head.rotation.z, head_z, 1.0 - exp(-6.0 * d))
+		var body := b.get("body", null) as Node3D
+		if body != null:
+			body.rotation.x = lerpf(body.rotation.x, body_x, k)
+			body.rotation.z = lerpf(body.rotation.z, body_z, k)
 
-	# 飞行姿态：滑翔/振翅交替、内外翼相位差、转弯滚转、降落展翼减速
+
+	# P9 飞行姿态：停驻准备/蹬离/爬升/巡航/着陆分阶段；滑翔-振翅交替、展翼减速、收腿/伸腿。
 	func _pose_flying(b: Dictionary, d: float, st: int) -> void:
 		var wl: Node3D = b["wing_l"]
 		var wr: Node3D = b["wing_r"]
@@ -2259,6 +3965,34 @@ class BirdFlock extends Node3D:
 		var legs: Node3D = b["legs"]
 		var tail: Node3D = b["tail"]
 		var head: Node3D = b["head"]
+		var body := b.get("body", null) as Node3D
+		var tk: float = float(b.get("tk", 0.0))
+		var push_end: float = IsleFx.BIRD_TAKEOFF_PREP + IsleFx.BIRD_TAKEOFF_PUSH
+		# ---- 停驻准备阶段：保持停栖收翼姿态，只把身体蹲下（脚仍踩在栖面上）----
+		# 这样"停栖 → 起飞"两态之间没有翼/腿姿态跳变；蹬离瞬间才展翼。
+		if st == State.TAKEOFF and tk < IsleFx.BIRD_TAKEOFF_PREP:
+			_apply_body_crouch(b, float(b.get("crouch", 0.0)))
+			legs.rotation.x = lerpf(legs.rotation.x, 0.0, 1.0 - exp(-12.0 * d))
+			tail.rotation.x = lerpf(tail.rotation.x, -0.16, 1.0 - exp(-10.0 * d))
+			var fk: float = 1.0 - exp(-10.0 * d)
+			wl.rotation.y = lerpf(wl.rotation.y, -1.42, fk)
+			wr.rotation.y = lerpf(wr.rotation.y, 1.42, fk)
+			wl.rotation.z = lerpf(wl.rotation.z, 0.10, fk)
+			wr.rotation.z = lerpf(wr.rotation.z, -0.10, fk)
+			el.rotation.y = lerpf(el.rotation.y, -0.72, fk)
+			er.rotation.y = lerpf(er.rotation.y, 0.72, fk)
+			el.rotation.z = lerpf(el.rotation.z, 0.16, fk)
+			er.rotation.z = lerpf(er.rotation.z, -0.16, fk)
+			head.rotation.y = lerpf(head.rotation.y, 0.0, 1.0 - exp(-5.0 * d))
+			head.rotation.x = lerpf(head.rotation.x, 0.0, 1.0 - exp(-5.0 * d))
+			head.rotation.z = lerpf(head.rotation.z, 0.0, 1.0 - exp(-5.0 * d))
+			if body != null:
+				body.rotation.x = lerpf(body.rotation.x, 0.0, 1.0 - exp(-8.0 * d))
+				body.rotation.z = lerpf(body.rotation.z, 0.0, 1.0 - exp(-8.0 * d))
+			b["fold"] = 1.0
+			b["flap_env"] = 0.0
+			return
+		_apply_body_crouch(b, 0.0)
 		var k_spread: float = 1.0 - exp(-7.0 * d)
 		wl.rotation.y = lerpf(wl.rotation.y, 0.0, k_spread)
 		wr.rotation.y = lerpf(wr.rotation.y, 0.0, k_spread)
@@ -2272,12 +4006,15 @@ class BirdFlock extends Node3D:
 		var rate: float = 1.0
 		if st == State.TAKEOFF:
 			gliding = false
-			gain = 1.15
-			rate = 1.22
+			# 起飞前 2-3 拍最强、随后衰减（Berg & Biewener 摘要：起飞下扑幅度/频率最大且逐拍递减）
+			var beat: float = smoothstep(push_end, push_end + 0.60, tk)
+			gain = lerpf(1.25, 1.0, beat)
+			rate = lerpf(1.28, 1.05, beat)
 		elif st == State.LANDING:
 			gliding = false
-			gain = 1.0
-			rate = 1.12
+			var fl0: float = clampf(float(b.get("flare", 0.0)), 0.0, 1.0)
+			gain = lerpf(1.10, 1.0, fl0)
+			rate = lerpf(1.12, 1.06, fl0)
 		if st == State.FLY:
 			if gt <= 0.0:
 				gliding = not gliding
@@ -2300,9 +4037,9 @@ class BirdFlock extends Node3D:
 		# 内翼根关节；外翼叠加相位滞后 0.85rad 的跟随拍动 → 翅膀有弹性
 		var a_root: float = 0.10 + 0.62 * wave * env * gain
 		var a_tip: float = 0.10 + 0.40 * sin(t_f - 0.85) * env * gain
-		# 降落末段展翼上抬减速 + 尾羽上翘
+		# 着陆末段：展翼上抬减速 + 尾羽上翘（flare 由离栖面高度驱动，见 _step_landing）
 		if st == State.LANDING:
-			var flare: float = smoothstep(0.35, 0.98, clampf(float(b["t"]), 0.0, 1.0))
+			var flare: float = clampf(float(b.get("flare", 0.0)), 0.0, 1.0)
 			a_root += 0.85 * flare
 			a_tip += 0.30 * flare
 			tail.rotation.x = lerpf(tail.rotation.x, 0.30 * flare, 1.0 - exp(-8.0 * d))
@@ -2314,107 +4051,116 @@ class BirdFlock extends Node3D:
 		wr.rotation.z = lerpf(wr.rotation.z, a_root, k_flap)
 		el.rotation.z = lerpf(el.rotation.z, -(a_tip - a_root), k_flap)
 		er.rotation.z = lerpf(er.rotation.z, a_tip - a_root, k_flap)
-		# 飞行时腿收在腹下，降落时逐渐放下
-		var tuck: float = 1.35
-		if st == State.LANDING:
-			tuck = lerpf(1.35, 0.12, clampf(float(b["t"]), 0.0, 1.0))
-		legs.rotation.x = lerpf(legs.rotation.x, tuck, 1.0 - exp(-8.0 * d))
+		# 腿：飞行绕髋向后收在尾下（腿始终连在躯干上）；着陆先伸腿触地再收拢踩实。
+		var leg_t: float = 1.05
+		if st == State.TAKEOFF:
+			if tk < IsleFx.BIRD_TAKEOFF_PREP:
+				leg_t = 0.0
+			elif tk < push_end:
+				leg_t = 0.20          # 蹬离：腿向后下方伸展
+			else:
+				leg_t = 1.05          # 爬升/巡航：向后收在尾下
+		elif st == State.LANDING:
+			var reach: float = clampf(float(b.get("legs_reach", 0.0)), 0.0, 1.0)
+			var plant: float = clampf(float(b.get("legs_plant", 0.0)), 0.0, 1.0)
+			leg_t = lerpf(1.05, -0.34, reach)   # 先向前下方伸出
+			leg_t = lerpf(leg_t, 0.0, plant)    # 触地前收拢踩实
+		legs.rotation.x = lerpf(legs.rotation.x, leg_t, 1.0 - exp(-10.0 * d))
+		# 姿态残留归零（shake/adjust_stance/rest 的 body.x/z、head.z 不得带进飞行）
+		var k_body: float = 1.0 - exp(-8.0 * d)
+		if body != null:
+			body.rotation.x = lerpf(body.rotation.x, 0.0, k_body)
+			body.rotation.z = lerpf(body.rotation.z, 0.0, k_body)
 		head.rotation.y = lerpf(head.rotation.y, 0.0, 1.0 - exp(-5.0 * d))
 		head.rotation.x = lerpf(head.rotation.x, 0.0, 1.0 - exp(-5.0 * d))
+		head.rotation.z = lerpf(head.rotation.z, 0.0, 1.0 - exp(-6.0 * d))
 
-	# 朝向由每帧真实速度驱动（禁止用“目标点方向”，那会在目标切换瞬间倒飞）
+	# P9：位置/速度/朝向已在固定子步内更新（与帧率无关）；这里只应用姿态与停栖基收敛。
+	# 停栖基用"限角速度的 slerp"替代 _apply_perch_pose 硬切：落地后最多按 BIRD_PERCH_TURN_RATE 转动。
 	func _update_visuals(_delta: float) -> void:
 		var d: float = maxf(_delta, 0.0001)
-		var k_yaw: float = 1.0 - exp(-20.0 * d)
-		var k_pitch: float = 1.0 - exp(-11.0 * d)
-		var k_roll: float = 1.0 - exp(-6.0 * d)
 		for b_v in _birds:
 			var b: Dictionary = b_v
 			var node: Node3D = b["node"]
 			var st: int = int(b["state"])
-			var prev_pos: Vector3 = b.get("prev_pos", node.position)
-			var motion_pos: Vector3 = b.get("motion_pos", node.position)
+			b["teleport"] = false
 			if st == State.PERCH:
-				var perch: Dictionary = _find_perch(String(b["perch_id"]))
+				var perch: Dictionary = _find_perch(String(b.get("perch_id", "")))
 				if not perch.is_empty():
-					# Phase6：身体 up 对齐停栖面法线（限倾 35°），把倾角/朝向一起收敛过去；
-					# 原来的 euler x/z→0 会把鸟强行摆成水平，站在斜瓦上就会“脚陷瓦里/悬空”。
 					var want: Basis = _perch_basis(perch)
-					node.basis = node.basis.slerp(want, 1.0 - exp(-11.0 * d))
+					var cur_q: Quaternion = node.basis.get_rotation_quaternion().normalized()
+					var want_q: Quaternion = want.get_rotation_quaternion().normalized()
+					var ang: float = cur_q.angle_to(want_q)
+					if ang > 0.000001:
+						var ease_step: float = ang * (1.0 - exp(-11.0 * d))
+						var cap_step: float = IsleFx.BIRD_PERCH_TURN_RATE * d
+						var step_ang: float = minf(ease_step, cap_step)
+						node.basis = Basis(cur_q.slerp(want_q, clampf(step_ang / ang, 0.0, 1.0)))
+					node.position = _slot_position(perch, int(b.get("perch_slot", 0))) + (b.get("idle_off", Vector3.ZERO) as Vector3)
+					b["yaw"] = node.rotation.y
+					b["pitch"] = node.rotation.x
+					b["roll"] = node.rotation.z
+					b["yaw_hold"] = node.rotation.y
+				b["vel"] = Vector3.ZERO
 				b["prev_vel"] = Vector3.ZERO
 				b["vis_state"] = st
 				b["prev_pos"] = node.position
 				_pose_perched(b, d)
 				continue
-			# 只取状态更新造成的位移（不含 _separate 的推挤），避免分离抖动被当成转向
-			var vel: Vector3 = (motion_pos - prev_pos) / d
-			var teleport: bool = bool(b.get("teleport", false))
-			b["teleport"] = false
-			var speed: float = vel.length()
-			if teleport or speed > 34.0:
-				vel = b.get("prev_vel", Vector3.ZERO)
-				speed = vel.length()
-			var yaw_before: float = node.rotation.y
-			var last_st: int = int(b.get("vis_state", -1))
-			var entering_fly: bool = st == State.FLY and last_st != State.FLY
-			var snapped: bool = false
-			# 轨道切线方向（近零速度时作为巡航朝向的兜底）
-			var angle: float = _t * float(b["speed"]) * float(b["dir"]) + float(b["phase"])
-			var tang := Vector3(-sin(angle) * float(b["dir"]), 0.0, cos(angle) * float(b["dir"]))
-			if entering_fly:
-				# 起飞末段速度方向是径向的，与下一帧真实轨道速度最多差约 1.5rad；
-				# 若吸附当帧速度会立刻倒飞。这里吸附到位置模型的解析速度方向，
-				# 即随后各帧（位置收敛后）的真实运动方向。
-				var ev: Vector3 = _orbit_velocity(b, angle)
-				if ev.length_squared() > 0.000001:
-					node.rotation.y = atan2(ev.x, ev.z)
-					node.rotation.x = clampf(-atan2(ev.y, maxf(sqrt(ev.x * ev.x + ev.z * ev.z), 0.0001)), -PITCH_MAX, PITCH_MAX)
-				else:
-					node.rotation.y = atan2(tang.x, tang.z)
-					node.rotation.x = 0.0
-				snapped = true
-			elif speed > 0.06:
-				var half_h: float = sqrt(vel.x * vel.x + vel.z * vel.z)
-				var pitch_t: float = clampf(-atan2(vel.y, maxf(half_h, 0.0001)), -PITCH_MAX, PITCH_MAX)
-				node.rotation.y = lerp_angle(node.rotation.y, atan2(vel.x, vel.z), k_yaw)
-				node.rotation.x = lerpf(node.rotation.x, pitch_t, k_pitch)
-			else:
-				# 近零速度兜底：用轨道切线方向，避免朝向乱飘
-				node.rotation.y = lerp_angle(node.rotation.y, atan2(tang.x, tang.z), k_yaw)
-				node.rotation.x = lerpf(node.rotation.x, 0.0, k_pitch)
-			# roll：由 yaw 变化率驱动（右转 yaw 增大 → 右翼下沉 → rotation.z 取负）；
-			# 进巡航的吸附帧不算转向，避免瞬时限幅抖动
-			var yaw_rate: float = 0.0 if snapped else wrapf(node.rotation.y - yaw_before, -PI, PI) / d
-			var roll_t: float = clampf(-yaw_rate * 0.42, -ROLL_MAX, ROLL_MAX)
-			node.rotation.z = lerpf(node.rotation.z, roll_t, k_roll)
-			b["prev_vel"] = vel
+			node.rotation = Vector3(float(b.get("pitch", 0.0)), float(b.get("yaw", 0.0)), float(b.get("roll", 0.0)))
+			b["prev_vel"] = b.get("vel", Vector3.ZERO)
 			b["vis_state"] = st
 			b["prev_pos"] = node.position
 			_pose_flying(b, d, st)
 
 	# ---------------- main update ----------------
-	func update_birds(delta: float, sun_alt: float) -> void:
+	## ctx 可选：{day:int, rising:bool, sim_seconds:float, time_source:String, paused:bool}
+	## 只用于生态事件的触发资格（世界阶段/日期/方向），不建立第二套时间推进。
+
+	func update_birds(delta: float, sun_alt: float, ctx: Dictionary = {}) -> void:
 		_ensure_ready()
 		if _birds.is_empty():
 			return
 		_t += delta
+		var frame_start: float = _t - delta
+		_eco_paused = bool(ctx.get("paused", false))
+		_update_clock_cache(delta, ctx)
+		_smoke_hold_t = maxf(0.0, _smoke_hold_t - delta)
+		_sun_alt_cur = sun_alt
 		_update_day_night(delta, sun_alt)
+		_update_eco(delta, sun_alt, ctx)
+		_update_weather_eco(ctx)
+		_update_season_eco(ctx)
+		_update_perch_evictions()
 		_check_perch_validity(delta)
+		# P9：风向量一阶平滑（天气突变/时间跳转时风力也是连续的，配合 _wind_vel 使用）
+		var wind_target: Vector3 = Vector3(_wx_wind_x, 0.0, _wx_wind_z) * _wx_wind
+		_wind_cur = _wind_cur.lerp(wind_target, 1.0 - exp(-delta / maxf(IsleFx.BIRD_WIND_SMOOTH, 0.001)))
 		for b_v in _birds:
 			var b: Dictionary = b_v
 			var st: int = int(b["state"])
 			if st == State.PERCH:
 				_update_perched(b, delta)
-			elif st == State.TAKEOFF:
-				_update_takeoff(b, delta)
-			elif st == State.FLY:
-				_update_flying(b, delta)
 			else:
-				_update_landing(b, delta)
-			b["motion_pos"] = (b["node"] as Node3D).position
+				# 目标栖枝失效 → 原地中止并重新选点/盘旋（P8.1：不瞬移）
+				if st == State.LANDING:
+					var target_p: Dictionary = _find_perch(String(b.get("perch_id", "")))
+					if target_p.is_empty() or not _perch_eligible_now(target_p):
+						_release_perch(b)
+						_enter_fly_inplace(b)
+				_advance_airborne(b, delta, frame_start)
+			var node_now: Node3D = b["node"]
+			b["motion_pos"] = node_now.position
+		# 帧级状态机启发（不参与运动积分）：计时降落、坏天气、夜间、船响应
+		for b_v in _birds:
+			var b: Dictionary = b_v
+			if int(b["state"]) == State.FLY:
+				_flying_frame_logic(b, delta, true)
+		_update_idle(delta)
 		_separate()
 		_min_air_dist = _compute_min_air_dist()
 		_update_visuals(delta)
+
 
 # 飞鸟共享材质（M.toon_material 自身按参数缓存，这里再缓存一层）
 static func _bird_materials() -> Dictionary:

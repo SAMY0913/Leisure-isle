@@ -9,7 +9,9 @@ extends SceneTree
 ##   [CLAMP]   法线倾角超过 35° 时身体倾角被夹到 35°（不翻倒）
 ##   [MUTEX]   夜间 10 只全部栖息、无重复槽位、perch_conflicts=0；同一栖枝多鸟间距 >= 0.9m
 ##   [ANIM]    夜间停栖 / 日间起飞降落状态机保留（takeoffs/landings 增长）
-##   [ROOF]    白天初始 3 只优先停屋脊且不主动起飞（真实验 06_bird_roof 白天镜头），脚点距脊瓦 ∈[0,0.12]
+##   [ROOF]    P7-V2 口径：屋顶区（ridge/eave/chimney）同时占用 <=2、同一屋顶栖点 <=2（无三只同排）、
+##             多轮分布覆盖多种 kind、屋顶脚点距瓦面 ∈[0,0.12]；旧的「初始 3 只固定屋脊且白天不飞」因
+##             P7-V2 移除 index<3 屋脊硬编码 + 屋顶分区上限而作废（口径变更见 开发产物/p7v2/REGRESSION_P7V2.md）。
 ## 退出码：0 = 全部断言通过。
 
 const Fx := preload("res://scripts/fx.gd")
@@ -498,6 +500,12 @@ func _probe_day_anim(cot_perches: Array) -> void:
 # ============================================================
 # 5b) 白天屋脊歇脚：初始 3 只优先落屋脊，白天不主动起飞（官方 06_bird_roof 镜头）
 # ============================================================
+func _max_used(d: Dictionary) -> int:
+	var m := 0
+	for k in d.keys():
+		m = maxi(m, int(d[k]))
+	return m
+
 func _probe_day_roof_rest(cot_perches: Array) -> void:
 	print("--- DAY ROOF REST (白天屋脊歇脚) ---")
 	var flock = Fx.BirdFlock.new()
@@ -505,52 +513,65 @@ func _probe_day_roof_rest(cot_perches: Array) -> void:
 	flock.setup(cot_perches)
 	var birds: Array = flock.get("_birds")
 	var base_pos: Dictionary = {}
-	var ridge_seated := 0
+	var roof_seated := 0
 	var foot_bad := 0
+	var kinds_used: Dictionary = {}
+	var row_use0: Dictionary = {}
 	for b_v in birds:
 		var b: Dictionary = b_v
 		if int(b["state"]) != STATE_PERCH:
 			continue
 		var perch: Dictionary = flock.call("_find_perch", String(b["perch_id"]))
-		if perch.is_empty() or String(perch.get("kind", "")) != "ridge":
+		if perch.is_empty():
 			continue
-		ridge_seated += 1
+		var kind := String(perch.get("kind", ""))
+		kinds_used[kind] = true
+		var zone := String(flock.call("_perch_zone", kind))
+		if zone != "roof":
+			continue
+		roof_seated += 1
+		var pid := String(b["perch_id"])
+		row_use0[pid] = int(row_use0.get(pid, 0)) + 1
 		var nm := String((b["node"] as Node3D).name)
 		base_pos[nm] = (b["node"] as Node3D).position
-		var d: float = _roof_signed_distance((b["node"] as Node3D).position, "ridge")
-		if d < -0.001 or d > 0.12:
-			foot_bad += 1
-	print("[ROOF REST] initial ridge birds=", ridge_seated, " ids=", str(base_pos.keys()))
-	_check(ridge_seated >= 3, "初始停栖有 %d 只优先落在屋脊（官方 06_bird_roof 白天镜头可拍到）" % ridge_seated)
-	_check(foot_bad == 0, "屋脊鸟脚点距脊瓦 ∈ [0,0.12]（越界 %d）" % foot_bad)
+		if kind == "ridge" or kind == "eave":
+			var d: float = _roof_signed_distance((b["node"] as Node3D).position, kind)
+			if d < -0.001 or d > 0.12:
+				foot_bad += 1
+	print("[ROOF REST] initial roof_zone=", roof_seated, " kinds=", str(kinds_used.keys()), " ids=", str(base_pos.keys()))
+	_check(roof_seated <= 2, "初始屋顶区（ridge/eave/chimney）停栖 <=2（P7-V2 分区上限；实际 %d）" % roof_seated)
+	_check(_max_used(row_use0) <= 2, "初始同一屋顶栖点 <=2 只（无三只同排；实际 %d）" % _max_used(row_use0))
+	_check(foot_bad == 0, "屋顶鸟脚点距瓦面 ∈ [0,0.12]（越界 %d）" % foot_bad)
+	_check(kinds_used.size() >= 2, "初始停栖分布覆盖多种 kind（实际 %s）" % str(kinds_used.keys()))
+	var roof_max := 0
+	var row_max := 0
+	var kinds_seen: Dictionary = {}
 	for i in range(1800):
 		flock.update_birds(DT, 20.0)
+		var roof_now := 0
+		var row_use: Dictionary = {}
+		for b_v in birds:
+			var b: Dictionary = b_v
+			if int(b["state"]) != STATE_PERCH:
+				continue
+			var perch: Dictionary = flock.call("_find_perch", String(b["perch_id"]))
+			if perch.is_empty():
+				continue
+			var kind := String(perch.get("kind", ""))
+			kinds_seen[kind] = true
+			if String(flock.call("_perch_zone", kind)) != "roof":
+				continue
+			roof_now += 1
+			var pid2 := String(b["perch_id"])
+			row_use[pid2] = int(row_use.get(pid2, 0)) + 1
+		roof_max = maxi(roof_max, roof_now)
+		row_max = maxi(row_max, _max_used(row_use))
 	var st: Dictionary = flock.get_state_counts()
-	var final_ridge := 0
-	var max_drift := 0.0
-	var drift_bad := 0
-	for b_v in birds:
-		var b: Dictionary = b_v
-		if int(b["state"]) != STATE_PERCH:
-			continue
-		var perch: Dictionary = flock.call("_find_perch", String(b["perch_id"]))
-		if perch.is_empty() or String(perch.get("kind", "")) != "ridge":
-			continue
-		final_ridge += 1
-		var nm := String((b["node"] as Node3D).name)
-		if base_pos.has(nm):
-			var drift: float = (b["node"] as Node3D).position.distance_to(base_pos[nm] as Vector3)
-			max_drift = maxf(max_drift, drift)
-			if drift > 0.01:
-				drift_bad += 1
-		var d2: float = _roof_signed_distance((b["node"] as Node3D).position, "ridge")
-		if d2 < -0.001 or d2 > 0.12:
-			drift_bad += 1
-	print("[ROOF REST] ", _counts(st), " ridge_after=", final_ridge, " max_drift=", snappedf(max_drift, 0.0001))
-	_check(final_ridge >= 3, "白天 1800 帧(30s)后屋脊仍有 %d 只海鸥（实际 %d）" % [ridge_seated, final_ridge])
-	_check(max_drift <= 0.01, "屋脊海鸥白天不主动起飞（1800 帧最大位移 %.4f m）" % max_drift)
-	_check(drift_bad == 0, "屋脊海鸥白天姿态/脚点稳定（异常 %d）" % drift_bad)
-	_check(int(st["perch_conflicts"]) == 0, "白天屋脊歇脚无槽位冲突（conflicts=%d）" % int(st["perch_conflicts"]))
+	print("[ROOF REST] ", _counts(st), " roof_max=", roof_max, " row_max=", row_max, " kinds_seen=", str(kinds_seen.keys()))
+	_check(roof_max <= 2, "1800 帧内屋顶区同时占用始终 <=2（峰值 %d）" % roof_max)
+	_check(row_max <= 2, "1800 帧内同一屋顶栖点从未三只同排（峰值 %d）" % row_max)
+	_check(kinds_seen.size() >= 3, "多轮选点覆盖 >=3 种栖枝 kind（实际 %s）" % str(kinds_seen.keys()))
+	_check(int(st["perch_conflicts"]) == 0, "白天屋顶歇脚无槽位冲突（conflicts=%d）" % int(st["perch_conflicts"]))
 	_check(int(st["airborne"]) >= 1, "其余海鸥白天正常在空中/起飞降落（airborne=%d）" % int(st["airborne"]))
 	flock.free()
 

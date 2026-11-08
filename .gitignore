@@ -6,3 +6,13 @@
 .editor_pid
 .game_pid
 *.log
+*.tmp
+
+# Python 工具脚本的缓存（tools/ 下的辅助脚本可能生成）
+__pycache__/
+*.pyc
+*.pyo
+
+# P7-FINALIZE：user:// 不可写环境（沙箱/权限）下的运行时兜底存档，非工程资产
+settings_fallback.cfg
+save_fallback.cfg

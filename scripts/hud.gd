@@ -8,8 +8,27 @@ signal time_adjust(seconds_delta: float)
 signal time_set(seconds_of_day: float)
 ## 时间来源切换请求（"real" / "sim"）：HUD 只负责 UI 与信号，状态源与保存由 main / 设置菜单负责。
 signal time_mode_requested(mode: String)
+## P8：面板内可见的暂停按钮；与空格键共用同一个 main._paused 权威状态，HUD 只发请求。
+signal pause_toggle_requested
+## P8：日历弹层请求跳到完整公历日期时间；合法性夹取与落地由 main._jump_datetime 统一负责。
+signal datetime_jump_requested(year: int, month: int, day: int, hour: int, minute: int)
+
+# P8 阶段 5：天气面板只发请求，天气状态唯一源在主循环的 IsleWeather 实例。
+signal weather_auto_requested(enabled: bool)
+signal weather_type_requested(type_id: String)
+
+# P6：钓鱼入口（玩家点击 → main 让岛民自主去岸边钓鱼）。HUD 只发请求与展示状态，
+# 钓鱼状态的唯一权威在岛民状态机（isle_villager.gd），HUD 不持有任何游戏状态。
+signal fishing_toggle_requested
 
 const ScrubberCtl := preload("res://scripts/ui_time_scrubber.gd")
+## P8 日历：把“年月日时分”离散编辑量换算成主时钟秒数（isle_calendar 为纯函数模块，不持有时钟）。
+const CalendarCtl := preload("res://scripts/isle_calendar.gd")
+## P8.1-07：五列 Apple 式日期时间滚轮（只编辑草稿，不持有时钟）。
+const WheelCtl := preload("res://scripts/ui_datetime_wheel.gd")
+## 时间面板高度：普通态 / 日历展开态（只改布局，不改任何时间状态）。
+const TIME_PANEL_TOP := -524.0
+const TIME_PANEL_TOP_CAL := -744.0
 ## 现实时间模式：时区换算全部走 IANA 真值表（isle_time / isle_tz_data）。
 const TimeSvc := preload("res://scripts/isle_time.gd")
 
@@ -31,6 +50,9 @@ var _phase: Label
 var _date: Label
 var _tz_line: Label
 var _hint: VBoxContainer
+var _hint_lines: Array = []
+var _hint_keys: Label
+var _hint_keys2: Label
 var _compass: Control
 var _almanac: PanelContainer
 var _almanac_toggle_hint: Label
@@ -76,6 +98,100 @@ var _auto_label: Label
 var _auto_orbit: bool = true
 var _auto_orbit_available: bool = true
 var _time_daylen: Label
+
+# ---- P8 日历 / 可见暂停（完整公历编辑，主时钟仍是 main._sim_seconds）----
+const CAL_FIELDS := ["year", "month", "day", "hour", "minute"]
+var _pause_btn: Button
+var _time_date: Label
+var _cal_toggle: Button
+var _cal_section: VBoxContainer
+var _cal_open: bool = false
+var _cal_draft: Dictionary = {}
+## P8.1-07：五列滚轮控件（替换旧 5 行“单位 + − 数值 +”）；数值仍在 _cal_draft，跳转由 main 落地。
+var _cal_wheel: Control
+var _cal_jump_btn: Button
+var _cal_reset_btn: Button
+var _cal_wheel_busy: bool = false
+## 用户已修改草稿但尚未跳转：此时不要用权威时钟回灌，避免把编辑内容冲掉。
+var _cal_dirty: bool = false
+var _cal_preview: Label
+
+# ---- P8 天气面板（可折叠；与时间面板同样的空闲自动收折 / H 同步收起）----
+const WeatherCtl := preload("res://scripts/isle_weather.gd")
+const WEATHER_PANEL_TOP := -338.0   # 内容高度约 270px + 内边距（手动按钮最多 11 个，4 列 3 行），不留空白
+var _weather_pill: Button
+var _weather_panel: PanelContainer
+var _weather_open: bool = false
+var _weather_idle: float = 0.0
+var _weather_big: Label
+var _weather_sub: Label
+var _weather_hold: Label
+var _weather_next: Label
+var _weather_auto_btn: Button
+var _weather_manual_btn: Button
+var _weather_type_grid: GridContainer
+var _weather_type_buttons: Dictionary = {}
+var _weather_types_sig: String = ""
+var _weather_mode_ui: String = ""
+var _weather_active_ui: String = ""
+
+
+# ---- P5 背包（只读共享库存；显示顺序只属于 UI，绝不写回库存）----
+## 显示名与规范物品顺序复用 isle_crops.gd 的作物目录，不另造一套映射。
+const CropsCtl := preload("res://scripts/isle_crops.gd")
+## P6 鱼类目录（显示名/规范顺序复用同一纯函数模块，不在 HUD 里另造映射）。
+const FishCtl := preload("res://scripts/isle_fish.gd")
+## 五种子 / 五作物产物（目录本身沿用 isle_crops.gd，不另造映射）。
+const BAG_SEED_IDS := ["seed_wheat", "seed_corn", "seed_watermelon", "seed_tomato", "seed_kale"]
+const BAG_PRODUCE_IDS := ["wheat", "corn", "watermelon", "tomato", "kale"]
+const BAG_COLUMNS := 2
+## P7-FINALIZE（本轮用户要求）：单体扁平列表；「整理」后的规范顺序固定为
+## **作物产物 → 鱼 → 种子**；同类别内部按作物/鱼类目录顺序（稳定目录序，不依赖数量/字典序）。
+## 面板初始显示顺序故意采用 种子 → 作物 → 鱼（与整理后不同），
+## 这样「整理」按钮有真实、可观察的重排效果（不是重建同一顺序的空操作）。
+## 分类只做显示筛选，不改库存、不改数量、不引入格子容量概念（既有无容量/不限量堆叠原则不变）。
+## P7-FINALIZE：分类菜单顺序与新的「整理」顺序一致（作物 → 鱼 → 种子），全部在最前。
+const BAG_FILTER_ORDER := ["all", "produce", "fish", "seed"]
+const BAG_FILTER_LABELS := {"all": "全部", "produce": "作物", "seed": "种子", "fish": "鱼"}
+const BAG_ICON_SIZE := 34.0
+## 背包胶囊按钮固定在左下角时间胶囊（-66..-32）正上方，两者不重叠。
+const BAG_PILL_TOP := -108.0
+const BAG_PILL_BOTTOM := -74.0
+const BAG_PANEL_BOTTOM := -120.0
+## P6 钓鱼入口：与背包胶囊同一行（y -108..-74），放在背包右侧；该行整体在时间/天气胶囊之上、
+## 在背包面板底边（-120）之下，因此不与左下时间/天气显示或展开的背包面板重叠。
+const FISH_PILL_LEFT := 204.0
+const FISH_PILL_RIGHT := 366.0
+## 钓鱼阶段文字（只读投影，不参与任何状态推进）。
+const FISH_STATUS_LEFT := 376.0
+const FISH_STATUS_RIGHT := 800.0
+var _bag_pill: Button
+var _bag_panel: PanelContainer
+var _bag_open: bool = false
+# P7.2：单一扁平网格（所有物品格同属一张表，节点顺序即显示顺序）。
+var _bag_grid: GridContainer
+var _bag_cells: Dictionary = {}
+var _bag_count_labels: Dictionary = {}
+var _bag_name_labels: Dictionary = {}
+var _bag_sorted: bool = false
+var _bag_sort_count: int = 0
+
+# P7-UX / P7.2：只显示已获得物品（Minecraft / WoW 式），未获得过的物品格整格隐藏，空背包给提示。
+var _bag_empty_note: Label           # 背包内没有任何可显示物品时的提示
+var _bag_shown_ids: Array = []       # 当前可见物品 ID（变化时重排面板高度）
+# P7.2：分类次级菜单（全部/作物/种子/鱼），只与「数量 > 0」叠加，不改任何权威状态。
+var _bag_filter: String = "all"
+var _bag_filter_menu_open: bool = false
+var _bag_filter_panel: PanelContainer
+var _bag_filter_btn: Button
+var _bag_filter_buttons: Dictionary = {}   # filter_id -> Button
+
+# ---- P6 钓鱼入口（按钮 + 阶段文字；只读 main 传入的 fishing 快照）----
+var _fish_pill: Button
+var _fish_status: Label
+var _fish_active_ui: bool = false
+var _fish_phase_ui: String = ""
+var _fish_rounds_ui: int = -1
 
 func _ready() -> void:
 	layer = 5
@@ -192,7 +308,7 @@ func _build() -> void:
 	# top-right hints
 	_hint = VBoxContainer.new()
 	_hint.set_anchors_preset(Control.PRESET_TOP_RIGHT)
-	_hint.position = Vector2(-356, 24)
+	_hint.position = Vector2(-436, 24)
 	_hint.add_theme_constant_override("separation", 1)
 	_root.add_child(_hint)
 	var hints: Array = [
@@ -204,19 +320,22 @@ func _build() -> void:
 	for hspec in hints:
 		var l := _mk_label(hspec[0], hspec[1], hspec[2], 3)
 		l.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-		l.custom_minimum_size = Vector2(320, 0)
+		l.custom_minimum_size = Vector2(400, 0)
 		_hint.add_child(l)
+		_hint_lines.append(l)
 	var spacer := Control.new()
 	spacer.custom_minimum_size = Vector2(0, 6)
 	_hint.add_child(spacer)
-	var keys := _mk_label("空格 暂停 · Tab 天文历 · T 时间 · C 自动运镜 · H 隐藏界面", 11, Color(0.72, 0.66, 0.56, 0.85), 2)
+	var keys := _mk_label("空格 暂停 · Tab 天文历 · T 时间 · W 天气 · C 自动运镜 · H 隐藏界面", 11, Color(0.72, 0.66, 0.56, 0.85), 2)
 	keys.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	keys.custom_minimum_size = Vector2(320, 0)
+	keys.custom_minimum_size = Vector2(400, 0)
 	_hint.add_child(keys)
-	var keys2 := _mk_label("F2 截图 · F3 性能 · F11 全屏", 11, Color(0.72, 0.66, 0.56, 0.85), 2)
+	_hint_keys = keys
+	var keys2 := _mk_label("B 背包 · F2 截图 · F3 性能 · F11 全屏", 11, Color(0.72, 0.66, 0.56, 0.85), 2)
 	keys2.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	keys2.custom_minimum_size = Vector2(320, 0)
+	keys2.custom_minimum_size = Vector2(400, 0)
 	_hint.add_child(keys2)
+	_hint_keys2 = keys2
 	# compass
 	_compass = Control.new()
 	_compass.set_anchors_preset(Control.PRESET_CENTER_TOP)
@@ -309,6 +428,12 @@ func _build() -> void:
 	_apply_auto_indicator()
 	# ---- collapsible 24h time console ----
 	_build_time_console()
+	# ---- P8 collapsible weather console ----
+	_build_weather_console()
+	# ---- P5 背包入口与面板 ----
+	_build_backpack()
+	# ---- P6 钓鱼入口（玩家主动发起岛民自主钓鱼）----
+	_build_fishing()
 
 func _build_time_console() -> void:
 	# 折叠态：左下角一枚小胶囊，随时可展开，不长期遮挡画面
@@ -327,7 +452,8 @@ func _build_time_console() -> void:
 	_time_panel.offset_left = 34.0
 	_time_panel.offset_right = 386.0
 	# 第五阶段：header 下新增“现实时间 / 模拟时间”切换行，面板相应加高。
-	_time_panel.offset_top = -444.0
+	# P8：再新增日期行 + 日历编辑区，面板高度由 TIME_PANEL_TOP / TIME_PANEL_TOP_CAL 控制。
+	_time_panel.offset_top = TIME_PANEL_TOP
 	_time_panel.offset_bottom = -84.0
 	_time_panel.add_theme_stylebox_override("panel", _panel_style(Color(0.045, 0.055, 0.075, 0.72)))
 	_time_panel.mouse_filter = Control.MOUSE_FILTER_STOP
@@ -367,6 +493,17 @@ func _build_time_console() -> void:
 	_time_big.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	v.add_child(_time_big)
 
+	# P8：日期 / 星期 / 季节 + 可见暂停按钮（与空格共享同一权威状态）
+	var date_row := HBoxContainer.new()
+	date_row.add_theme_constant_override("separation", 8)
+	v.add_child(date_row)
+	_time_date = _mk_label("", 12, Color(0.90, 0.84, 0.74, 0.95), 3)
+	_time_date.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	date_row.add_child(_time_date)
+	_pause_btn = _mk_button("暂停", 12, _on_pause_pressed)
+	_pause_btn.custom_minimum_size = Vector2(74, 28)
+	date_row.add_child(_pause_btn)
+
 	# 现实时间模式：面板内显示 “现实时间 · 时区 · UTC 偏移 · 只读预览”
 	_time_tz_line = _mk_label("", 11, Color(0.84, 0.78, 0.68, 0.92), 3)
 	_time_tz_line.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -405,10 +542,292 @@ func _build_time_console() -> void:
 		quick.add_child(qb)
 		_quick_buttons.append(qb)
 
+	# P8：日历编辑入口 + 折叠编辑区（年 / 月 / 日 / 时 / 分，跳转仍走 main 权威时钟）
+	_cal_toggle = _mk_button("编辑日期与时间 ▾", 11, _toggle_calendar)
+	v.add_child(_cal_toggle)
+	_cal_section = VBoxContainer.new()
+	_cal_section.add_theme_constant_override("separation", 6)
+	_cal_section.visible = false
+	v.add_child(_cal_section)
+	# P8.1-07：五列 Apple 式滚轮替换旧“单位 + − 数值 +”五行；只编辑草稿，跳转仍由 main 权威时钟落地。
+	_cal_wheel = WheelCtl.new()
+	_cal_wheel.name = "DateTimeWheel"
+	_cal_section.add_child(_cal_wheel)
+	(_cal_wheel as Control).call("setup", _font, _time_source != "real")
+	_cal_wheel.custom_minimum_size = Vector2(316.0, 156.0)
+	_cal_wheel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_cal_wheel.tooltip_text = "拖动 / 鼠标滚轮 / 方向键调整；松手自动吸附；点“跳转到该时刻”才改变时间"
+	_cal_wheel.connect("parts_changed", Callable(self, "_on_cal_parts_changed"))
+	_cal_wheel.connect("editing_changed", Callable(self, "_on_cal_editing_changed"))
+	_cal_preview = _mk_label("", 11, Color(0.82, 0.76, 0.66, 0.92), 2)
+	_cal_preview.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_cal_section.add_child(_cal_preview)
+	var jump_row := HBoxContainer.new()
+	jump_row.add_theme_constant_override("separation", 8)
+	_cal_section.add_child(jump_row)
+	var jump_btn := _mk_button("跳转到该时刻", 12, _on_cal_jump)
+	jump_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	jump_btn.custom_minimum_size = Vector2(0, 30)
+	jump_row.add_child(jump_btn)
+	_cal_jump_btn = jump_btn
+	var reset_btn := _mk_button("回到当前", 11, _on_cal_reset)
+	reset_btn.custom_minimum_size = Vector2(84, 30)
+	jump_row.add_child(reset_btn)
+	_cal_reset_btn = reset_btn
+
 	_time_note = _mk_label(TIME_NOTE_SIM, 10, Color(0.68, 0.62, 0.53, 0.9), 2)
 	_time_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_time_note.custom_minimum_size = Vector2(320, 0)
 	v.add_child(_time_note)
+
+# ---- P8 阶段 5：天气面板（自动 / 手动 + 季节合法选项；只读主循环的天气状态）----
+
+## 折叠态小胶囊放在时间胶囊右侧；展开态是独立的左下角小面板，不遮挡时间面板。
+func _build_weather_console() -> void:
+	_weather_pill = _mk_button("☁ 天气  --", 14, _toggle_weather_panel)
+	_weather_pill.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+	_weather_pill.offset_left = 204.0
+	_weather_pill.offset_right = 372.0
+	_weather_pill.offset_top = -66.0
+	_weather_pill.offset_bottom = -32.0
+	_weather_pill.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	_root.add_child(_weather_pill)
+
+	_weather_panel = PanelContainer.new()
+	_weather_panel.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+	_weather_panel.offset_left = 398.0
+	_weather_panel.offset_right = 754.0
+	_weather_panel.offset_top = WEATHER_PANEL_TOP
+	_weather_panel.offset_bottom = -32.0
+	_weather_panel.add_theme_stylebox_override("panel", _panel_style(Color(0.045, 0.055, 0.075, 0.72)))
+	_weather_panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	_weather_panel.visible = false
+	_root.add_child(_weather_panel)
+
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 6)
+	_weather_panel.add_child(v)
+
+	var header := HBoxContainer.new()
+	v.add_child(header)
+	var ttl := _mk_label("天气 · WEATHER", 15, ACCENT, 3)
+	ttl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	header.add_child(ttl)
+	var collapse := _mk_button("收折 ▾", 12, _toggle_weather_panel)
+	collapse.custom_minimum_size = Vector2(70, 28)
+	header.add_child(collapse)
+
+	_weather_big = _mk_label("--", 26, CREAM, 4)
+	_weather_big.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	v.add_child(_weather_big)
+
+	_weather_sub = _mk_label("", 11, Color(0.90, 0.84, 0.74, 0.95), 2)
+	_weather_sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	v.add_child(_weather_sub)
+
+	_weather_hold = _mk_label("", 10, Color(0.82, 0.76, 0.66, 0.92), 2)
+	_weather_hold.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	v.add_child(_weather_hold)
+
+	_weather_next = _mk_label("", 10, Color(0.80, 0.74, 0.62, 0.9), 2)
+	_weather_next.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	v.add_child(_weather_next)
+
+	var line := ColorRect.new()
+	line.color = Color(1.0, 0.88, 0.71, 0.16)
+	line.custom_minimum_size = Vector2(0, 1)
+	v.add_child(line)
+
+	# 自动 / 手动：与时间来源切换同一种双按钮交互，当前模式高亮。
+	var mode_row := HBoxContainer.new()
+	mode_row.add_theme_constant_override("separation", 8)
+	v.add_child(mode_row)
+	var mode_lbl := _mk_label("模式", 11, DIM, 2)
+	mode_lbl.custom_minimum_size = Vector2(32, 0)
+	mode_row.add_child(mode_lbl)
+	_weather_auto_btn = _mk_button("自动", 12, _on_weather_auto_pressed)
+	_weather_auto_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_weather_auto_btn.custom_minimum_size = Vector2(0, 28)
+	_weather_auto_btn.tooltip_text = "按季节权重与确定性随机自动推进天气"
+	mode_row.add_child(_weather_auto_btn)
+	_weather_manual_btn = _mk_button("手动", 12, _on_weather_manual_pressed)
+	_weather_manual_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_weather_manual_btn.custom_minimum_size = Vector2(0, 28)
+	_weather_manual_btn.tooltip_text = "锁定手动选择的天气，直到切回自动"
+	mode_row.add_child(_weather_manual_btn)
+
+	var pick_lbl := _mk_label("手动选择 · 仅列本季合法选项", 10, Color(0.68, 0.62, 0.53, 0.9), 2)
+	v.add_child(pick_lbl)
+	_weather_type_grid = GridContainer.new()
+	# P8.1：12 类按季节过滤后为 8/9/9/11 个按钮；4 列 → 最多 3 行。
+	# 不要改成 6 列：6×72px + 间距 ≈457px 会超出面板内容宽度（面板 356px）。
+	_weather_type_grid.columns = 4
+	_weather_type_grid.add_theme_constant_override("h_separation", 5)
+	_weather_type_grid.add_theme_constant_override("v_separation", 4)
+	v.add_child(_weather_type_grid)
+
+	var note := _mk_label("天气只影响观感，不改变任何进度 · W 收折", 10, Color(0.62, 0.57, 0.49, 0.82), 2)
+	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	note.custom_minimum_size = Vector2(320, 0)
+	v.add_child(note)
+
+func _toggle_weather_panel() -> void:
+	_weather_open = not _weather_open
+	_weather_panel.visible = _weather_open
+	_weather_idle = 0.0
+	if _weather_open:
+		if _bag_open:
+			_collapse_backpack()
+		_refresh_weather(_data)
+
+func toggle_weather_panel() -> void:
+	_toggle_weather_panel()
+
+## 收起天气面板的公共路径（收折按钮 / 空闲自动收折 / H 隐藏界面共用）。
+func _collapse_weather_panel() -> void:
+	_weather_open = false
+	_weather_panel.visible = false
+
+## 只读主循环传入的 weather 状态字典：胶囊与面板文字都从这里派生，不保存第二份天气状态。
+func _refresh_weather(d: Dictionary) -> void:
+	var w: Dictionary = d.get("weather", {})
+	if w.is_empty():
+		return
+	var label := str(w.get("label", "晴"))
+	var type_id := str(w.get("type", "clear"))
+	var auto_on := bool(w.get("auto", true))
+	var season_label := str(w.get("season_label", "春季"))
+	var intensity := clampf(float(w.get("intensity", 0.0)), 0.0, 1.0)
+	if _weather_pill != null:
+		var pill_text := "☁ 天气  " + label
+		if _weather_pill.text != pill_text:
+			_weather_pill.text = pill_text
+	if _weather_panel == null or not _weather_panel.visible:
+		return
+	if _weather_big.text != label:
+		_weather_big.text = label
+	var sub := "%s · %s · 强度 %d%%" % [season_label, "自动" if auto_on else "手动", int(round(intensity * 100.0))]
+	if _weather_sub.text != sub:
+		_weather_sub.text = sub
+	var hold_text := ""
+	if auto_on:
+		var hold_left := maxf(0.0, float(w.get("hold_left", 0.0)))
+		var hold_total := maxf(0.0, float(w.get("hold_total", 0.0)))
+		hold_text = "预计再持续 %s" % _weather_duration_text(hold_left)
+		if hold_total > 0.0:
+			hold_text += " · 本轮共 %s" % _weather_duration_text(hold_total)
+	else:
+		hold_text = "手动锁定中 · 天气不会自行变化"
+	if _weather_hold.text != hold_text:
+		_weather_hold.text = hold_text
+	var next_text := ""
+	if auto_on:
+		var nxt := str(w.get("next_label", ""))
+		var trans := clampf(float(w.get("transition", 0.0)), 0.0, 1.0)
+		if not nxt.is_empty() and nxt != label and trans > 0.02:
+			next_text = "过渡中 · 即将转为 %s" % nxt
+		elif not nxt.is_empty() and nxt != label:
+			next_text = "趋势 · 之后转为 %s" % nxt
+		else:
+			next_text = "趋势 · 持续%s" % label
+	else:
+		next_text = "切回自动后恢复季节权重随机"
+	if _weather_next.text != next_text:
+		_weather_next.text = next_text
+	_refresh_weather_types(w)
+	_apply_weather_mode_ui("auto" if auto_on else "manual", type_id)
+
+## 把模拟秒换算成游戏内时长文本（权威时钟仍是模拟秒；显示只做单位换算）。
+func _weather_duration_text(seconds: float) -> String:
+	var total_min := int(round(seconds / 60.0))
+	if total_min <= 0:
+		return "不足 1 分钟"
+	var hours := total_min / 60
+	var mins := total_min % 60
+	if hours <= 0:
+		return "%d 分钟" % mins
+	if mins <= 0:
+		return "%d 小时" % hours
+	return "%d 小时 %d 分" % [hours, mins]
+
+## 手动类型按钮只在季节/合法集合变化时重建，避免 0.12s 刷新周期反复创建控件。
+func _refresh_weather_types(w: Dictionary) -> void:
+	var avail: Array = w.get("available_types", [])
+	if avail.is_empty() or _weather_type_grid == null:
+		return
+	var sig := str(avail)
+	if sig == _weather_types_sig:
+		return
+	_weather_types_sig = sig
+	for child in _weather_type_grid.get_children():
+		_weather_type_grid.remove_child(child)
+		child.queue_free()
+	_weather_type_buttons.clear()
+	for raw in avail:
+		var type_id := str(raw)
+		var label := str(WeatherCtl.TYPE_LABELS.get(type_id, type_id))
+		var b := _mk_button(label, 11, Callable(self, "_on_weather_type_pressed").bind(type_id))
+		b.custom_minimum_size = Vector2(72, 26)
+		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		b.tooltip_text = "手动设为%s（进入手动模式）" % label
+		_weather_type_grid.add_child(b)
+		_weather_type_buttons[type_id] = b
+	_weather_mode_ui = ""
+	_weather_active_ui = ""
+
+func _style_weather_rest(b: Button) -> void:
+	b.add_theme_color_override("font_color", CREAM)
+	b.add_theme_color_override("font_hover_color", Color(1.0, 0.97, 0.9))
+	b.add_theme_stylebox_override("normal", _btn_style(Color(0.06, 0.075, 0.10, 0.72), Color(1.0, 0.9, 0.74, 0.18)))
+	b.add_theme_stylebox_override("hover", _btn_style(Color(0.11, 0.13, 0.17, 0.85), Color(1.0, 0.85, 0.64, 0.42)))
+	b.add_theme_stylebox_override("pressed", _btn_style(Color(0.16, 0.13, 0.11, 0.9), Color(1.0, 0.78, 0.52, 0.7)))
+
+func _style_weather_active(b: Button) -> void:
+	b.add_theme_color_override("font_color", ACCENT)
+	b.add_theme_color_override("font_hover_color", Color(1.0, 0.86, 0.66))
+	b.add_theme_stylebox_override("normal", _btn_style(Color(0.24, 0.17, 0.12, 0.95), ACCENT))
+	b.add_theme_stylebox_override("hover", _btn_style(Color(0.30, 0.21, 0.14, 0.98), Color(0.95, 0.72, 0.50)))
+	b.add_theme_stylebox_override("pressed", _btn_style(Color(0.20, 0.14, 0.10, 0.98), ACCENT))
+
+## 模式高亮 + 手动类型高亮；只在变化时重刷 stylebox（避免每帧分配资源）。
+func _apply_weather_mode_ui(mode: String, active_type: String) -> void:
+	var active_key := active_type if mode == "manual" else ""
+	if _weather_mode_ui == mode and _weather_active_ui == active_key:
+		return
+	_weather_mode_ui = mode
+	_weather_active_ui = active_key
+	if _weather_auto_btn != null:
+		if mode == "auto":
+			_style_weather_active(_weather_auto_btn)
+		else:
+			_style_weather_rest(_weather_auto_btn)
+	if _weather_manual_btn != null:
+		if mode == "manual":
+			_style_weather_active(_weather_manual_btn)
+		else:
+			_style_weather_rest(_weather_manual_btn)
+	for raw in _weather_type_buttons.keys():
+		var key := str(raw)
+		var b := _weather_type_buttons[raw] as Button
+		if b == null:
+			continue
+		if mode == "manual" and key == active_type:
+			_style_weather_active(b)
+		else:
+			_style_weather_rest(b)
+
+func _on_weather_auto_pressed() -> void:
+	_weather_idle = 0.0
+	weather_auto_requested.emit(true)
+
+func _on_weather_manual_pressed() -> void:
+	_weather_idle = 0.0
+	weather_auto_requested.emit(false)
+
+## 手动类型：只发请求；合法性由主循环按权威天气状态的 available_types 判定（非法会给 toast）。
+func _on_weather_type_pressed(type_id: String) -> void:
+	_weather_idle = 0.0
+	weather_type_requested.emit(type_id)
 
 func _draw_compass() -> void:
 	if _compass == null or _font == null:
@@ -454,10 +873,17 @@ func update_all(d: Dictionary) -> void:
 		date_text += "  · 真实时间"
 	_date.text = date_text
 	_update_time_mode(d)
+	_refresh_date_row(d)
+	_refresh_pause_state()
+	if _cal_open and not _cal_dirty:
+		_seed_cal_draft(false)
 	_heading = float(d.get("heading", 0.0))
 	_compass.queue_redraw()
 	_refresh_time_display()
 	_refresh_day_length_note(d)
+	_refresh_weather(d)
+	_refresh_backpack(d)
+	_refresh_fishing(d)
 	if _almanac_open:
 		_refresh_almanac()
 
@@ -526,6 +952,16 @@ func _apply_time_mode_labels() -> void:
 			note = "现实时间模式 · 时钟跟随系统真实时间（%s）；时间轴 / 快捷按钮已只读，仅预览当日时刻，不修改系统时间。" % tz
 		if _time_note.text != note:
 			_time_note.text = note
+	# P8：现实时间模式下暂停 / 日历编辑只读，避免 UI 承诺做不到的操作
+	if _cal_toggle != null:
+		_cal_toggle.disabled = real
+		_cal_toggle.modulate = Color(1.0, 1.0, 1.0, 0.45) if real else Color(1.0, 1.0, 1.0, 1.0)
+		if real and _cal_open:
+			_close_calendar()
+	# P8.1-07：滚轮同样只读；真实模式关闭面板后列置灰（set_editable 会取消拖动/惯性）。
+	if _cal_wheel != null:
+		_cal_wheel.call("set_editable", not real)
+		_on_cal_editing_changed(bool(_cal_wheel_busy))
 	_apply_time_mode_buttons()
 
 ## 时间来源按钮高亮：现实时间 / 模拟时间，与设置菜单同一状态源（data.time_source）。
@@ -566,6 +1002,8 @@ func _on_time_mode_pressed(mode: String) -> void:
 	_time_mode_ui = ""
 	time_mode_requested.emit(src)
 	_apply_time_mode_buttons()
+	# P8.1-07：来源切换会改变日历可编辑性（现实时间只读），立即重刷一次。
+	_apply_time_mode_labels()
 
 ## timezone_label 允许两种形态：完整标签（含 “UTC”/“·”）原样使用；纯 IANA id 则补上当前偏移。
 func _normalize_tz_label(raw: String) -> String:
@@ -604,7 +1042,13 @@ func _toggle_time_panel() -> void:
 	_time_panel.visible = _time_open
 	_time_idle = 0.0
 	if _time_open:
+		# P5：与背包面板互斥，避免左下角两块面板互相遮挡。
+		if _bag_open:
+			_collapse_backpack()
 		_refresh_time_display()
+		_seed_cal_draft(false)
+	else:
+		_close_calendar()
 
 func toggle_time_panel() -> void:
 	_toggle_time_panel()
@@ -627,6 +1071,170 @@ func _set_clock_target(hour: int, minute: int) -> void:
 	if delta_min <= -720:
 		delta_min += 1440
 	time_adjust.emit(float(delta_min) * 60.0)
+
+# ---- P8：日历编辑区（只读主时钟 _data，编辑草稿本地保存，跳转由 main 落地）----
+
+func _refresh_date_row(d: Dictionary) -> void:
+	if _time_date == null:
+		return
+	var line: String = str(d.get("date", ""))
+	var weekday: String = str(d.get("weekday", ""))
+	if not weekday.is_empty():
+		line += "  " + weekday
+	var season_label: String = str(d.get("season_label", ""))
+	if not season_label.is_empty():
+		line += "  ·  " + season_label
+	if _time_date.text != line:
+		_time_date.text = line
+
+## 暂停按钮文案 / 可用性：现实时间模式下时钟不可暂停，按钮置灰。
+func _refresh_pause_state() -> void:
+	if _pause_btn == null:
+		return
+	var paused := bool(_data.get("paused", false))
+	var real: bool = _time_source == "real"
+	var text := "继续" if paused else "暂停"
+	if _pause_btn.text != text:
+		_pause_btn.text = text
+	var tip := "暂停模拟时间（空格）"
+	if real:
+		tip = "现实时间模式：时钟跟随系统，不可暂停"
+	elif paused:
+		tip = "继续模拟时间（空格）"
+	if _pause_btn.tooltip_text != tip:
+		_pause_btn.tooltip_text = tip
+	_pause_btn.disabled = real
+	_pause_btn.modulate = Color(1.0, 1.0, 1.0, 0.45) if real else Color(1.0, 1.0, 1.0, 1.0)
+
+## 暂停按钮：只发请求，_paused 的唯一状态源在 main（与空格键同一函数）。
+func _on_pause_pressed() -> void:
+	if _time_source == "real":
+		show_toast("现实时间模式：时间随现实时钟前进")
+		return
+	_time_idle = 0.0
+	pause_toggle_requested.emit()
+
+## 展开 / 收折日历编辑区：只改布局与本 UI 草稿，不改任何时间状态。
+func _toggle_calendar() -> void:
+	_cal_open = not _cal_open
+	_cal_section.visible = _cal_open
+	_cal_toggle.text = "日期与时间 · 收起 ▴" if _cal_open else "编辑日期与时间 ▾"
+	_time_panel.offset_top = TIME_PANEL_TOP_CAL if _cal_open else TIME_PANEL_TOP
+	_time_idle = 0.0
+	if _cal_open:
+		# 打开即从权威时钟灌草稿；现实时间模式仍只读（列 mouse_filter=IGNORE）。
+		if _cal_wheel != null:
+			_cal_wheel.call("set_editable", _time_source != "real")
+		_seed_cal_draft(true)
+	elif _cal_wheel != null:
+		_cal_wheel.call("cancel_drag")
+
+## 折叠日历（收起时间面板 / 隐藏 HUD / 自动收折时调用）：不触发信号、不动时间状态。
+func _close_calendar() -> void:
+	# 先停掉滚轮拖动/惯性（节点仍在树里，避免关闭后继续 tick 抢焦点）。
+	if _cal_wheel != null:
+		_cal_wheel.call("cancel_drag")
+	if not _cal_open:
+		return
+	_cal_open = false
+	_cal_section.visible = false
+	_cal_toggle.text = "编辑日期与时间 ▾"
+	_time_panel.offset_top = TIME_PANEL_TOP
+	# C12 / 收起语义：未确认编辑不跨面板生命周期保留，重置为权威时间。
+	if _cal_dirty:
+		_seed_cal_draft(true)
+
+## 收起时间面板的公共路径：同步收日历并恢复面板高度。
+func _collapse_time_panel() -> void:
+	_time_open = false
+	_time_panel.visible = false
+	_close_calendar()
+
+## 从权威时钟回灌草稿（force=true 丢弃用户未跳转的编辑，用于“回到当前”）。
+func _seed_cal_draft(force: bool = false) -> void:
+	if not force and _cal_dirty:
+		return
+	_cal_draft = {
+		"year": int(_data.get("year", 2026)),
+		"month": int(_data.get("month", 1)),
+		"day": int(_data.get("day", 1)),
+		"hour": int(_data.get("hour", 0)),
+		"minute": int(_data.get("minute", 0)),
+	}
+	_cal_dirty = false
+	if _cal_wheel != null:
+		_cal_wheel.call("set_parts", _cal_draft)
+	_refresh_cal_labels()
+
+## P8.1-07：只刷新“预览”文案；五列数值由滚轮内部重绘。不要在这里按 visible 提前 return
+## （旧实现会挡住滚轮刷新，计划 §10.5 第 4 条）。
+func _refresh_cal_labels() -> void:
+	if _cal_preview == null:
+		return
+	var c: Dictionary = CalendarCtl.clamp_parts(
+		int(_cal_draft.get("year", 2026)), int(_cal_draft.get("month", 1)),
+		int(_cal_draft.get("day", 1)), int(_cal_draft.get("hour", 0)),
+		int(_cal_draft.get("minute", 0)), 0)
+	var cal: Dictionary = CalendarCtl.parts(CalendarCtl.to_local_seconds(
+		int(c["year"]), int(c["month"]), int(c["day"]),
+		int(c["hour"]), int(c["minute"]), 0))
+	var text := "%s  %s" % [str(cal.get("date_label", "")), str(cal.get("weekday_cn", ""))]
+	if _cal_dirty:
+		text += "  · 未确认"
+	_cal_preview.text = text
+
+## 单步编辑（键盘兼容 / 旧按钮路径）：交给滚轮 step_field，并同步本 UI 草稿。
+func _cal_step(field: String, delta: int) -> void:
+	if _time_source == "real":
+		show_toast("现实时间模式 · 日期与时间只读")
+		return
+	if _cal_wheel != null:
+		_cal_wheel.call("step_field", field, delta)
+		_cal_draft = _cal_wheel.call("get_parts")
+	_cal_dirty = true
+	_time_idle = 0.0
+	_refresh_cal_labels()
+
+## 滚轮停稳后一次性回传（拖动/惯性过程中不发，避免每帧外部重算）。
+func _on_cal_parts_changed(parts: Dictionary) -> void:
+	_cal_draft = parts.duplicate()
+	_cal_dirty = true
+	_time_idle = 0.0
+	_refresh_cal_labels()
+
+## 滚轮忙碌状态：busy 时强制视为已编辑（阻止 update_all 回灌草稿）并刷新按钮可用性。
+func _on_cal_editing_changed(busy: bool) -> void:
+	_cal_wheel_busy = busy
+	var real: bool = _time_source == "real"
+	if busy:
+		_cal_dirty = true
+		_time_idle = 0.0
+	if _cal_jump_btn != null:
+		_cal_jump_btn.disabled = busy or real
+	if _cal_reset_btn != null:
+		_cal_reset_btn.disabled = real
+
+## 确认跳转：把滚轮当前值定格为草稿，再交给 main 的权威跳转入口（只发一次信号）。
+func _on_cal_jump() -> void:
+	if _time_source == "real":
+		show_toast("现实时间模式 · 日期与时间只读")
+		return
+	if _cal_wheel != null:
+		if bool(_cal_wheel.call("is_busy")):
+			_cal_wheel.call("cancel_drag")
+		_cal_draft = _cal_wheel.call("get_parts")
+		_cal_wheel.call("set_parts", _cal_draft)
+	_time_idle = 0.0
+	_cal_dirty = false
+	_refresh_cal_labels()
+	datetime_jump_requested.emit(
+		int(_cal_draft.get("year", 2026)), int(_cal_draft.get("month", 1)),
+		int(_cal_draft.get("day", 1)), int(_cal_draft.get("hour", 0)),
+		int(_cal_draft.get("minute", 0)))
+
+func _on_cal_reset() -> void:
+	_time_idle = 0.0
+	_seed_cal_draft(true)
 
 func _refresh_almanac() -> void:
 	if _values.is_empty():
@@ -677,6 +1285,32 @@ func _apply_auto_indicator() -> void:
 	if _auto_orbit_available:
 		# 常驻指示附带 C 键提示（只展示，按键监听仍在 main）。
 		_auto_label.text = ("◉ 自动运镜 · 开 · 按 C 切换" if _auto_orbit else "○ 自动运镜 · 关 · 按 C 切换")
+
+## P7-V3：自由视角下切换右上角操作提示（轨道视角↔飞行视角），避免两套操作说明互相误导演示。
+## P7-V3.1：同时收敛"快捷键行"——自由视角下 C（自动运镜）作用于轨道相机，飞行时按下
+## 只会切换一个看不见的状态，属于冲突说明，因此从飞行文案里去掉，并在退出时原样恢复。
+func set_fly_hints(active: bool) -> void:
+	var orbit_lines: Array = [
+		"左键拖动 · 旋转视角",
+		"右键拖动 · 平移观察点",
+		"滚轮 · 推拉镜头",
+		"点击 · 木门 / 烟囱 / 海面",
+	]
+	var fly_lines: Array = [
+		"右键按住拖动 · 转向",
+		"WASD 水平移动 · Space 上升 · Ctrl 下降",
+		"Shift · 冲刺（2× 速度）",
+		"左键点击 · 木门 / 烟囱 / 海面",
+	]
+	var lines: Array = fly_lines if active else orbit_lines
+	for i in range(mini(_hint_lines.size(), lines.size())):
+		(_hint_lines[i] as Label).text = str(lines[i])
+	if _hint_keys != null:
+		_hint_keys.text = ("空格 暂停 · Tab 天文历 · T 时间 · H 隐藏界面" if active
+			else "空格 暂停 · Tab 天文历 · T 时间 · C 自动运镜 · H 隐藏界面")
+	if _hint_keys2 != null:
+		_hint_keys2.text = ("B 背包 · F2 截图 · F3 性能 · F11 全屏 · F 退出自由视角" if active
+			else "B 背包 · F2 截图 · F3 性能 · F11 全屏")
 
 func show_toast(text: String) -> void:
 	_toast.text = text
@@ -747,10 +1381,13 @@ func set_hud_visible(v: bool, animate: bool = true) -> void:
 			_almanac_open = false
 			_almanac.visible = false
 		if _time_open:
-			_time_open = false
-			_time_panel.visible = false
+			_collapse_time_panel()
+		if _weather_open:
+			_collapse_weather_panel()
 		if _perf_panel != null:
 			_perf_panel.visible = false
+		if _bag_open:
+			_collapse_backpack()
 		hide_hover_hint()
 	elif _perf_open and _perf_panel != null:
 		_perf_panel.visible = true
@@ -761,20 +1398,572 @@ func _process(delta: float) -> void:
 		if _toast_t <= 0.0:
 			var tw := create_tween()
 			tw.tween_property(_toast, "modulate:a", 0.0, 0.4)
-	# 时间面板展开后若长时间无人操作自动收折，避免长期遮挡画面
+	# 时间面板展开后若长时间无人操作自动收折，避免长期遮挡画面。
+	# P8.1-07：滚轮拖动/惯性期间禁止收折（C11），否则编辑器会在手指下消失。
 	if _time_open:
+		var busy := _cal_open and _cal_wheel != null and bool(_cal_wheel.call("is_busy"))
 		var mp := get_viewport().get_mouse_position()
 		var over: bool = _time_panel.get_global_rect().has_point(mp)
-		if over:
+		if over or busy:
 			_time_idle = 0.0
 		else:
 			_time_idle += delta
 			if _time_idle > 14.0:
-				_time_open = false
-				_time_panel.visible = false
+				_collapse_time_panel()
+	# 天气面板同样空闲自动收折（与时间面板一致的 14s，保持观景画面简洁）
+	if _weather_open:
+		var wmp := get_viewport().get_mouse_position()
+		var wover: bool = _weather_panel.get_global_rect().has_point(wmp)
+		if wover:
+			_weather_idle = 0.0
+		else:
+			_weather_idle += delta
+			if _weather_idle > 14.0:
+				_collapse_weather_panel()
 	if _hover_label != null and _hover_label.visible:
 		var mp := get_viewport().get_mouse_position()
 		var vs := get_viewport().get_visible_rect().size
 		var sz := _hover_label.get_combined_minimum_size()
 		_hover_label.size = sz
 		_hover_label.position = (mp + Vector2(18, 16)).clamp(Vector2(8, 8), vs - sz - Vector2(8, 8))
+
+# ============================================================
+# P5：背包（只读全岛共享库存；一键整理只改显示顺序）
+# ============================================================
+## 左下角入口胶囊：固定在时间胶囊正上方；点击与 B 键走同一个开关函数。
+func _build_backpack() -> void:
+	_bag_pill = _mk_button("背包  B", 14, _toggle_backpack)
+	_bag_pill.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+	_bag_pill.offset_left = 34.0
+	_bag_pill.offset_right = 196.0
+	_bag_pill.offset_top = BAG_PILL_TOP
+	_bag_pill.offset_bottom = BAG_PILL_BOTTOM
+	_bag_pill.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	_root.add_child(_bag_pill)
+
+	# 展开态：背包面板（与时间/天气面板同风格，只读共享库存）
+	_bag_panel = PanelContainer.new()
+	_bag_panel.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+	_bag_panel.offset_left = 34.0
+	_bag_panel.offset_right = 506.0
+	_bag_panel.offset_top = BAG_PANEL_BOTTOM
+	_bag_panel.offset_bottom = BAG_PANEL_BOTTOM
+	_bag_panel.add_theme_stylebox_override("panel", _panel_style(Color(0.045, 0.055, 0.075, 0.88)))
+	_bag_panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	_bag_panel.visible = false
+	_root.add_child(_bag_panel)
+
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 8)
+	_bag_panel.add_child(v)
+
+	var header := HBoxContainer.new()
+	v.add_child(header)
+	var ttl := _mk_label("背包 · BAG", 15, ACCENT, 3)
+	ttl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	header.add_child(ttl)
+	var close_top := _mk_button("关闭 ✕", 12, _toggle_backpack)
+	close_top.custom_minimum_size = Vector2(76, 28)
+	header.add_child(close_top)
+
+	# P7-FINALIZE：移除"共享库存 / 只显示已获得 / B 键开关"说明性小字（用户要求界面整洁）。
+	# 空背包只保留一句必要状态提示，不解释规则。
+
+	# 空背包提示（没有任何已获得物品时显示，有物品时隐藏）。
+	_bag_empty_note = _mk_label("背包是空的", 11, Color(0.78, 0.72, 0.62, 0.92), 2)
+	_bag_empty_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_bag_empty_note.custom_minimum_size = Vector2(408, 0)
+	_bag_empty_note.visible = false
+	v.add_child(_bag_empty_note)
+
+	# 单一扁平列表——所有物品格放进同一张网格，顺序即显示顺序。
+	# 初始顺序 = 种子 → 作物 → 鱼（故意不是整理后的规范顺序，便于验证「整理」真实生效）。
+	_bag_grid = GridContainer.new()
+	_bag_grid.name = "BagGrid"
+	_bag_grid.columns = BAG_COLUMNS
+	_bag_grid.add_theme_constant_override("h_separation", 8)
+	_bag_grid.add_theme_constant_override("v_separation", 8)
+	v.add_child(_bag_grid)
+	for raw_id in _bag_default_ids():
+		var item_id := String(raw_id)
+		var cell := _make_bag_cell(item_id)
+		_bag_grid.add_child(cell)
+		_bag_cells[item_id] = cell
+
+	var footer := HBoxContainer.new()
+	footer.add_theme_constant_override("separation", 8)
+	v.add_child(footer)
+	var sort_btn := _mk_button("整理", 13, sort_backpack)
+	sort_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	sort_btn.custom_minimum_size = Vector2(0, 34)
+	footer.add_child(sort_btn)
+	# P7.2：分类入口（次级菜单）。默认「全部」，只筛选显示，不改库存与顺序语义。
+	_bag_filter_btn = _mk_button("分类：全部", 13, toggle_bag_filter_menu)
+	_bag_filter_btn.custom_minimum_size = Vector2(112, 34)
+	footer.add_child(_bag_filter_btn)
+	var close_btn := _mk_button("关闭", 13, _toggle_backpack)
+	close_btn.custom_minimum_size = Vector2(76, 34)
+	footer.add_child(close_btn)
+
+	# P7.2：次级分类菜单——按用户要求单独做成一个可展开的小面板，而不是把物品拆成多个标题组。
+	_bag_filter_panel = PanelContainer.new()
+	_bag_filter_panel.name = "BagFilterMenu"
+	_bag_filter_panel.add_theme_stylebox_override("panel", _panel_style(Color(0.06, 0.07, 0.095, 0.96)))
+	_bag_filter_panel.visible = false
+	v.add_child(_bag_filter_panel)
+	var fv := VBoxContainer.new()
+	fv.add_theme_constant_override("separation", 6)
+	_bag_filter_panel.add_child(fv)
+	var fgrid := GridContainer.new()
+	fgrid.columns = BAG_FILTER_ORDER.size()
+	fgrid.add_theme_constant_override("h_separation", 6)
+	fv.add_child(fgrid)
+	for raw_f in BAG_FILTER_ORDER:
+		var fid := String(raw_f)
+		var fb := _mk_button(String(BAG_FILTER_LABELS[fid]), 12, Callable(self, "_on_bag_filter_selected").bind(fid))
+		fb.custom_minimum_size = Vector2(0, 30)
+		fb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		fgrid.add_child(fb)
+		_bag_filter_buttons[fid] = fb
+	_apply_bag_filter_style()
+
+
+# ============================================================
+# P6：钓鱼入口（玩家主动发起；状态投影自 main 传入的 fishing 快照）
+# ============================================================
+## 钓鱼按钮与背包胶囊同一行、在背包右侧；不遮挡左下时间/天气显示，也不与 B 键背包冲突。
+func _build_fishing() -> void:
+	_fish_pill = _mk_button("钓鱼", 14, _on_fishing_pressed)
+	_fish_pill.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+	_fish_pill.offset_left = FISH_PILL_LEFT
+	_fish_pill.offset_right = FISH_PILL_RIGHT
+	_fish_pill.offset_top = BAG_PILL_TOP
+	_fish_pill.offset_bottom = BAG_PILL_BOTTOM
+	_fish_pill.alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_fish_pill.tooltip_text = "让岛民去码头自主钓鱼"
+	_root.add_child(_fish_pill)
+	_apply_fishing_style(false)
+
+	_fish_status = _mk_label("", 11, Color(0.86, 0.80, 0.70, 0.82), 3)
+	_fish_status.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+	_fish_status.offset_left = FISH_STATUS_LEFT
+	_fish_status.offset_right = FISH_STATUS_RIGHT
+	_fish_status.offset_top = BAG_PILL_TOP - 1.0
+	_fish_status.offset_bottom = BAG_PILL_BOTTOM + 1.0
+	_fish_status.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_fish_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	_fish_status.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_fish_status.text = ""
+	_root.add_child(_fish_status)
+
+
+## 与真实鼠标点击同一路径：Button.pressed → 本函数 → fishing_toggle_requested。
+func _on_fishing_pressed() -> void:
+	fishing_toggle_requested.emit()
+
+
+## 探针用：模拟玩家点击钓鱼按钮（等价于真实点击，走同一个 pressed 信号）。
+func press_fishing_button() -> void:
+	_fish_pill.pressed.emit()
+
+
+func _apply_fishing_style(active: bool) -> void:
+	if _fish_pill == null:
+		return
+	if active:
+		_fish_pill.add_theme_stylebox_override("normal", _btn_style(Color(0.20, 0.13, 0.09, 0.90), Color(1.0, 0.76, 0.48, 0.65)))
+		_fish_pill.add_theme_color_override("font_color", ACCENT)
+	else:
+		_fish_pill.add_theme_stylebox_override("normal", _btn_style(Color(0.06, 0.075, 0.10, 0.72), Color(1.0, 0.9, 0.74, 0.18)))
+		_fish_pill.add_theme_color_override("font_color", CREAM)
+
+
+## 只读投影 main 的 fishing 快照：按钮文案 + 阶段文字 + 已钓条数。不推进任何状态。
+func _refresh_fishing(d: Dictionary) -> void:
+	var f: Dictionary = d.get("fishing", {})
+	var active: bool = bool(f.get("active", false))
+	var phase: String = String(f.get("phase", ""))
+	var rounds: int = int(f.get("rounds", 0))
+	var label: String = String(f.get("label", ""))
+	if _fish_pill != null:
+		var want: String = "停止钓鱼" if active else "钓鱼"
+		if _fish_pill.text != want:
+			_fish_pill.text = want
+			_fish_pill.tooltip_text = "停止岛民钓鱼" if active else "让岛民去码头自主钓鱼"
+	if active != _fish_active_ui:
+		_fish_active_ui = active
+		_apply_fishing_style(active)
+	if _fish_status != null:
+		var text: String = ""
+		if active:
+			text = label
+			if rounds > 0:
+				text += " · 已钓 %d 条" % rounds
+		if _fish_status.text != text:
+			_fish_status.text = text
+		_fish_phase_ui = phase
+		_fish_rounds_ui = rounds
+
+
+## 只读视图（供探针验证入口存在、按钮状态、阶段文字与几何不遮挡）。
+func fishing_ui_state() -> Dictionary:
+	var rect := Rect2()
+	if _fish_pill != null:
+		rect = _fish_pill.get_global_rect()
+	var time_rect := Rect2()
+	if _time_pill != null:
+		time_rect = _time_pill.get_global_rect()
+	var weather_rect := Rect2()
+	if _weather_pill != null:
+		weather_rect = _weather_pill.get_global_rect()
+	var status_rect := Rect2()
+	if _fish_status != null:
+		status_rect = _fish_status.get_global_rect()
+	var overlaps_time: bool = rect.size.y > 0.0 and rect.intersects(time_rect)
+	var overlaps_weather: bool = rect.size.y > 0.0 and rect.intersects(weather_rect)
+	return {
+		"exists": _fish_pill != null,
+		"text": _fish_pill.text if _fish_pill != null else "",
+		"active": _fish_active_ui,
+		"phase": _fish_phase_ui,
+		"rounds": _fish_rounds_ui,
+		"status_text": _fish_status.text if _fish_status != null else "",
+		"rect": rect,
+		"status_rect": status_rect,
+		"overlaps_time": overlaps_time,
+		"overlaps_weather": overlaps_weather,
+	}
+
+
+## P7-FINALIZE：用户指定的「整理」规范显示顺序 = **作物产物 → 鱼 → 种子**。
+## 同类别内部使用稳定目录顺序（作物目录 / 鱼类目录），不依赖数量或字典迭代顺序。
+func _bag_canonical_ids() -> Array:
+	var ids: Array = []
+	ids.append_array(BAG_PRODUCE_IDS)
+	ids.append_array(FishCtl.all_ids())
+	ids.append_array(BAG_SEED_IDS)
+	return ids
+
+
+## 面板初始显示顺序 = 种子 → 作物 → 鱼（故意与「整理」后不同）。
+## 这样「整理」是真实可见的重排，而不是把同一顺序再应用一遍的空操作。
+func _bag_default_ids() -> Array:
+	var ids: Array = []
+	ids.append_array(BAG_SEED_IDS)
+	ids.append_array(BAG_PRODUCE_IDS)
+	ids.append_array(FishCtl.all_ids())
+	return ids
+
+
+## P7.2：物品所属分类（只用于显示筛选，不写入库存/农田等任何权威状态）。
+func _bag_item_category(item_id: String) -> String:
+	if item_id.begins_with("seed_"):
+		return "seed"
+	if FishCtl.has_fish(item_id):
+		return "fish"
+	return "produce"
+
+
+## P7.2：展开/收起次级分类菜单（只改 UI 可见性；筛选结果由 _bag_filter 决定）。
+func toggle_bag_filter_menu() -> void:
+	_bag_filter_menu_open = not _bag_filter_menu_open
+	if _bag_filter_panel != null:
+		_bag_filter_panel.visible = _bag_filter_menu_open
+	if _bag_open:
+		_fit_bag_panel()
+		call_deferred("_fit_bag_panel")
+
+
+## P7.2：选择分类（全部/作物/种子/鱼）。按钮与探针共用同一入口，测到的就是玩家路径。
+func set_bag_filter(filter_id: String) -> bool:
+	if not BAG_FILTER_LABELS.has(filter_id):
+		return false
+	_on_bag_filter_selected(filter_id)
+	return true
+
+
+func _on_bag_filter_selected(filter_id: String) -> void:
+	_bag_filter = filter_id if BAG_FILTER_LABELS.has(filter_id) else "all"
+	_apply_bag_filter_style()
+	_refresh_backpack(_data)
+	if _bag_open:
+		_fit_bag_panel()
+		call_deferred("_fit_bag_panel")
+
+
+## 选中项高亮 + 「分类：xxx」按钮文案（纯视觉，不影响任何数据）。
+func _apply_bag_filter_style() -> void:
+	for raw in _bag_filter_buttons.keys():
+		var fid := String(raw)
+		var b := _bag_filter_buttons[fid] as Button
+		if b == null:
+			continue
+		var on: bool = fid == _bag_filter
+		b.add_theme_stylebox_override("normal", _btn_style(
+			Color(0.20, 0.13, 0.09, 0.90) if on else Color(0.06, 0.075, 0.10, 0.72),
+			Color(1.0, 0.76, 0.48, 0.65) if on else Color(1.0, 0.9, 0.74, 0.18)))
+		b.add_theme_color_override("font_color", ACCENT if on else CREAM)
+	if _bag_filter_btn != null:
+		_bag_filter_btn.text = "分类：%s" % String(BAG_FILTER_LABELS.get(_bag_filter, "全部"))
+		_bag_filter_btn.tooltip_text = "按分类筛选（只影响显示，不改库存）"
+
+
+## 单个物品格：干净的空白图标位 + 名称 + 数量（本阶段不做任何图标素材）。
+func _make_bag_cell(item_id: String) -> Control:
+	var cell := PanelContainer.new()
+	cell.set_meta("item_id", item_id)
+	cell.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(1.0, 0.93, 0.82, 0.05)
+	sb.corner_radius_top_left = 8
+	sb.corner_radius_top_right = 8
+	sb.corner_radius_bottom_left = 8
+	sb.corner_radius_bottom_right = 8
+	sb.border_width_left = 1
+	sb.border_width_top = 1
+	sb.border_width_right = 1
+	sb.border_width_bottom = 1
+	sb.border_color = Color(1.0, 0.9, 0.74, 0.14)
+	sb.content_margin_left = 10.0
+	sb.content_margin_right = 10.0
+	sb.content_margin_top = 7.0
+	sb.content_margin_bottom = 7.0
+	cell.add_theme_stylebox_override("panel", sb)
+
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	cell.add_child(row)
+
+	# 图标占位：本阶段统一留空，后续补贴图时只替换这一个空 Panel 的内容。
+	var icon := PanelContainer.new()
+	icon.custom_minimum_size = Vector2(BAG_ICON_SIZE, BAG_ICON_SIZE)
+	icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var isb := StyleBoxFlat.new()
+	isb.bg_color = Color(1.0, 0.93, 0.82, 0.04)
+	isb.corner_radius_top_left = 6
+	isb.corner_radius_top_right = 6
+	isb.corner_radius_bottom_left = 6
+	isb.corner_radius_bottom_right = 6
+	isb.border_width_left = 1
+	isb.border_width_top = 1
+	isb.border_width_right = 1
+	isb.border_width_bottom = 1
+	isb.border_color = Color(1.0, 0.9, 0.74, 0.22)
+	icon.add_theme_stylebox_override("panel", isb)
+	row.add_child(icon)
+
+	var name_l := _mk_label(_bag_item_name(item_id), 13, CREAM, 2)
+	name_l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	name_l.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	row.add_child(name_l)
+	_bag_name_labels[item_id] = name_l
+
+	var cnt := _mk_label("×0", 12, DIM, 2)
+	cnt.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	cnt.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	cnt.custom_minimum_size = Vector2(38, 0)
+	row.add_child(cnt)
+	_bag_count_labels[item_id] = cnt
+	return cell
+
+
+## 物品显示名：复用 isle_crops.gd 的作物目录（种子=作物名+“种子”，产物=作物名）。
+func _bag_item_name(item_id: String) -> String:
+	var crop_id := item_id.trim_prefix("seed_")
+	if CropsCtl.has_crop(crop_id):
+		if item_id.begins_with("seed_"):
+			return CropsCtl.display_name(crop_id) + "种子"
+		return CropsCtl.display_name(crop_id)
+	# P6：鱼类显示名复用 isle_fish.gd 的同一份目录（未知 ID 原样返回，便于诊断）。
+	if FishCtl.has_fish(item_id):
+		return FishCtl.display_name(item_id)
+	return item_id
+
+
+## 只读主循环传入的 inventory_items 快照；不复制库存、不写入任何数据。
+## P7.2：扁平列表下「数量 > 0」+ 分类筛选叠加决定每格可见性；可见顺序 = 网格真实节点顺序。
+func _refresh_backpack(d: Dictionary) -> void:
+	if _bag_count_labels.is_empty():
+		return
+	var items: Dictionary = d.get("inventory_items", {})
+	var shown: Array = []
+	if _bag_grid != null:
+		for child in _bag_grid.get_children():
+			var cell := child as Control
+			if cell == null or not cell.has_meta("item_id"):
+				continue
+			var item_id := String(cell.get_meta("item_id"))
+			var lbl := _bag_count_labels.get(item_id) as Label
+			if lbl == null:
+				continue
+			var cnt := int(items.get(item_id, 0))
+			var text := "×%d" % cnt
+			if lbl.text != text:
+				lbl.text = text
+			# P7-UX / P7.2：只显示已获得（数量 > 0）且命中当前分类的物品；
+			# 未获得过的物品整格隐藏，与 Minecraft / WoW 背包一致（不显示 ×0 空位）。
+			var want: bool = cnt > 0 and (_bag_filter == "all" or _bag_item_category(item_id) == _bag_filter)
+			if cell.visible != want:
+				cell.visible = want
+			if want:
+				shown.append(item_id)
+	if _bag_empty_note != null:
+		var empty := shown.is_empty()
+		if empty:
+			_bag_empty_note.text = "此分类暂无物品" if _bag_filter != "all" else "背包是空的"
+		if _bag_empty_note.visible != empty:
+			_bag_empty_note.visible = empty
+	var changed := shown != _bag_shown_ids
+	_bag_shown_ids = shown
+	if changed and _bag_open:
+		# 可见格子数量变化会改变面板高度：打开状态下立即重贴时间胶囊上方。
+		_fit_bag_panel()
+		call_deferred("_fit_bag_panel")
+
+
+
+## 把规范显示顺序（作物产物 → 鱼 → 种子）应用到真实节点顺序（仅「整理」触发）。
+func _apply_bag_order() -> void:
+	if _bag_grid == null:
+		return
+	var ids := _bag_canonical_ids()
+	for i in ids.size():
+		_move_bag_cell(String(ids[i]), i)
+
+
+func _move_bag_cell(item_id: String, index: int) -> void:
+	if _bag_grid == null:
+		return
+	var cell := _bag_cells.get(item_id) as Control
+	if cell == null or cell.get_parent() != _bag_grid:
+		return
+	_bag_grid.move_child(cell, index)
+
+
+## 一键整理：只把显示顺序恢复成规范顺序（作物产物 → 鱼 → 种子，用户指定），
+## 绝不改动库存数量、物品 ID、农田数据或权威状态。
+## 初始顺序是 种子 → 作物 → 鱼，因此点击后会产生真实可见的重排。
+func sort_backpack() -> bool:
+	if _bag_grid == null:
+		return false
+	_apply_bag_order()
+	_bag_sorted = true
+	_bag_sort_count += 1
+	_refresh_backpack(_data)
+	if _bag_open:
+		_fit_bag_panel()
+	return true
+
+
+func _toggle_backpack() -> void:
+	if _bag_open:
+		_collapse_backpack()
+	else:
+		open_backpack()
+
+
+func toggle_backpack() -> void:
+	_toggle_backpack()
+
+
+func open_backpack() -> void:
+	if _bag_panel == null:
+		return
+	_bag_open = true
+	_bag_panel.visible = true
+	# 与左下角时间/天气面板互斥，避免两块面板互相遮挡（不改变任何游戏状态）。
+	if _time_open:
+		_collapse_time_panel()
+	if _weather_open:
+		_collapse_weather_panel()
+	# P7-FINALIZE：打开面板不自动"整理"——整理必须由玩家点「整理」触发，
+	# 否则初始顺序与整理后相同，按钮会变成无效果的空操作。
+	_refresh_backpack(_data)
+	_fit_bag_panel()
+	call_deferred("_fit_bag_panel")
+
+
+func close_backpack() -> void:
+	_collapse_backpack()
+
+
+func _collapse_backpack() -> void:
+	_bag_open = false
+	if _bag_panel != null:
+		_bag_panel.visible = false
+
+
+func backpack_open() -> bool:
+	return _bag_open
+
+
+## 面板高度由内容决定：打开时按最小尺寸贴上时间胶囊上方，小窗口下不越出屏幕。
+func _fit_bag_panel() -> void:
+	if _bag_panel == null:
+		return
+	var content_h := _bag_panel.get_combined_minimum_size().y
+	if content_h <= 0.0:
+		content_h = 460.0
+	var vh := 720.0
+	if get_viewport() != null:
+		vh = get_viewport().get_visible_rect().size.y
+	var top := BAG_PANEL_BOTTOM - content_h
+	if vh + top < 12.0:
+		top = 12.0 - vh
+	_bag_panel.offset_top = top
+
+
+## 只读视图（供探针/自检验证显示顺序、筛选与数量；不暴露任何写库存接口）。
+func bag_display_state() -> Dictionary:
+	var order: Array = []
+	var counts: Dictionary = {}
+	var names: Dictionary = {}
+	var visible_order: Array = []
+	if _bag_grid != null:
+		for child in _bag_grid.get_children():
+			var c := child as Control
+			if c == null or not c.has_meta("item_id"):
+				continue
+			var item_id := String(c.get_meta("item_id"))
+			order.append(item_id)
+			var lbl := _bag_count_labels.get(item_id) as Label
+			counts[item_id] = int(lbl.text.trim_prefix("×")) if lbl != null else 0
+			var nl := _bag_name_labels.get(item_id) as Label
+			names[item_id] = nl.text if nl != null else ""
+			if c.visible:
+				visible_order.append(item_id)
+	return {"order": order, "counts": counts, "names": names, "sorted": _bag_sorted,
+		"sort_count": _bag_sort_count, "open": _bag_open,
+		# P7-UX：过滤后的真实可见视图（只含数量 > 0 的物品），供探针断言产品行为。
+		"visible_order": visible_order, "visible_count": visible_order.size(),
+		"empty_visible": _bag_empty_note != null and _bag_empty_note.visible,
+		"filtered": true, "filter_rule": "count>0",
+		# P7.2：单一扁平列表（无任何分组标题）+ 次级分类菜单。
+		"flat": true, "section_count": 0, "grid_columns": BAG_COLUMNS,
+		"filter": _bag_filter, "filter_options": BAG_FILTER_ORDER.duplicate(),
+		"filter_label": String(BAG_FILTER_LABELS.get(_bag_filter, "全部")),
+		"filter_menu_open": _bag_filter_menu_open,
+		"filter_button_text": _bag_filter_btn.text if _bag_filter_btn != null else ""}
+
+
+## 几何信息（验证入口在时间胶囊上方、面板不越出可视区域）。
+func bag_layout_info() -> Dictionary:
+	var vp := Vector2.ZERO
+	if get_viewport() != null:
+		vp = get_viewport().get_visible_rect().size
+	var bag_rect := Rect2()
+	if _bag_pill != null:
+		bag_rect = _bag_pill.get_global_rect()
+	var time_rect := Rect2()
+	if _time_pill != null:
+		time_rect = _time_pill.get_global_rect()
+	var panel_rect := Rect2()
+	if _bag_panel != null:
+		panel_rect = _bag_panel.get_global_rect()
+	var above := bag_rect.size.y > 0.0 and bag_rect.end.y <= time_rect.position.y + 0.5
+	var on_screen := vp.x > 0.0 and vp.y > 0.0 \
+		and panel_rect.position.x >= 0.0 and panel_rect.position.y >= 0.0 \
+		and panel_rect.end.x <= vp.x + 0.5 and panel_rect.end.y <= vp.y + 0.5
+	return {"pill_rect": bag_rect, "time_pill_rect": time_rect, "panel_rect": panel_rect,
+		"pill_above_time": above, "panel_on_screen": on_screen, "viewport": vp,
+		"open": _bag_open, "sorted": _bag_sorted, "sort_count": _bag_sort_count}

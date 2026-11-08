@@ -6,10 +6,23 @@ extends RefCounted
 const HOUSE_X := 0.8
 const HOUSE_Z := -0.6
 const HOUSE_YAW := 0.30
-const HOUSE_W := 10.6
-const HOUSE_D := 8.4
-const HOUSE_WALL_H := 5.6
-const HOUSE_ROOF_H := 3.6
+# P7-V3.2 比例校准后的木屋外廓（单位米，1 世界单位 = 1 m）：
+#   占地 7.6 × 6.2 m；地板面 fy = 0.55（自地形基准）；
+#   一层净高 2.42 + 阁楼楼板 0.20 → 阁楼地板 3.17；檐口/屋顶基线 3.73（= fy + 3.18）；
+#   屋面高 2.47（坡度 atan(2.47/3.8)≈33.0°）→ 屋脊 6.20 m。
+const HOUSE_W := 7.6
+const HOUSE_D := 6.2
+const HOUSE_WALL_H := 3.18
+const HOUSE_ROOF_H := 2.47
+# P7-V3.2 结构基准（派生自上述外廓；单一真源，cottage/probe 尽量读这些常量）
+const HOUSE_FY := 0.55
+const HOUSE_WALL_T := 0.30
+const HOUSE_ROOM_CLEAR_H := 2.42
+const HOUSE_SLAB_T := 0.20
+const HOUSE_ATTIC_FLOOR_Y := HOUSE_FY + HOUSE_ROOM_CLEAR_H + HOUSE_SLAB_T
+const HOUSE_ROOF_BASE := HOUSE_FY + HOUSE_WALL_H
+const HOUSE_RIDGE_Y := HOUSE_FY + HOUSE_WALL_H + HOUSE_ROOF_H
+const HOUSE_CHIMNEY_ABOVE_RIDGE := 0.35
 const BIG_TREE_X := -10.9
 const BIG_TREE_Z := 4.2
 const SMALL_TREE_X := 10.4
@@ -110,11 +123,13 @@ static func house_front() -> Vector3:
 	return Vector3(sin(HOUSE_YAW), 0.0, cos(HOUSE_YAW))
 
 static func door_world() -> Vector3:
-	var d: float = HOUSE_D * 0.5 + 0.6
+	# 门前廊台/台阶处（墙面外 0.45 m），y = 室内地板面高度。
+	var d: float = HOUSE_D * 0.5 + 0.45
 	return Vector3(HOUSE_X + sin(HOUSE_YAW) * d, house_ground_y() + 0.55, HOUSE_Z + cos(HOUSE_YAW) * d)
 
 static func door_approach() -> Vector3:
-	var d: float = HOUSE_D * 0.5 + 3.1
+	# 门前道路的起点（墙面外 2.4 m），y 取地形高度。
+	var d: float = HOUSE_D * 0.5 + 2.4
 	return Vector3(HOUSE_X + sin(HOUSE_YAW) * d, house_ground_y(), HOUSE_Z + cos(HOUSE_YAW) * d)
 
 static func dock_dir() -> Vector3:
@@ -364,6 +379,23 @@ static func _add_quad(st: SurfaceTool, a: Vector3, b: Vector3, c: Vector3, d: Ve
 		st.set_normal(n)
 		st.add_vertex(v)
 
+## P7-V3.2 修正：Godot 4 把“顺时针”视为前向面（cull_back 剔除逆时针三角形）。
+## make_prism_mesh 原先按“法线外向”的逆时针顺序写顶点，主 pass 被整体剔除，只剩
+## next_pass 的 outline 轮廓壳（cull_front）可见 —— 门廊雨棚前山墙整片深藏青即此根因。
+## 下面两个 helper 保持法线方向不变，只把顶点写入顺序反成顺时针。
+## 注意：M._add_tri/_add_quad 保持原样，world.gd 的灯塔透镜棱环仍在直接使用 _add_quad。
+static func _emit_tri_cw(st: SurfaceTool, p: Vector3, q: Vector3, r: Vector3) -> void:
+	var n: Vector3 = (q - p).cross(r - p).normalized()
+	for v in [p, r, q]:
+		st.set_normal(n)
+		st.add_vertex(v)
+
+static func _emit_quad_cw(st: SurfaceTool, a: Vector3, b: Vector3, c: Vector3, d: Vector3) -> void:
+	var n: Vector3 = (b - a).cross(c - a).normalized()
+	for v in [a, c, b, a, d, c]:
+		st.set_normal(n)
+		st.add_vertex(v)
+
 static func make_prism_mesh(w: float, h: float, d: float) -> ArrayMesh:
 	var st := SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
@@ -375,11 +407,12 @@ static func make_prism_mesh(w: float, h: float, d: float) -> ArrayMesh:
 	var e := Vector3(-hw, 0, hd)
 	var f := Vector3(hw, 0, hd)
 	var g := Vector3(0, h, hd)
-	_add_tri(st, a, c, b)
-	_add_tri(st, e, f, g)
-	_add_quad(st, a, b, f, e)
-	_add_quad(st, a, e, g, c)
-	_add_quad(st, b, c, g, f)
+	# 后盖（外法线 -Z）/ 前盖（外法线 +Z）/ 底 / 左坡 / 右坡
+	_emit_tri_cw(st, a, c, b)
+	_emit_tri_cw(st, e, f, g)
+	_emit_quad_cw(st, a, b, f, e)
+	_emit_quad_cw(st, a, e, g, c)
+	_emit_quad_cw(st, b, c, g, f)
 	st.index()
 	return st.commit()
 

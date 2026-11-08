@@ -362,13 +362,14 @@ func _ray_down_hit(p: Vector3) -> Dictionary:
 func _check_perches(d: Dictionary) -> void:
 	print("---- [3] roof perches ----")
 	var perches: Array = d["perches"]
-	_ok(perches.size() == 10, "perch count=%d (expect 10: ridge3+eave4+chimney1+porch2)" % perches.size())
+	# P7-V2 口径变更：新增 4 个门廊栏杆真实栖枝 porch_rail（perch-dev task-2），10+4=14。
+	_ok(perches.size() == 14, "perch count=%d (expect 14: ridge3+eave4+chimney1+porch2+porch_rail4)" % perches.size())
 	var kinds := {}
 	for p in perches:
 		var k: String = p["kind"]
 		kinds[k] = int(kinds.get(k, 0)) + 1
-	_ok(int(kinds.get("ridge", 0)) == 3 and int(kinds.get("eave", 0)) == 4 and int(kinds.get("chimney", 0)) == 1 and int(kinds.get("porch_beam", 0)) == 2,
-		"perch kinds=%s" % str(kinds))
+	_ok(int(kinds.get("ridge", 0)) == 3 and int(kinds.get("eave", 0)) == 4 and int(kinds.get("chimney", 0)) == 1 and int(kinds.get("porch_beam", 0)) == 2 and int(kinds.get("porch_rail", 0)) == 4,
+		"perch kinds=%s (expect ridge3+eave4+chimney1+porch_beam2+porch_rail4)" % str(kinds))
 	var bad := 0
 	var ridge_pos := 0
 	for p in perches:

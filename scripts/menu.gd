@@ -27,10 +27,11 @@ const SENS_MAX := 3.0
 const SENS_STEP := 0.05
 
 ## 画质高级覆盖开关：写入 quality_overrides（空字典 = 完全跟随预设档位）。
+## 体积雾不列为可覆盖项：引擎体积雾虽会改变画面，但在黎明/黄昏会被未受光的雾染暗海面，
+## 与既有暖色天空/海面艺术风格冲突（2026-10-20 T7 AO/FOG 实测，见 docs/P6_AO_FOG_EVAL.md）。
 const OVERRIDE_ROWS := [
     {"key": "sea_ssr", "title": "海面反射 · SSR"},
     {"key": "post_ao", "title": "环境光遮蔽 · AO"},
-    {"key": "volumetric_fog", "title": "体积雾 · FOG"},
 ]
 
 ## 窗口模式中文名（三态：窗口化 / 全屏 / 无边框窗口）。
@@ -97,6 +98,7 @@ var _bar_h: float = 0.0
 var _values: Dictionary = {
     "day_length": 600.0,
     "sensitivity": 1.0,
+    "fov": S.FOV_DEFAULT,
     "auto": true,
     "quality": 2,
     "quality_overrides": {},
@@ -104,6 +106,9 @@ var _values: Dictionary = {
     "window_mode": "windowed",
     "time_source": "sim",
     "timezone": S.DEFAULT_TIMEZONE,
+    "weather_seed": S.WEATHER_SEED_DEFAULT,
+    "weather_auto": true,
+    "weather_type": S.WEATHER_DEFAULT_TYPE,
 }
 
 # ---- ESC 菜单入场/退场动画状态（单一 Tween，反复开关不叠加、不跳变） ----
@@ -123,6 +128,8 @@ var _res_confirm_dim: ColorRect
 var _res_confirm_panel: PanelContainer
 var _res_confirm_label: Label
 var _res_confirm_open: bool = false
+## P7-FINALIZE：显示变更（分辨率/窗口模式）12s 确认期间不落盘，避免"未确认就被持久化"。
+var _display_pending: bool = false
 var _res_confirm_t: float = 0.0
 var _res_prev: Dictionary = {}
 var _res_kind: String = ""
@@ -303,6 +310,10 @@ func _build_settings() -> void:
     # ---- 画面 ----
     _add_section(vb, "画面 · DISPLAY")
     _add_slider_row(vb, "sensitivity", "相机灵敏度", SENS_MIN, SENS_MAX, SENS_STEP)
+    # P7-V3：视野范围（FOV）。默认 42°，35–65°、步进 1°，恢复默认即 42°。
+    _add_slider_row(vb, "fov", "视野范围（FOV）", S.FOV_MIN, S.FOV_MAX, 1.0)
+    if _sliders.has("fov"):
+        (_sliders["fov"] as Control).tooltip_text = "视野角度：数值越小越聚焦，越大越广角；默认 42°"
     _add_setting_row(vb, "auto", "自动运镜", "开")
     _add_setting_row(vb, "window_mode", "窗口模式", "窗口化")
     _add_resolution_slider_row(vb)
@@ -828,6 +839,10 @@ func close_settings_instant() -> void:
     _settings_dim.visible = false
     _settings_panel.visible = false
 
+## main.gd 用它判断「设置面板打开」以做 FOV 实时预览 / 屏蔽场景点击。
+func is_settings_open() -> bool:
+    return _settings_open
+
 # ============================================================
 # ESC 菜单动画：从屏幕外左 / 右 / 下错峰滑入，关闭时反向滑出。
 # 单一 Tween 驱动全部控件，反复开关 / 半途反转都不叠加、不跳变。
@@ -1164,6 +1179,8 @@ func _on_slider_changed(key: String, value: float) -> void:
             _values["day_length"] = float(presets[idx])
         "sensitivity":
             _values["sensitivity"] = clampf(value, SENS_MIN, SENS_MAX)
+        "fov":
+            _values["fov"] = S.sanitize_fov(value)
         "quality":
             if not (_values["quality_overrides"] as Dictionary).is_empty():
                 # 重选预设档位 = 放弃一切高级覆盖，回到预设参数。
@@ -1233,6 +1250,7 @@ func _apply_display_change(kind: String, prev: Dictionary) -> void:
     _res_prev = prev.duplicate(true)
     _res_confirm_t = CONFIRM_SECONDS
     _res_confirm_open = true
+    _display_pending = true
     _res_confirm_dim.visible = true
     _res_confirm_panel.visible = true
     var what := "分辨率" if kind == "resolution" else "窗口模式"
@@ -1243,16 +1261,20 @@ func _apply_display_change(kind: String, prev: Dictionary) -> void:
 
 func _confirm_keep() -> void:
     _res_confirm_open = false
+    _display_pending = false
     _res_confirm_dim.visible = false
     _res_confirm_panel.visible = false
     _res_prev = {}
     _res_kind = ""
+    # 确认后才允许主循环把这组显示设置落盘。
+    settings_changed.emit(get_settings())
 
 func _confirm_revert() -> void:
     if not _res_confirm_open and _res_prev.is_empty():
         return
     var old: Dictionary = _res_prev.duplicate(true)
     _res_confirm_open = false
+    _display_pending = false
     _res_confirm_dim.visible = false
     _res_confirm_panel.visible = false
     _res_prev = {}
@@ -1263,21 +1285,33 @@ func _confirm_revert() -> void:
     _set_settings_visuals()
     settings_changed.emit(old)
 
+## 供 main 判断：当前是否有“尚未确认”的分辨率/窗口模式变更（有则不落盘）。
+func display_confirm_pending() -> bool:
+    return _display_pending
+
+
 ## 取消未确认的显示变更：回退到变更前（open/close 时调用，保证状态一致）。
 func _cancel_res_confirm() -> void:
     if _res_confirm_open or not _res_prev.is_empty():
         _confirm_revert()
+    _display_pending = false
     _res_confirm_open = false
     _res_confirm_dim.visible = false
     _res_confirm_panel.visible = false
     _res_prev = {}
     _res_kind = ""
 
+## 菜单 UI 键 → 画质参数键的别名（AO 开关历史存档键为 post_ao，参数表里是 posts_ao）。
+func _override_param_key(key: String) -> String:
+    return "posts_ao" if key == "post_ao" else key
+
 ## 三态高级覆盖：跟随预设 → 与预设相反 → 与预设相同 → 跟随预设。
 func _cycle_override(key: String) -> void:
     var ov: Dictionary = (_values["quality_overrides"] as Dictionary).duplicate(true)
     var preset: Dictionary = S.quality_preset(int(_values["quality"]))
-    var preset_v: bool = bool(preset.get(key, true))
+    var pkey: String = _override_param_key(key)
+    # 别名键必须用参数表键取预设值，否则 post_ao 永远读到默认 true，三态循环方向错误。
+    var preset_v: bool = bool(preset.get(pkey, true))
     if not ov.has(key):
         ov[key] = not preset_v
     elif bool(ov[key]) == preset_v:
@@ -1297,7 +1331,10 @@ func _refresh_override_buttons() -> void:
         if not _quality_override_buttons.has(key):
             continue
         var b: Button = _quality_override_buttons[key]
-        var v: bool = bool(eff.get(key, true))
+        var pkey: String = _override_param_key(key)
+        var v: bool = bool(eff.get(pkey, true))
+        if ov.has(key):
+            v = bool(ov[key])
         if ov.has(key):
             b.text = "开" if v else "关"
             b.tooltip_text = "已覆盖预设：%s（再次点击可切回跟随预设）" % ("开" if v else "关")
@@ -1314,6 +1351,8 @@ func _refresh_slider_label(key: String) -> void:
             l.text = S.day_length_label(float(_values["day_length"]))
         "sensitivity":
             l.text = "%.2f×" % float(_values["sensitivity"])
+        "fov":
+            l.text = "%d°" % int(round(S.sanitize_fov(_values.get("fov", S.FOV_DEFAULT))))
         "quality":
             l.text = S.quality_summary(_values)
         "resolution":
@@ -1328,6 +1367,7 @@ func get_settings() -> Dictionary:
     var out := {
         "day_length": S.sanitize_day_length(float(_values["day_length"])),
         "sensitivity": clampf(float(_values["sensitivity"]), SENS_MIN, SENS_MAX),
+        "fov": S.sanitize_fov(_values.get("fov", S.FOV_DEFAULT)),
         "auto_orbit": bool(_values["auto"]),
         "quality": clampi(int(_values["quality"]), 0, S.QUALITY_COUNT - 1),
         "quality_overrides": (_values.get("quality_overrides", {}) as Dictionary).duplicate(true),
@@ -1335,6 +1375,9 @@ func get_settings() -> Dictionary:
         "resolution": S.sanitize_resolution(_values["resolution"]),
         "time_source": TimeSvc.sanitize_source(str(_values.get("time_source", "sim"))),
         "timezone": TimeSvc.resolve_zone(str(_values.get("timezone", ""))),
+        "weather_seed": S.sanitize_weather_seed(_values.get("weather_seed", S.WEATHER_SEED_DEFAULT)),
+        "weather_auto": S.sanitize_weather_auto(_values.get("weather_auto", true)),
+        "weather_type": S.sanitize_weather_type(_values.get("weather_type", S.WEATHER_DEFAULT_TYPE)),
     }
     for key in S.VOLUME_KEYS:
         out[key] = clampf(float(_values.get(key, S.audio_default(key))), 0.0, 1.0)
@@ -1348,6 +1391,8 @@ func set_settings(s: Dictionary) -> void:
         _values["day_length"] = S.sanitize_day_length(float(s["day_length"]))
     if s.has("sensitivity"):
         _values["sensitivity"] = clampf(float(s["sensitivity"]), SENS_MIN, SENS_MAX)
+    if s.has("fov"):
+        _values["fov"] = S.sanitize_fov(s["fov"])
     if s.has("auto_orbit"):
         _values["auto"] = bool(s["auto_orbit"])
     if s.has("quality"):
@@ -1369,6 +1414,12 @@ func set_settings(s: Dictionary) -> void:
         _values["time_source"] = TimeSvc.sanitize_source(str(s["time_source"]))
     if s.has("timezone"):
         _values["timezone"] = TimeSvc.resolve_zone(str(s["timezone"]))
+    if s.has("weather_seed"):
+        _values["weather_seed"] = S.sanitize_weather_seed(s["weather_seed"])
+    if s.has("weather_auto"):
+        _values["weather_auto"] = S.sanitize_weather_auto(s["weather_auto"])
+    if s.has("weather_type"):
+        _values["weather_type"] = S.sanitize_weather_type(s["weather_type"])
     if s.has("volume"):
         _values["volume_master"] = clampf(float(s["volume"]), 0.0, 1.0)
     for key in S.VOLUME_KEYS:
@@ -1390,6 +1441,10 @@ func _set_settings_visuals() -> void:
     if _sliders.has("sensitivity"):
         (_sliders["sensitivity"] as Control).call("set_value", float(_values["sensitivity"]), false)
         _refresh_slider_label("sensitivity")
+    if _sliders.has("fov"):
+        _values["fov"] = S.sanitize_fov(_values.get("fov", S.FOV_DEFAULT))
+        (_sliders["fov"] as Control).call("set_value", float(_values["fov"]), false)
+        _refresh_slider_label("fov")
     if _sliders.has("quality"):
         (_sliders["quality"] as Control).call("set_value", float(int(_values["quality"])), false)
         _refresh_slider_label("quality")

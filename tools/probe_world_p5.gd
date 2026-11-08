@@ -325,7 +325,7 @@ func _run() -> void:
 	var light_sources: Array = d["light_sources"]
 	print("[P5][LAMPS] count=%d light_sources=%d" % [lamps.size(), light_sources.size()])
 	_check(lamps.size() >= 5, "fewer than 5 lamps (%d)" % lamps.size())
-	_check(light_sources.size() == 8, "light_sources %d != 8 (shader budget)" % light_sources.size())
+	_check(light_sources.size() == 7, "light_sources %d != 7 (shader budget; P7.1 删门前 GardenLamp1)" % light_sources.size())
 	var lamp_bases: Array = []
 	var lamp_names: Array = []
 	for entry in lamps:

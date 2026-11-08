@@ -5,10 +5,33 @@ extends Node3D
 ## 相机推入 → 放置观景（慢速运镜 + 真实天文 + 昼夜循环）。
 
 const SHOTS_DIR := "D:/休闲小岛幻境/开发产物/shots/"
+const P7_SHOTS_DIR := "D:/休闲小岛幻境/开发产物/p7/shots/"
+const P8_SHOTS_DIR := "D:/休闲小岛幻境/开发产物/p8/shots/"
+const P8_MOON_DIR := "D:/休闲小岛幻境/开发产物/p8/moon/"
+const P8_SEASON_DIR := "D:/休闲小岛幻境/开发产物/p8/seasons/"
+const P8_WEATHER_DIR := "D:/休闲小岛幻境/开发产物/p8/weather/"
+const P8_WFX_DIR := "D:/休闲小岛幻境/开发产物/p8/weatherfx/"
+const P8_ECO_DIR := "D:/休闲小岛幻境/开发产物/p8/ecology/"
+# P8.1-02 证据目录：冬季裸树/裸枝栖点/屋前红花截图（绝不写 P8 冻结目录）。
+const P81_EVIDENCE_DIR := "D:/休闲小岛幻境/开发产物/p81/evidence/p81_02/"
+# P8.1-03 证据目录：冬季全岛白化 + 室内豁免 + 五档画质截图（绝不写 P8 冻结目录）。
+const P81_03_EVIDENCE_DIR := "D:/休闲小岛幻境/开发产物/p81/evidence/p81_03/"
+# P8.1-05 证据目录：强风落叶/萤火虫抑制/秋千顺风偏摆（绝不写 P8 冻结目录）。
+const P81_05_EVIDENCE_DIR := "D:/休闲小岛幻境/开发产物/p81/evidence/p81_05/"
 const VIGNETTE_SHADER := "res://shaders/vignette.gdshader"
 const SKY_SHADER := "res://shaders/sky.gdshader"
 const SEA_SHADER := "res://shaders/sea.gdshader"
 const BEAM_SHADER := "res://shaders/beam.gdshader"
+# P7-V3.2 T1 开发模式尺度标尺：默认不创建，--scale-debug 时才实例化一次。
+const ScaleOverlay := preload("res://scripts/scale_debug_overlay.gd")
+# P7-V4 岛民（程序化模型 + 动画 + 日程）：--no-villager 时不创建，仅用于性能基线对照。
+const ISLE_VILLAGER := preload("res://scripts/isle_villager.gd")
+# P8：公历日历/季节投影（纯函数）。权威时间仍只有本文件的 _sim_seconds，日历只是它的只读投影。
+const ISLE_CALENDAR := preload("res://scripts/isle_calendar.gd")
+# P8 阶段 4：季节视觉参数表（纯函数；只把日历季节权重换成颜色/稀疏度/落叶量，不新建环境系统）。
+const ISLE_SEASON := preload("res://scripts/isle_season.gd")
+# P8 阶段 6：天气视觉（降水粒子工厂；只创建一次，运行期只改参数，不重建几何）。
+const ISLE_WEATHER_FX := preload("res://scripts/isle_weather_fx.gd")
 
 # ---- 灯塔旋转 / 光束参数（真实旋转透镜参考：Kīlauea Point 约 20 秒一圈，用作基础周期配置项） ----
 const LIGHTHOUSE_ROTATION_PERIOD := 20.0   # 秒/圈（1× 时间流速下的基础周期）
@@ -33,6 +56,26 @@ var _started := false
 var _shots := false
 var _transition := false
 var _selftest := false
+var _p7shots := false
+var _p8shots := false
+var _p8moon := false      # --p8moon：八相月球专项截图（固定日期样本，不依赖现实时间）
+var _p8seasons := false   # --p8seasons：四季视觉专项截图（固定日期样本）
+var _p8weather := false   # --p8weather：天气面板与天气状态专项截图（固定日期样本）
+var _p8wfx := false       # --p8wfx：天气视觉专项截图（雨/雪/台风/室内/低画质，固定日期样本）
+var _p8eco := false       # --p8eco：生态联动专项截图（雨日岛民门廊 / 晴雨夜萤火对比）
+var _p81treebird := false # --p81treebird：P8.1 冬树/裸枝栖点/屋前红花证据截图
+var _p81white := false
+var _p81snow := false      # --p81snow：P8.1-03 冬季季节白化 + 手动大雪（g_weather.w）叠加证据
+var _p81wind := false      # --p81wind：P8.1-05 强风视觉证据截图（落叶/萤火虫/秋千）
+var _p81windperf := false  # --p81windperf：P8.1-05 同机 A/B 帧时间（新特性 ON/OFF）
+## P8.1-05 性能 A/B：true 时三个强风视觉子系统退回 P8.1-04 旧实现，
+## 只用于同 build、同机位、同天气的对照测量；默认 false = 正式行为。
+var _p81wind_legacy := false
+## P8.1-03 证据专用：ON/OFF 对照时钉住灯焰呼吸相位（_frame_t），否则夜间室内会因为
+## 解析点光的 sin 呼吸（main.gd 灯光循环 fl）产生 ±7.5% 的时相差，污染白化对比。
+var _p81_pin_light_t := -1.0    # --p81white：P8.1-03 冬季白化/室内豁免/五档画质证据截图
+var _p8perf := false      # --p8perf：天气视觉性能对比（晴/阴/雨/雷暴/雪/台风 × 画质档）
+var _p8_moon_clear := false   # 月相诊断截图：临时清空云层，避免云遮住月盘判相
 
 # ---- 时间 ----
 var _sim_seconds := 0.0
@@ -40,6 +83,118 @@ var _day_length := 480.0
 var _realtime := false
 var _events: Dictionary = {}
 var _events_timer := 0.0
+
+# ---- 季节（P8 阶段 4：日历季节权重的视觉投影，不新增权威时钟） ----
+const SEASON_APPLY_INTERVAL := 0.25   # 季节视觉写入节流（权重变化很慢，无需每帧写材质/实例）
+var _season_weights: Array = [0.25, 0.25, 0.25, 0.25]
+var _season_visuals: Dictionary = {}
+var _season_label := "春季"
+var _season_timer := 0.0
+var _season_nodes: Array = []       # 树冠/叶卡/背景树冠/灌木/花的季节条目（复制材质 + 稀疏化缓存）
+var _grass_season_mats: Array = []  # 草材质 + 原始 tint（与画质草密度互不覆盖）
+var _season_apply_count := 0
+var _winter_bloom: Dictionary = {}             # P8.1 冬季屋前红花（world 提供 stems/heads/base；只在冬季权重高时出现）
+
+# ---- 全岛共享库存（P4：唯一运行时物品库存；由本文件单次初始化并注入 IsleFarm） ----
+const INVENTORY_SCRIPT := preload("res://scripts/isle_inventory.gd")
+## P7-FINALIZE：最小世界状态存档（共享库存 + 九格农田；真实时间农作/三次收获所需）。
+const SAVE_SCRIPT := preload("res://scripts/isle_save.gd")
+## P6：鱼类目录（纯数据/纯函数；钓鱼抽鱼与 HUD/背包显示名统一走这一份）。
+const FISH_SCRIPT := preload("res://scripts/isle_fish.gd")
+var _inventory: Object = null
+var _inventory_grant_count := 0   # 诊断用：初始种子实际发放次数（正常恒为 0 或 1）
+# ---- P7-FINALIZE 世界状态持久化（仅正式游戏；自动化/探针不读写玩家存档）----
+var _automation_run := false          # 当前运行是否为 --shots/--selftest/--perf/... 自动化
+var _world_save_enabled := false      # 正式游戏（非自动化、非 --script 探针）才启用
+var _world_save_delay := -1.0         # 变更后的延迟落盘（秒）
+var _world_save_auto := 30.0          # 周期自动落盘（秒）
+var _world_save_count := 0            # 本次运行成功写盘次数（诊断）
+var _world_save_last: Dictionary = {} # 最近一次写盘结果（诊断）
+var _world_loaded_at_start := false   # 启动时是否成功读档
+var _exit_saved := false              # 退出落盘去重
+
+# ---- 每日巡田调度（P4：只由 _sim_seconds 的"游戏日 + 08:00"驱动，一个游戏日最多一轮） ----
+const PATROL_HOUR := 8.0            # 每天 08:00 检查当日天气并决定是否巡田
+const PATROL_START_WINDOW := 7200.0 # 08:00 起 2 个游戏小时内可重试启动（睡醒/路径等），之后记 start_failed
+const PATROL_RETRY_REAL := 0.5      # 启动重试的真实帧节流（只影响重试频率，不是游戏日历）
+var _patrol_handled_day := -2147483647   # 已处理过的游戏日序号（floor(_sim_seconds/86400)）
+var _patrol_phase := "idle"   # idle|starting|running|completed|weather_aborted|weather_skip|start_failed|day_rewound
+var _patrol_last: Dictionary = {}
+var _patrol_retry_timer := 0.0
+var _patrol_start_count := 0   # 诊断：本次运行实际启动的巡田轮数（同一游戏日正常 ≤ 1）
+var _patrol_deadline := 0.0    # 当天允许启动巡田的当日秒上限（08:00+窗口；若初始化已晚于 08:00 则从看到时刻起算）
+var _patrol_deadline_day := -2147483647
+# P7：时间回退守卫。_patrol_handled_day 是"已处理游戏日"的单调高水位，回退时不得下调
+# （下调会让"倒带→重播"再次进入新游戏日分支，同一游戏日重复巡田/重复播种），
+# 这里单独记录本次回退落到的游戏日，保证 day_rewound 只报告/取消一次。
+var _patrol_rewind_day := -2147483647
+# ---- P6 钓鱼（权威状态在岛民状态机；main 只负责发起/入账/HUD 投影/结束提示）----
+var _fishing_seen := false
+var _fishing_rounds_seen := 0
+var _fish_discovered: Dictionary = {}   # fish_id -> true（仅用于首次发现提示，不是库存）
+
+# ---- 农田（P9/P3：IsleFarm 是唯一权威状态，IsleFarmView 只读它生成作物模型） ----
+const FARM_VIEW_INTERVAL := 0.20   # 视觉刷新节流（状态未变时 sync() 不做任何换 mesh 的工作）
+var _farm: Object = null
+var _farm_view: Node3D = null
+var _farm_view_timer := 0.0
+
+# ---- 天气（P8 阶段 5：独立确定性状态机；只读 _sim_seconds，不新建时钟） ----
+const ISLE_WEATHER := preload("res://scripts/isle_weather.gd")
+const WEATHER_STATE_INTERVAL := 0.10   # 天气 → HUD/视觉参数的刷新节流（10 Hz；权重变化慢，无需每帧）
+var _weather: RefCounted = null
+var _weather_state: Dictionary = {}
+var _weather_timer := 0.0
+var _weather_prev_t := -1.0
+# 天气状态投影出的连续参数（阶段 6 由共享 shader uniform / 材质参数消费；阶段 5 先供 HUD 与断言读取）
+var _weather_cloud := 0.0
+var _weather_wind := 0.0
+var _weather_wind_dir := Vector2(0.0, -1.0)
+var _weather_rain := 0.0
+var _weather_snow := 0.0
+var _weather_storm := 0.0
+var _weather_wetness := 0.0
+var _weather_snow_depth := 0.0
+# 阶段 6：天气视觉（降水粒子 + 共享 uniform 的连续参数）
+var _weather_fx: Dictionary = {}
+var _weather_visual_wind := 0.0      # 平滑后的风力 0..1（避免天气切换时草树摆动突变）
+var _weather_indoor := 0.0          # 相机在小屋内部的程度 0..1（降水淡出；0.3s 平滑）
+var _lightning_flash := 0.0         # 闪电瞬时亮度 0..1（雷暴/台风的视觉身份；暂停冻结，不参与权威模拟）
+var _lightning_clock := 0.0         # 闪电累计时钟（只在模拟推进时增长）
+var _lightning_wait := 2.5          # 距下一次闪电的秒数（仅视觉，随机间隔）
+var _weather_gloom := 0.0           # 云量/风暴合成的阴天程度 0..1
+var _weather_wind_dir_smooth := Vector2(0.0, -1.0)
+# P8.1-05：强风视觉运行时缓存（只在参数变化时写粒子/材质，避免无谓的属性写与潜在重启）。
+var _wind_leaf_cache: Dictionary = {}
+var _wind_firefly_lifetime := -1.0
+var _wind_firefly_emitting := false
+# P8.2-03：强风 CPU 分段计时（--p82windprof 开启；默认关闭时每个 section 只多一次 bool 判断）。
+# section: 0=风向/阵风平滑 1=落叶粒子参数 2=冬季叶色/门控 3=萤火抑制 4=秋千受迫摆
+const P82_WIND_SECTION_NAMES := ["wind_dir", "leaf_params", "winter_leaf_gate", "firefly_suppress", "swing"]
+var _p82windcpu := false
+# P8.2-03：把三项优化临时关掉（=优化前路径），用于同一 build 内交替 A/B 归因（--p82windcpu --impls new,off,legacy）。
+var _p82opt_off := false
+var _p82prof_on := false
+var _p82prof_t := 0
+var _p82prof_us: Array = [0, 0, 0, 0, 0]
+var _p82prof_last: Array = [0, 0, 0, 0, 0]
+var _p82prof_calls: Array = [0, 0, 0, 0, 0]
+# P8.2-03：稳态天气下风场输入逐帧不变，纯函数每帧新建 Dictionary 属纯开销；
+# 这些缓存只在输入变化超过"写入阈值"时失效重算，视觉输出与逐帧重算等价。
+var _p82_leaf_lp: Dictionary = {}
+var _p82_leaf_wv := -999.0
+var _p82_leaf_wd := Vector2(0.0, -1.0)
+var _p82_leaf_lp_valid := false
+var _p82_ff_act: Dictionary = {}
+var _p82_ff_weather_f := -999.0
+var _p82_ff_act_valid := false
+var _p82_ff_ratio_w := -1.0
+var _p82_ff_box_w := Vector3(999.0, 999.0, 999.0)
+var _p82_ff_speed_w := -1.0
+var _p82_ff_albedo_w := Color(-1.0, -1.0, -1.0, -1.0)
+# 秋千：复用目标/弹簧输出容器（每帧 3 个临时容器的分配是测量到的第二热点）。
+var _p82_swing_tg: Dictionary = {"roll": 0.0, "pitch": 0.0, "acc": 0.0, "gust": 1.0, "tr": 0.0}
+var _p82_swing_out: Array = [0.0, 0.0]
 
 # ---- 天文 / 主题 ----
 var _astro: Dictionary = {}
@@ -73,6 +228,10 @@ var _sensitivity := 1.0
 var _auto_orbit := true
 var _orbit_speed := 0.018   # 自动运镜角速度：开关时平滑增减，杜绝硬停/硬启
 
+# ---- P7-V2 自由飞行观景相机（scripts/isle_flycam.gd，纯逻辑件） ----
+var _flycam: IsleFlyCam = null
+var _flycam_look_base := 0.0022
+
 # ---- 拖拽 / 双击 ----
 var _dragging := false
 var _drag_moved := 0.0
@@ -80,6 +239,10 @@ var _last_click_ms := 0
 var _press_pos := Vector2.ZERO
 var _panning := false
 var _pan_start := Vector2.ZERO
+
+# ---- P7-V3 自由视角左键点击（按下记录屏幕位置，松开位移 <7px 才触发场景拾取） ----
+var _fly_click_pos := Vector2.INF
+var _fly_click_moved := 0.0
 
 # ---- 场景对象 ----
 var _env: Environment
@@ -97,19 +260,43 @@ var _post_ao_mi: MeshInstance3D
 var _hud = null
 var _menu = null
 var _door_open := false
+# P7-V4 岛民与门状态仲裁：玩家开门请求与 NPC 开门请求合并，共同决定 _door_open。
+var _villager: Node3D = null
+var _no_villager := false
+var _door_npc := false
+var _door_player := false
 var _window_mats: Array = []
 var _window_halos: Array = []
 var _lantern_mat: ShaderMaterial
 var _lantern_halo: MeshInstance3D
+var _lantern_halos: Array = []
+# P8.1-06：一层/阁楼吊灯灯罩材质（self_lit=false + glow），按昼夜调光。
+var _interior_shade_mats: Array = []
+# P8.2-02：室内吊灯光晕（cottage 的 interior_halos），按昼夜收放亮度与半径。
+var _interior_halos: Array = []
 var _lamp_mats: Array = []
 var _lamp_halos: Array = []
 var _light_sources: Array = []
 var _lights: Array = []
+# P8.1-06 双池：_lights 是全部候选（路灯 + 室外 + 室内，共 18 条）；每帧由 _compute_light_pools()
+# 按 rank/priority 拆成室外池（写 g_l0..g_l9）与室内池（写 g_l10..g_l15）后截断。
+var _lights_outdoor: Array = []
+var _lights_indoor: Array = []
+var _light_out_budget := 10
+var _light_in_budget := 3
+# 船灯淡入淡出权重：只在帆船可见时替换「窗光聚合槽」，避免瞬时跳变。
+var _boat_light_gain := 0.0
 var _splash = null
 var _wake = null
 var _windmill_blades: Node3D = null
 var _windmill_axis := Vector3(0.0, 0.0, 1.0)
 var _swing_pivot: Node3D = null
+# P8.1-05 秋千风致摆：弹簧-阻尼状态（roll 绕 z=侧倾，pitch 绕 x=前后）。
+# idle 正弦只作为基础姿态，风致偏移叠加其上；wind=0 时严格退回旧公式。
+var _swing_roll := 0.0
+var _swing_roll_v := 0.0
+var _swing_pitch := 0.0
+var _swing_pitch_v := 0.0
 var _sailboat: Node3D = null
 var _sail_path: Array = []
 var _sail_dist := 0.0
@@ -155,6 +342,7 @@ var _sail_phase := "docked"
 var _sail_dist2 := 0.0
 var _sail_wait := 0.0
 var _sail_dwell := 4.0
+var _boat_wx_hold := false
 var _sail_heading := 0.0
 var _sail_trip_speed := 3.4
 var _sail_boat_visible := true
@@ -173,6 +361,7 @@ var _boat_trip := 0
 var _boat_rest_until := -1.0       # 模拟秒时间戳：RESTING 至少停靠到该时刻
 var _wave_height := 0.5            # 与 sea.gdshader 的 wave_height 保持一致（GDScript 复算波高）
 var _sim_delta := 0.0              # 上一帧推进的模拟秒数（灯塔转速/远海等待共用同一时钟）
+var _sim_rate := 1.0               # P7-V2：上一帧模拟秒/真实秒（生态超前量按时间倍率换算用）
 var _time_jump := 0.0              # 手动调时/时间轴跳转的累计秒数（用于对齐远海等待与休息窗口）
 # 小船生命周期 / 灯光 / 淡出
 var _boat_fade_mats: Array = []    # 船体 ShaderMaterial 副本（fade_alpha 抖动淡出）
@@ -194,17 +383,23 @@ var _boat_route_kind := "far"
 var _boat_far_entries: Array = []
 var _boat_ret_pts: Array = []
 var _boat_wait_total := 28800.0
+# P7：船鸟联动——近海航段一次性触发（每次航次最多一次；时间跳转不改 _boat_route_dist，不重放）
+var _boat_shore_done := true
+var _boat_shore_trigger := -1.0
 # 探照灯最近一次写入的值（headless 的 dummy renderer 读不到 global uniform，探针用这些字段断言）
 var _dbg_spot_strength := 0.0
 var _dbg_spot_dir := Vector3.ZERO
 var _dbg_spot_origin := Vector3.ZERO
 var _dbg_spot_visible := false
+# 画质档雾距（fog_scale）最后一次写入值：headless dummy renderer 读不到 global uniform，探针用这两个字段断言。
+var _dbg_fog_near := 0.0
+var _dbg_fog_far := 0.0
 
 # ---- 用户设置 / 画质 / 音频 / 交互反馈 ----
 const Settings := preload("res://scripts/isle_settings.gd")
 var _settings: Dictionary = {}
 var _quality := 2
-var _light_budget := 8
+var _light_budget := 12
 var _quality_state: Dictionary = {}
 var _sea_subdiv := 180
 var _hud_quality_label := "高 · 精致"
@@ -217,20 +412,56 @@ var _photo_count := 0
 var _last_photo := ""
 var _settings_save_delay := -1.0
 
+# ---- P7-FINALIZE：巡田随机顺序 RNG（每轮重新洗牌；测试可注入固定种子）----
+var _patrol_rng := RandomNumberGenerator.new()
+
 # ============================================================
 # 启动
 # ============================================================
 func _ready() -> void:
 	randomize()
-	_shots = "--shots" in OS.get_cmdline_args() or "--shots" in OS.get_cmdline_user_args()
+	_p7shots = "--p7shots" in OS.get_cmdline_args() or "--p7shots" in OS.get_cmdline_user_args()
+	_p8shots = "--p8shots" in OS.get_cmdline_args() or "--p8shots" in OS.get_cmdline_user_args()
+	_p8moon = "--p8moon" in OS.get_cmdline_args() or "--p8moon" in OS.get_cmdline_user_args()
+	_p8seasons = "--p8seasons" in OS.get_cmdline_args() or "--p8seasons" in OS.get_cmdline_user_args()
+	_p8weather = "--p8weather" in OS.get_cmdline_args() or "--p8weather" in OS.get_cmdline_user_args()
+	_p8wfx = "--p8wfx" in OS.get_cmdline_args() or "--p8wfx" in OS.get_cmdline_user_args()
+	_p8eco = "--p8eco" in OS.get_cmdline_args() or "--p8eco" in OS.get_cmdline_user_args()
+	_p8perf = "--p8perf" in OS.get_cmdline_args() or "--p8perf" in OS.get_cmdline_user_args()
+	_p81treebird = "--p81treebird" in OS.get_cmdline_args() or "--p81treebird" in OS.get_cmdline_user_args()
+	_p81white = "--p81white" in OS.get_cmdline_args() or "--p81white" in OS.get_cmdline_user_args()
+	_p81snow = "--p81snow" in OS.get_cmdline_args() or "--p81snow" in OS.get_cmdline_user_args()
+	_p81wind = "--p81wind" in OS.get_cmdline_args() or "--p81wind" in OS.get_cmdline_user_args()
+	_p81windperf = "--p81windperf" in OS.get_cmdline_args() or "--p81windperf" in OS.get_cmdline_user_args()
+	# 同 build A/B：--p81windperf-legacy 让本次运行走旧实现，用于同机位对照。
+	_p81wind_legacy = "--p81windperf-legacy" in OS.get_cmdline_args() or "--p81windperf-legacy" in OS.get_cmdline_user_args()
+	# P8.2-03：强风 CPU 分段采样（--p82windcpu 多轮交替 A/B；--p82windprof 只开分段计时）。
+	_p82windcpu = "--p82windcpu" in OS.get_cmdline_args() or "--p82windcpu" in OS.get_cmdline_user_args()
+	_p82prof_on = _p82windcpu or "--p82windprof" in OS.get_cmdline_args() or "--p82windprof" in OS.get_cmdline_user_args()
+	_shots = "--shots" in OS.get_cmdline_args() or "--shots" in OS.get_cmdline_user_args() or _p7shots or _p8shots or _p8moon or _p8seasons or _p8weather or _p8wfx or _p8eco or _p81treebird or _p81white or _p81snow or _p81wind
 	_transition = "--transition" in OS.get_cmdline_args() or "--transition" in OS.get_cmdline_user_args()
 	_selftest = "--selftest" in OS.get_cmdline_args() or "--selftest" in OS.get_cmdline_user_args()
 	_perf = "--perf" in OS.get_cmdline_args() or "--perf" in OS.get_cmdline_user_args()
-	if _perf:
+	_no_villager = "--no-villager" in OS.get_cmdline_args() or "--no-villager" in OS.get_cmdline_user_args()
+	# --selftest 是既有功能的确定性回归基线（含"点击木门"这类对门状态的精确断言），
+	# 岛民自主开门会引入真实竞态，故自测时不创建岛民；岛民自身由 P7-V4 专用探针覆盖。
+	if _selftest:
+		_no_villager = true
+	if _perf or _p8perf or _p81windperf or _p82windcpu:
 		DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
 	# 读取用户设置：菜单、时钟、画质、音量、窗口模式共用同一份数据。
 	# 自动化运行（截图/性能/自测/转场）使用默认设置，保证结果可复现且不受玩家配置影响。
-	var automation := _shots or _perf or _selftest or _transition
+	var automation := _shots or _perf or _selftest or _transition or _p7shots or _p8shots or _p8moon or _p8seasons or _p8weather or _p8wfx or _p8eco or _p8perf or _p81treebird or _p81white or _p81snow or _p81wind or _p81windperf or _p82windcpu
+	_automation_run = automation
+	# P7-FINALIZE：世界存档只在"正式游戏"启用。--script 是探针/测量入口（会手动挂载主场景），
+	# 与自动化同样保持确定性，绝不读写玩家存档，避免测试互相污染或清掉玩家进度。
+	var script_mode := "--script" in OS.get_cmdline_args() or "--script" in OS.get_cmdline_user_args()
+	_world_save_enabled = (not automation) and (not script_mode)
+	# P7-FINALIZE 测试钩子（仅存档 e2e 探针使用）：--p7worldsave 强制启用世界存档，
+	# 让 --script 探针也能走与正式游戏完全相同的 load/save 代码路径（存档路径用隔离 APPDATA）。
+	if "--p7worldsave" in OS.get_cmdline_args() or "--p7worldsave" in OS.get_cmdline_user_args():
+		_world_save_enabled = true
+	_patrol_rng.randomize()
 	_settings = Settings.defaults() if automation else Settings.load_settings()
 	_setup_time_api()
 	_time_source = String(_settings.get("time_source", "sim"))
@@ -239,6 +470,9 @@ func _ready() -> void:
 	_abs_unix = Time.get_unix_time_from_system()
 	_day_length = Settings.day_length_seconds(_settings.get("day_length", Settings.DAY_LENGTH_DEFAULT))
 	_sensitivity = clampf(float(_settings.get("sensitivity", 1.0)), 0.2, 3.0)
+	# P7-V3：FOV 在 _build_camera 之前生效（初始相机与自由视角基础值都用玩家设置）。
+	_fov = Settings.sanitize_fov(_settings.get("fov", Settings.FOV_DEFAULT))
+	_settings["fov"] = _fov
 	_auto_orbit = bool(_settings.get("auto_orbit", true))
 	_quality = Settings.sanitize_quality(_settings.get("quality", 2))
 	# --perf 可选画质覆盖：--quality N（配合 -- --perf --quality 4 跑分档性能）
@@ -247,6 +481,7 @@ func _ready() -> void:
 		if qo != "":
 			_quality = Settings.sanitize_quality(int(qo))
 	_init_time()
+	_setup_weather()
 	_setup_globals()
 	_build_environment()
 	_build_sea()
@@ -256,13 +491,57 @@ func _ready() -> void:
 	_build_ui()
 	_setup_audio()
 	_apply_user_settings(false)
+	# P7-FINALIZE（D §1.4 B3/B2）：正式游戏启动完成"读取→应用"后立即把规范化后的设置写回一次。
+	# 作用：旧版 settings.cfg（day_length=480 / fullscreen 无 window_mode / 无 fov、weather_* 键）
+	# 在首次启动即被迁移成当前 schema，避免文件内容与实际生效值长期不一致；
+	# 同时这也是"保存失败不再静默"的第一次真实尝试（失败会 push_warning 并在保存链路暴露）。
+	if _world_save_enabled:
+		var settings_err: int = Settings.save_settings(_settings)
+		if settings_err != OK:
+			push_warning("[settings] startup normalize save failed (error %d)" % settings_err)
 	_update_lighting()
+	# P7-V3.2 开发测量模式：--scale-debug 时挂 T1 ScaleDebugOverlay（1 m 立方 / 1.50 m 人形 /
+	# 标尺 / 房屋层高标注），只建一次；默认无参数完全不创建，零常驻开销。
+	if ScaleOverlay.enabled() and get_node_or_null("ScaleDebugOverlay") == null:
+		var scale_overlay: Node3D = ScaleOverlay.new()
+		scale_overlay.name = "ScaleDebugOverlay"
+		add_child(scale_overlay)
+		print("[SCALE] ScaleDebugOverlay installed built=%s children=%d" % [
+			str(scale_overlay.is_built()), scale_overlay.get_child_count()])
 	if _selftest:
 		_run_selftest()
 	elif _perf:
 		_run_perf()
 	elif _transition:
 		_run_transition()
+	elif _p8shots:
+		_run_p8shots()
+	elif _p8moon:
+		_run_p8moonshots()
+	elif _p81treebird:
+		_run_p81treebird_shots()
+	elif _p81white:
+		_run_p81white()
+	elif _p81snow:
+		_run_p81snow()
+	elif _p81wind:
+		_run_p81wind()
+	elif _p81windperf:
+		_run_p81windperf()
+	elif _p82windcpu:
+		_run_p82windcpu()
+	elif _p8seasons:
+		_run_p8seasonshots()
+	elif _p8weather:
+		_run_p8weathershots()
+	elif _p8wfx:
+		_run_p8wfxs()
+	elif _p8eco:
+		_run_p8ecoshots()
+	elif _p8perf:
+		_run_p8perf()
+	elif _p7shots:
+		_run_p7shots()
 	elif _shots:
 		_run_shots()
 	else:
@@ -281,12 +560,34 @@ func _cmdline_value(key: String) -> String:
 func _init_time() -> void:
 	_abs_unix = Time.get_unix_time_from_system()
 	if _time_source == "real":
-		# 现实时间：统一时间源——天文时钟与 HUD 都取所选时区的当地时刻。
-		_sim_seconds = _abs_unix + float(_offset_for(_abs_unix))
+		# 现实时间：天文/生态时钟固定为岛屿参考时区（广州 UTC+8）的当地秒；
+		# 所选“显示时区”只影响 HUD 文本（见 _display_datetime），不得平移天体位置（T7 修复）。
+		_sim_seconds = _abs_unix + float(IsleAstro.TZ_SECONDS)
 	else:
-		# 参考项目的氛围起点：傍晚 17:18
-		_sim_seconds = 17.0 * 3600.0 + 18.0 * 60.0
+		# P8：模拟模式从“今天（岛屿参考时区）傍晚 17:18”开始，完整公历日期可编辑；
+		# 起点仍是 17:18 的氛围时刻，只是日期不再固定为 1970-01-01。
+		var now_local := _abs_unix + float(IsleAstro.TZ_SECONDS)
+		var today_start := now_local - fposmod(now_local, 86400.0)
+		_sim_seconds = today_start + 17.0 * 3600.0 + 18.0 * 60.0
+	# P8 调试/截图入口：--p8date YYYY-MM-DD、--p8time HH:MM（模拟模式、自动化运行用）
+	_apply_p8_cli_time()
 	_events = IsleAstro.day_events(_sim_seconds)
+
+## 解析 --p8date/--p8time 覆盖模拟起始日期时间；现实时间模式忽略（时间不可被调试参数改写）。
+func _apply_p8_cli_time() -> void:
+	if _time_source == "real":
+		return
+	var darg := _cmdline_value("--p8date")
+	if darg != "":
+		var dp := darg.split("-")
+		if dp.size() == 3 and dp[0].is_valid_int() and dp[1].is_valid_int() and dp[2].is_valid_int():
+			_sim_seconds = ISLE_CALENDAR.to_local_seconds(int(dp[0]), int(dp[1]), int(dp[2]))
+	var targ := _cmdline_value("--p8time")
+	if targ != "":
+		var tp := targ.split(":")
+		if tp.size() >= 2 and tp[0].is_valid_int() and tp[1].is_valid_int():
+			var day_start := _sim_seconds - fposmod(_sim_seconds, 86400.0)
+			_sim_seconds = day_start + float(int(tp[0])) * 3600.0 + float(int(tp[1])) * 60.0
 
 ## 时区/现实时间模块是热加载的：不存在时退回旧行为，避免脚本报错。
 func _setup_time_api() -> void:
@@ -310,10 +611,22 @@ func _setup_globals() -> void:
 	_add_global("g_fog_near", RenderingServer.GLOBAL_VAR_TYPE_FLOAT)
 	_add_global("g_fog_far", RenderingServer.GLOBAL_VAR_TYPE_FLOAT)
 	_add_global("g_wind_time", RenderingServer.GLOBAL_VAR_TYPE_FLOAT)
+	# P8 阶段 6：天气共享参数（所有 toon/grass/sea/sky 共用；只注册一次）
+	# g_weather = (rain, snow, wetness, snow_cover)
+	_add_global("g_weather", RenderingServer.GLOBAL_VAR_TYPE_VEC4)
+	# g_weather2 = (cloud, storm, wind, indoor)
+	_add_global("g_weather2", RenderingServer.GLOBAL_VAR_TYPE_VEC4)
+	# g_wind_dir = (dir_x, dir_z, strength, gust_phase)
+	_add_global("g_wind_dir", RenderingServer.GLOBAL_VAR_TYPE_VEC4)
+	# g_lightning：闪电瞬时亮度 0..1（sky/toon/grass/sea 共用，同一来源）
+	_add_global("g_lightning", RenderingServer.GLOBAL_VAR_TYPE_FLOAT)
 	_add_global("g_outline_color", RenderingServer.GLOBAL_VAR_TYPE_COLOR)
 	RenderingServer.global_shader_parameter_set("g_outline_color", Color(0.12, 0.13, 0.17))
 	# 局部灯光（unshaded toon 材质不吃引擎灯光，这里自算最多 6 盏，见 toon.gdshader）
 	_add_global("g_light_count", RenderingServer.GLOBAL_VAR_TYPE_FLOAT)
+	# P8.1-06 双池：g_light_count = 室外池盏数（g_l0..g_l9）；g_light_indoor = 室内池盏数（g_l10..g_l15）。
+	# toon.gdshader 按 indoor_mask 逐片元选池，草只消费室外池。
+	_add_global("g_light_indoor", RenderingServer.GLOBAL_VAR_TYPE_FLOAT)
 	# 灯塔旋转光束（toon / sea 共用的解析光锥参数）
 	_add_global("g_beam_origin", RenderingServer.GLOBAL_VAR_TYPE_VEC3)
 	_add_global("g_beam_dir", RenderingServer.GLOBAL_VAR_TYPE_VEC3)
@@ -328,8 +641,8 @@ func _setup_globals() -> void:
 	RenderingServer.global_shader_parameter_set("g_spot_dir", Vector3(0.0, 0.0, -1.0))
 	RenderingServer.global_shader_parameter_set("g_spot_color", Color(0.0, 0.0, 0.0, 0.0))
 	RenderingServer.global_shader_parameter_set("g_spot_params", Vector4(0.90, 0.985, BOAT_SPOT_RANGE, 0.0))
-	# Phase6：局部灯上限从 8 提到 12（toon/grass/glass 同步扩到 12 盏）
-	for i in range(12):
+	# Phase6：局部灯上限从 8 提到 12；P8.1-06 双池后扩到 16（室外 g_l0..g_l9 + 室内 g_l10..g_l15）。
+	for i in range(16):
 		_add_global("g_l%d_pos" % i, RenderingServer.GLOBAL_VAR_TYPE_VEC4)
 		_add_global("g_l%d_col" % i, RenderingServer.GLOBAL_VAR_TYPE_VEC4)
 		RenderingServer.global_shader_parameter_set("g_l%d_pos" % i, Vector4(0.0, -999.0, 0.0, 1.0))
@@ -344,6 +657,15 @@ func _setup_globals() -> void:
 		RenderingServer.global_shader_parameter_set("g_occ_c%d" % oi, Vector3.ZERO)
 		RenderingServer.global_shader_parameter_set("g_occ_h%d" % oi, Vector3.ZERO)
 		RenderingServer.global_shader_parameter_set("g_occ_y%d" % oi, 0.0)
+	# P8.1-03 冬季白化：季节进度 uniform + 小屋室内体积（世界空间，与摄像机无关）。
+	# g_winter = (whiteness, frost, ground_tint, foliage_desat)；全 0 时 shader 所有冬季项为 0，
+	# 外观与 P8 逐像素一致（可回滚 / A-B 对比）。只由 _apply_season_visuals 在季节变化时写。
+	_add_global("g_winter", RenderingServer.GLOBAL_VAR_TYPE_VEC4)
+	# g_house = (origin.xyz, cos_yaw)；g_house2 = (sin_yaw, half_x, half_z, floor_local)
+	# g_roof = (ridge_y, tan_pitch, under_margin, first_floor_top)（房屋局部 y 常量）
+	_add_global("g_house", RenderingServer.GLOBAL_VAR_TYPE_VEC4)
+	_add_global("g_house2", RenderingServer.GLOBAL_VAR_TYPE_VEC4)
+	_add_global("g_roof", RenderingServer.GLOBAL_VAR_TYPE_VEC4)
 
 func _add_global(name: String, type: int) -> void:
 	RenderingServer.global_shader_parameter_add(name, type, _default_value(type))
@@ -416,24 +738,41 @@ func _build_world() -> void:
 	var holder := Node3D.new()
 	holder.name = "World"
 	add_child(holder)
-	_world = IsleWorld.build(holder)
+	# P8.1：游戏内启用冬季裸枝栖点（world 27 + cottage 14 = 41）；probe 直接 build() 仍为旧 36 点契约。
+	_world = IsleWorld.build(holder, true)
+	_winter_bloom = _world.get("winter_bloom", {})
+	# P3：九格农田视觉接在 P2-B 已建好的门前土地上（不重建场地，只挂 9 个作物锚点）。
+	_setup_farm()
 	_cottage = IsleCottage.build(holder)
 	_window_mats = _cottage["window_mats"]
 	_window_halos = _cottage["window_halos"]
 	_lantern_mat = _cottage["lantern_mat"] as ShaderMaterial
 	_lantern_halo = _cottage["lantern_halo"] as MeshInstance3D
+	_lantern_halos = (_cottage.get("lantern_halos", []) as Array).duplicate()
+	if _lantern_halos.is_empty() and _lantern_halo != null:
+		_lantern_halos.append(_lantern_halo)
+	_interior_shade_mats = []
+	for m in (_cottage.get("interior_shade_mats", []) as Array):
+		if m is ShaderMaterial:
+			_interior_shade_mats.append(m)
+	_interior_halos = (_cottage.get("interior_halos", []) as Array).duplicate()
 	_lamp_mats = (_world.get("lamp_mats", []) as Array).duplicate()
 	_lamp_halos = (_world.get("lamp_halos", []) as Array).duplicate()
 	# 夜间光晕尺寸收敛：halo 是广告牌面片，原尺寸在近景会变成直径 1m+ 的光球
 	_scale_halos(_window_halos, 0.60)
-	_scale_halo(_lantern_halo, 0.55)
+	_scale_halos(_lantern_halos, 0.55)
 	_scale_halos(_lamp_halos, 0.50)
 	var fx_holder := Node3D.new()
 	fx_holder.name = "Fx"
 	add_child(fx_holder)
 	_fx["smoke"] = IsleFx.smoke(fx_holder, (_cottage["chimney_top"] as Node3D).global_position + Vector3(0, 0.4, 0))
-	_fx["fireflies"] = IsleFx.fireflies(fx_holder, Vector3(-3.0, 2.0, 3.5))
+	# P8 修复：萤火曾经的 y=2.0 固定在岛面以下（本岛草地约 y≈8.4），夜间实际不可见；
+	# 改为按地形高度抬升到草地上方 1.5 m，仍由同一发射器/同一套昼夜与天气逻辑驱动。
+	var ff_gy := IsleMath.terrain_height(-3.0, 3.5)
+	_fx["fireflies"] = IsleFx.fireflies(fx_holder, Vector3(-3.0, ff_gy + 1.5, 3.5))
 	_fx["petals"] = IsleFx.petals(fx_holder, Vector3(IsleMath.BIG_TREE_X, 5.0, IsleMath.BIG_TREE_Z))
+	# P8 四季：秋叶（同一树冠附近缓慢飘落；由季节权重控制开关/密度，不为每片叶建节点）。
+	_fx["leaves"] = IsleFx.leaves(fx_holder, Vector3(IsleMath.BIG_TREE_X, 13.6, IsleMath.BIG_TREE_Z))
 	_ripples = IsleFx.Ripples.new()
 	_ripples.name = "Ripples"
 	fx_holder.add_child(_ripples)
@@ -457,6 +796,22 @@ func _build_world() -> void:
 	_build_lighthouse_beam()
 	_collect_beam_occluders()
 	_update_smoke_clock()
+	# P7-V4：岛民与场景同父（World），复用小区块合批与光照收集；只创建一次，运行期不重建。
+	if not _no_villager:
+		_villager = ISLE_VILLAGER.build(holder, _cottage)
+	# P7-FINALIZE：把真实秋千吊点/座椅注入岛民（供"坐秋千"生活动作同步摆角）。
+	# 必须在 _world（第 742 行已 build）与岛民都创建之后；has_method 守卫保证无岛民模式可运行。
+	var swing_pivot_facts := _world.get("swing", null) as Node3D
+	if swing_pivot_facts != null and _villager != null and _villager.has_method("set_swing_target"):
+		var swing_seat_facts: Node3D = swing_pivot_facts.find_child("SwingSeat", true, false) as Node3D
+		_villager.call("set_swing_target", swing_pivot_facts, swing_seat_facts)
+	# P8 四季：建立季节视觉条目（复制材质，避免污染 isle_math 的全局材质缓存）。
+	_setup_season_visuals()
+	# P8.1-03：室内体积 uniform + 材质类别接收系数（必须在季节材质复制之后，才能覆盖那几份副本）。
+	_setup_winter_house_uniforms()
+	_tag_winter_materials(holder)
+	# P8 阶段 6：建立天气视觉（雨/雪粒子只建一次；运行期只改 amount_ratio/emitting/材质参数）。
+	_setup_weather_fx()
 
 # ============================================================
 # 相机
@@ -471,6 +826,25 @@ func _build_camera() -> void:
 	_cam.current = true
 	_apply_pose(_movie_pose())
 	_update_camera_light_dirs()
+	# P7-V2 自由飞行观景相机：只创建逻辑件，不创建/不接管 Camera3D；
+	# 轨道参数在进入时冻结、退出混合结束后原样恢复（见 _enter_flycam/_exit_flycam）。
+	_flycam = IsleFlyCam.new()
+	var fly_cfg := IsleFlyCam.default_config()
+	# P7-V3 校准（以自由视角水平观察范围 D 为基准，实测海岸线最大直径≈63.6m）：
+	#   边界半径 R=130m（≈2.0× 岛直径）→ D=2R=260m；
+	#   普通速度 12.48 m/s（P7-V2 10.4 基础 +20%，完整穿越约 20.8s，20–30s 区间）；
+	#   冲刺速度 24.96 m/s（精确 2.0×，完整穿越约 10.4s，10–15s 区间）；
+	#   垂直速度 6.6 m/s（+20%）；最高高度 130m（≈2.0× 岛直径，可俯瞰全岛与周边海域）。
+	fly_cfg["center"] = Vector3(0.0, 0.0, 0.0)
+	fly_cfg["radius"] = 130.0
+	fly_cfg["max_y"] = 130.0
+	fly_cfg["speed_regular"] = 12.48
+	fly_cfg["speed_boost"] = 24.96
+	fly_cfg["vertical_speed"] = 6.6
+	_flycam_look_base = float(fly_cfg.get("look_sensitivity", 0.0022))
+	_flycam.configure(fly_cfg)
+	# P7-V3：玩家 FOV 设置与自由视角共用同一基础值（默认 42，见 isle_settings.FOV_DEFAULT）。
+	_flycam.set_base_fov(_fov)
 
 func _menu_pose() -> Dictionary:
 	return {"target": Vector3(0, 4.2, 0), "theta": _movie_theta, "elev": 0.50, "r": 106.0, "fov": 36.0}
@@ -570,9 +944,22 @@ func _build_ui() -> void:
 	add_child(_hud)
 	_hud.time_adjust.connect(_on_time_adjust)
 	_hud.time_set.connect(_on_time_set)
+	# P8 阶段 3：可见暂停控件与空格键共用同一状态；日历弹层跳转统一走 _jump_datetime()。
+	if _hud.has_signal("pause_toggle_requested"):
+		_hud.connect("pause_toggle_requested", _toggle_pause)
+	if _hud.has_signal("datetime_jump_requested"):
+		_hud.connect("datetime_jump_requested", _on_datetime_jump_requested)
+	# P8 阶段 5：天气面板的自动开关与手动类型选择；状态仍只有 _weather 一份。
+	if _hud.has_signal("weather_auto_requested"):
+		_hud.connect("weather_auto_requested", _on_weather_auto_requested)
+	if _hud.has_signal("weather_type_requested"):
+		_hud.connect("weather_type_requested", _on_weather_type_requested)
 	# P5：T 面板的时间来源切换与设置菜单共用同一状态源（main._settings["time_source"]）
 	if _hud.has_signal("time_mode_requested"):
 		_hud.connect("time_mode_requested", _on_time_mode_requested)
+	# P6：钓鱼按钮（玩家正式入口；与 B 键背包互不冲突，也不新增键盘快捷键）
+	if _hud.has_signal("fishing_toggle_requested"):
+		_hud.connect("fishing_toggle_requested", _on_fishing_toggle)
 	_menu = IsleMenu.new()
 	_menu.name = "Menu"
 	_menu.layer = 10
@@ -588,12 +975,14 @@ func _advance_sim(delta: float) -> void:
 	var before := fposmod(_sim_seconds, 86400.0)
 	var sim_before := _sim_seconds
 	if _time_source == "real":
-		# 现实模式：唯一来源是系统绝对时间；天文时钟 = 绝对时间 + 所选时区偏移。
+		# 现实模式：唯一来源是系统绝对时间；天文/生态时钟固定用岛屿参考时区（UTC+8）。
 		_abs_unix = Time.get_unix_time_from_system()
-		_sim_seconds = _abs_unix + float(_offset_for(_abs_unix))
+		_sim_seconds = _abs_unix + float(IsleAstro.TZ_SECONDS)
+		_sim_rate = 1.0
 	else:
 		var rate := 86400.0 / maxf(_day_length, 1.0)
 		_sim_seconds += delta * rate
+		_sim_rate = rate
 	var after := fposmod(_sim_seconds, 86400.0)
 	_sim_delta = _sim_seconds - sim_before
 	if after < before:
@@ -601,6 +990,907 @@ func _advance_sim(delta: float) -> void:
 
 func _now_sim_seconds() -> float:
 	return IsleAstro.now_local_seconds()
+
+# ============================================================
+# P8 阶段 4：四季视觉（日历 → 材质/实例/粒子的只读投影）
+# ============================================================
+## 建立季节视觉条目：草材质基准 tint、树冠/叶卡/背景树冠/灌木的复制材质与实例缓存、
+## 花按物种分组的实例缓存。只做一次；运行期不重建任何几何/材质。
+func _setup_season_visuals() -> void:
+	_season_nodes.clear()
+	_grass_season_mats.clear()
+	# 草：缓存原始 tint。画质只改 visible_instance_count，季节只改 tint，两者互不覆盖。
+	for nm in ["GrassNear", "GrassFar"]:
+		var gm := _find_grass_node(String(nm))
+		if gm == null or not (gm.material_override is ShaderMaterial):
+			continue
+		var gmat := gm.material_override as ShaderMaterial
+		var gbase: Variant = gmat.get_shader_parameter("tint")
+		if gbase is Color:
+			_grass_season_mats.append({"mat": gmat, "base": gbase as Color})
+	# 树冠 / 叶卡 / 背景树冠 / 灌木：复制材质，避免 isle_math 的全局材质缓存被季节参数污染。
+	for spec in [["Canopy", "canopy"], ["LeafCards", "cards"], ["BgTreeCanopy", "canopy"], ["Bushes", "bush"]]:
+		_season_add_entry(_season_find_mesh(String(spec[0])), String(spec[1]), "")
+	# 花：节点名 FlowerStems_<Species> / FlowerHeads_<Species>_<variant>；材质共享，不复制。
+	var root = _world.get("root", null)
+	if root != null:
+		for child in (root as Node).find_children("Flower*", "", true, false):
+			if not (child is MultiMeshInstance3D):
+				continue
+			var parts := String(child.name).split("_")
+			if parts.size() < 2:
+				continue
+			_season_add_entry(child, "flower", String(parts[1]))
+
+func _season_find_mesh(node_name: String) -> Node:
+	var root = _world.get("root", null)
+	if root == null:
+		return null
+	return (root as Node).find_child(node_name, true, false)
+
+## 为一个 MultiMesh 节点建立季节条目；树/灌木把材质复制一份以写入 foliage_tint。
+func _season_add_entry(mi: Node, kind: String, species: String) -> void:
+	if not (mi is MultiMeshInstance3D):
+		return
+	var mm := (mi as MultiMeshInstance3D).multimesh
+	if mm == null or mm.instance_count <= 0:
+		return
+	var sm: ShaderMaterial = null
+	if kind == "canopy" or kind == "cards" or kind == "bush":
+		var mat: Material = (mi as GeometryInstance3D).material_override
+		if mat is ShaderMaterial:
+			sm = (mat as ShaderMaterial).duplicate() as ShaderMaterial
+			(mi as GeometryInstance3D).material_override = sm
+	var n := mm.instance_count
+	var base: Array = []
+	for i in range(n):
+		base.append(mm.get_instance_transform(i))
+	var order: Array = []
+	for i in range(n):
+		order.append(i)
+	# 确定性洗牌：同一节点的隐藏顺序在每次运行都一致（截图/回归可复现）。
+	var rng := RandomNumberGenerator.new()
+	rng.seed = absi((String((mi as Node).name) + "|" + kind).hash()) + 7919
+	for i in range(n - 1, 0, -1):
+		var j := rng.randi_range(0, i)
+		var tmp: Variant = order[i]
+		order[i] = order[j]
+		order[j] = tmp
+	if kind == "flower":
+		# 花床里的整齐行列在 world.gd 里是最后追加的实例；花量减少时优先保留它们，
+		# 这样秋冬"只剩几株红梅"会留在花床里，而不是随机散在草地深处。
+		order = []
+		for i in range(n - 1, -1, -1):
+			order.append(i)
+	_season_nodes.append({
+		"node": mi,
+		"kind": kind,
+		"species": species,
+		"mat": sm,
+		"count": n,
+		"base": base,
+		"order": order,
+		"kept": -1,
+		"tint_key": "",
+	})
+
+## 每帧调用：只有季节权重真的变化（或 force）才写材质/实例，写入频率 ≈ 4 Hz 上限。
+func _update_season(delta: float, force: bool = false) -> void:
+	_season_timer -= delta
+	var parts: Dictionary = ISLE_CALENDAR.parts(_sim_seconds)
+	var weights: Array = parts.get("season_weights", [0.25, 0.25, 0.25, 0.25])
+	if not force and not _season_visuals.is_empty():
+		if ISLE_SEASON.weight_delta(_season_weights, weights) < 0.002:
+			return
+		if _season_timer > 0.0:
+			return
+	_season_timer = SEASON_APPLY_INTERVAL
+	_season_weights = (weights as Array).duplicate()
+	_season_label = String(parts.get("season_label", "春季"))
+	_season_visuals = ISLE_SEASON.visuals(weights)
+	_apply_season_visuals()
+
+## 把当前季节参数写入现有材质/实例/粒子。纯参数写入，不创建/删除节点，不重建几何。
+func _apply_season_visuals() -> void:
+	if _season_visuals.is_empty():
+		return
+	var v := _season_visuals
+	var grass_tint: Color = v.get("grass_tint", Color.WHITE)
+	for item in _grass_season_mats:
+		(item["mat"] as ShaderMaterial).set_shader_parameter("tint", (item["base"] as Color) * grass_tint)
+	var foliage_tint: Color = v.get("foliage_tint", Color.WHITE)
+	var bush_tint: Color = v.get("bush_tint", Color.WHITE)
+	for raw in _season_nodes:
+		var e: Dictionary = raw
+		var kind := String(e["kind"])
+		var keep := 1.0
+		match kind:
+			"canopy":
+				keep = float(v.get("canopy_keep", 1.0))
+			"cards":
+				keep = float(v.get("leafcard_keep", 1.0))
+			"bush":
+				keep = 1.0
+			"flower":
+				keep = ISLE_SEASON.flower_keep_for(v, String(e["species"]))
+		var target := int(round(float(e["count"]) * clampf(keep, 0.0, 1.0)))
+		if target != int(e["kept"]):
+			e["kept"] = target
+			_apply_season_keep(e, target)
+		var sm := e.get("mat", null) as ShaderMaterial
+		if sm != null:
+			var tint := foliage_tint
+			if kind == "bush":
+				tint = bush_tint
+			var key := "%d" % tint.to_rgba32()
+			if String(e.get("tint_key", "")) != key:
+				e["tint_key"] = key
+				sm.set_shader_parameter("foliage_tint", tint)
+	# 秋叶：随季节权重开关与密度；颜色取 drift_color（枯黄→暖橙→冬白）。
+	# P8.1-05：冬季（canopy_keep=0 的裸树）不得继续产叶——用冬季权重做门控，
+	# 发射量与叶色一起收；只在“开→关”跃迁帧 restart 清残留，绝不每帧重启（F9）。
+	if _p82prof_on:
+		_p82p_begin()
+	var leaf_fall := clampf(float(v.get("leaf_fall", 0.0)), 0.0, 1.0)
+	var leaf_winter_w := float(_season_weights[3]) if _season_weights.size() > 3 else 0.0
+	var leaf_fall_eff := leaf_fall * wind_leaf_gate(leaf_winter_w)
+	var leaf_entry: Dictionary = _fx.get("leaves", {})
+	var leaves := leaf_entry.get("node", null) as GPUParticles3D
+	if leaves != null:
+		var leaves_on := leaf_fall_eff > 0.03
+		# P8.1：关发射时清空秋季残留叶片（否则冬季被 drift_color 染成漂白球，像浮空叶团）。
+		if leaves.emitting and not leaves_on:
+			leaves.emitting = false
+			leaves.restart()
+		leaves.emitting = leaves_on
+		leaves.amount_ratio = clampf(0.15 + leaf_fall_eff * 0.85, 0.0, 1.0) if leaves_on else 0.0
+		var lmat := leaf_entry.get("mat", null) as StandardMaterial3D
+		if lmat != null:
+			var dc: Color = v.get("drift_color", Color(0.95, 0.52, 0.18))
+			var lc := wind_leaf_tint(dc, leaf_winter_w)
+			lmat.albedo_color = Color(lc.r, lc.g, lc.b, 0.92)
+	if _p82prof_on:
+		_p82p_end(2)
+	# 花瓣只在春季飘（其余季节淡出/停发），避免与秋叶、冬雪同时出现。
+	var petal_entry: Dictionary = _fx.get("petals", {})
+	var petals := petal_entry.get("node", null) as GPUParticles3D
+	if petals != null:
+		var spring_w := float(_season_weights[0])
+		var petals_on := spring_w > 0.05
+		# P8.1：关发射时清空非春残留花瓣（冬季旧花瓣会被染白，像浮空小球）。
+		if petals.emitting and not petals_on:
+			petals.emitting = false
+			petals.restart()
+		petals.emitting = petals_on
+		var pmat := petal_entry.get("mat", null) as StandardMaterial3D
+		if pmat != null:
+			var pc: Color = pmat.albedo_color
+			pmat.albedo_color = Color(pc.r, pc.g, pc.b, 0.85 * clampf(spring_w * 1.2, 0.0, 1.0))
+	# P8.1 冬季屋前红花：随冬季权重 0.25→0.80 渐显；春夏秋完全隐藏。
+	# 茎和花头共用同一 Transform（只写花头会变成悬空花）；节点由 world._winter_blooms 建。
+	var winter_w := float(_season_weights[3]) if _season_weights.size() > 3 else 0.0
+	var bloom := clampf((winter_w - 0.25) / 0.55, 0.0, 1.0)
+	var wb_stems := _winter_bloom.get("stems", null) as MultiMeshInstance3D
+	var wb_heads := _winter_bloom.get("heads", null) as MultiMeshInstance3D
+	var wb_base: Array = _winter_bloom.get("base", [])
+	if wb_stems != null and wb_heads != null:
+		var show := bloom > 0.03
+		wb_stems.visible = show
+		wb_heads.visible = show
+		if show:
+			var s_factor := clampf(bloom, 0.05, 1.0)
+			for i in range(wb_base.size()):
+				var a: Dictionary = wb_base[i]
+				var bs: float = float(a["scale"]) * s_factor
+				var xf := Transform3D(
+					Basis(Vector3.UP, float(a["yaw"])).scaled(Vector3(bs, bs, bs)),
+					a["pos"] as Vector3)
+				wb_stems.multimesh.set_instance_transform(i, xf)
+				wb_heads.multimesh.set_instance_transform(i, xf)
+	_season_apply_count += 1
+	# P8.1-03：季节权重 → g_winter（与天气驱动的 g_weather.w 积雪严格分离，各自独立消费）。
+	_set_winter_season_uniforms()
+
+## 按“保留数量”隐藏实例：从确定性洗牌后的尾部收起（即 spatially 均匀稀疏），
+## 把隐藏实例的 basis 缩到 1e-4；恢复时从缓存的原 Transform 写回。
+func _apply_season_keep(e: Dictionary, target: int) -> void:
+	var mm: MultiMesh = (e["node"] as MultiMeshInstance3D).multimesh
+	var n := int(e["count"])
+	var base: Array = e["base"]
+	var order: Array = e["order"]
+	var hide := {}
+	for i in range(target, n):
+		hide[int(order[i])] = true
+	e["hidden"] = n - target
+	# P8.1：全部收起时直接把 visible_instance_count 归零（比仅缩 basis 更明确，截图/探针可验证）；
+	# 部分收起仍用 basis 缩放（隐藏实例是洗牌尾部、索引不连续，不能用 visible_instance_count 表达）。
+	mm.visible_instance_count = 0 if target <= 0 else -1
+	var tiny := Vector3(0.0001, 0.0001, 0.0001)
+	for i in range(n):
+		var xf: Transform3D = base[i]
+		if hide.has(i):
+			xf.basis = Basis.IDENTITY.scaled(tiny)
+		mm.set_instance_transform(i, xf)
+
+# ============================================================
+# P8 阶段 5：天气（独立状态机；只读 _sim_seconds，不新建时钟）
+# ============================================================
+## 启动时建立天气状态机：种子/自动或手动/手动类型来自设置；--weather-seed / --weather-type
+## 可用于截图与性能测试复现指定天气（--weather-type 会强制手动模式）。
+func _setup_weather() -> void:
+	var seed_value := Settings.sanitize_weather_seed(_settings.get("weather_seed", Settings.WEATHER_SEED_DEFAULT))
+	var cli_seed := _cmdline_value("--weather-seed")
+	if cli_seed != "":
+		seed_value = Settings.sanitize_weather_seed(int(cli_seed))
+	var auto_on := Settings.sanitize_weather_auto(_settings.get("weather_auto", true))
+	var manual_type := Settings.sanitize_weather_type(_settings.get("weather_type", Settings.WEATHER_DEFAULT_TYPE))
+	var cli_type := _cmdline_value("--weather-type")
+	if cli_type != "":
+		var wanted := Settings.sanitize_weather_type(cli_type)
+		if wanted == cli_type.strip_edges():
+			manual_type = wanted
+			auto_on = false
+	_weather = ISLE_WEATHER.new()
+	_weather.configure(seed_value, "auto" if auto_on else "manual", manual_type)
+	_weather.reset(_sim_seconds)
+	_weather_prev_t = _sim_seconds
+	_weather_state = _weather.state()
+	_apply_weather_view()
+	print("[WEATHER] seed=%d mode=%s type=%s label=%s season=%s" % [
+		seed_value, String(_weather_state.get("mode", "auto")),
+		String(_weather_state.get("type", "clear")), String(_weather_state.get("label", "晴")),
+		String(_weather_state.get("season_label", "春季"))])
+
+## 每帧推进天气：模拟暂停/菜单时 advancing=false（调度与过渡冻结），时间跳变由 tick 内部 reset。
+## 状态投影到 _weather_* 连续参数供 HUD / 阶段 6 视觉消费；写入节流到 WEATHER_STATE_INTERVAL。
+func _update_weather(delta: float, force: bool = false) -> void:
+	if _weather == null:
+		return
+	var advancing := _mode == Mode.PLAYING and (not _paused or _time_source == "real")
+	if advancing or force or _weather_state.is_empty():
+		var t := _sim_seconds
+		var dt := t - _weather_prev_t if _weather_prev_t >= 0.0 else 0.0
+		_weather.tick(t, dt, advancing)
+		_weather_prev_t = t
+	_weather_timer -= delta
+	if not force and _weather_timer > 0.0:
+		return
+	_weather_timer = WEATHER_STATE_INTERVAL
+	_weather_state = _weather.state()
+	_apply_weather_view()
+
+func _apply_weather_view() -> void:
+	if _weather_state.is_empty():
+		return
+	_weather_cloud = clampf(float(_weather_state.get("cloud", 0.0)), 0.0, 1.0)
+	_weather_wind = clampf(float(_weather_state.get("wind_strength", 0.0)), 0.0, 1.0)
+	_weather_storm = clampf(float(_weather_state.get("storm", 0.0)), 0.0, 1.0)
+	_weather_wetness = clampf(float(_weather_state.get("wetness", 0.0)), 0.0, 1.0)
+	_weather_snow_depth = clampf(float(_weather_state.get("snow_depth", 0.0)), 0.0, 1.0)
+	var ptype := String(_weather_state.get("precip_type", "none"))
+	var p_int := float(_weather_state.get("precip_intensity", 0.0))
+	_weather_rain = p_int if ptype == "rain" else 0.0
+	_weather_snow = p_int if ptype == "snow" else 0.0
+	var wdir := deg_to_rad(float(_weather_state.get("wind_dir", 135.0)))
+	_weather_wind_dir = Vector2(sin(wdir), -cos(wdir))
+	# 积雪覆盖到一定程度后，草叶逐渐淡出，露出被 toon 积雪覆盖的地面（不做逐帧几何替换）。
+	var snow_t := clampf(_weather_snow_depth, 0.0, 1.0)
+	var grass_alpha := 1.0 - smoothstep(0.16, 0.58, snow_t) * 0.92
+	for item in _grass_season_mats:
+		(item["mat"] as ShaderMaterial).set_shader_parameter("transparency", grass_alpha)
+
+# ============================================================
+# P8 阶段 6：天气视觉（降水粒子 + 共享 uniform）
+# ============================================================
+const WEATHER_FX_FOLLOW := 34.0    # 降水区域水平跟随相机的夹紧半径（米）
+
+## 创建降水粒子（雨/雪各一个 GPUParticles3D；只建一次）。
+func _setup_weather_fx() -> void:
+	_weather_fx = ISLE_WEATHER_FX.build(self)
+	for key in ["rain", "snow"]:
+		var entry: Dictionary = _weather_fx.get(key, {})
+		var node := entry.get("node", null) as GPUParticles3D
+		if node != null:
+			entry["base_y"] = node.position.y
+	_place_weather_drips()
+	print("[WEATHERFX] rain=%d snow=%d drip=%d splash=%d" % [
+		int((_weather_fx.get("rain", {}).get("base_amount", 0))),
+		int((_weather_fx.get("snow", {}).get("base_amount", 0))),
+		int((_weather_fx.get("drip", {}).get("base_amount", 0))),
+		int((_weather_fx.get("splash", {}).get("base_amount", 0)))])
+
+## 屋檐滴水线：按小屋主体遮挡盒 + 正面方向摆到正面屋檐外侧（只建一次）。
+func _place_weather_drips() -> void:
+	var entry: Dictionary = _weather_fx.get("drip", {})
+	var node := entry.get("node", null) as GPUParticles3D
+	if node == null or _cottage.is_empty():
+		return
+	var raw: Variant = _cottage.get("beam_occluders", [])
+	if not (raw is Array) or (raw as Array).is_empty():
+		return
+	var b: Variant = (raw as Array)[0]
+	if not (b is Dictionary):
+		return
+	var bd: Dictionary = b
+	var center: Vector3 = bd.get("center", Vector3.ZERO)
+	var half: Vector3 = bd.get("half", Vector3.ZERO)
+	var yaw := float(bd.get("yaw", 0.0))
+	# 小屋世界旋转 = -yaw；局部 +Z 为正面，旋转后正面方向 = (sin θ, 0, cos θ)
+	var rot_y := -yaw
+	var front := Vector3(sin(rot_y), 0.0, cos(rot_y))
+	# 主体盒顶面 = 檐口（roof_base），屋顶前坡外挑约 0.5m、檐口比主体盒顶低约 0.33m。
+	# 滴水线必须放在屋顶外挑边缘，否则会被屋顶挡住，从正面完全看不到。
+	var eave := center + front * (half.z + 0.46)
+	eave.y = center.y + half.y - 0.33
+	node.position = eave
+	node.rotation.y = rot_y
+	var pm := entry.get("pm", null) as ParticleProcessMaterial
+	if pm != null:
+		pm.emission_box_extents = Vector3(half.x + 0.42, 0.05, 0.16)
+	entry["placed"] = true
+
+# ============================================================
+# P8.1-03 冬季白化：室内体积 uniform / 季节白化 uniform / 材质类别接收系数
+# ============================================================
+## 把房屋室内体积（世界空间，只设一次）推给 shader；房屋不可移动，因此这是常量。
+## 与摄像机无关：shader 只按片元世界坐标判定，所以「窗外看室内」与「走进室内」结果一致。
+## 一层内墙面 |x|=3.50 / |z|=2.80，外墙外皮 3.80 / 3.10；山墙内面 |z|=2.80、外面 3.10；
+## 屋脊 y=6.20、屋面 tan=2.47/3.8=0.65、一层顶棚 2.97（阁楼楼板底）。
+## half=(3.55, 2.95)：内表面判室内、外表面判室外；屋顶外表面在阈值之上判室外、内底面判室内。
+func _setup_winter_house_uniforms() -> void:
+	var root := _cottage.get("root", null) as Node3D
+	if root == null:
+		push_warning("[P81W] cottage root missing: indoor mask stays zero (全岛白化会刷到室内)")
+		return
+	var o := root.global_transform.origin
+	var yaw := root.global_rotation.y
+	var half_x := IsleMath.HOUSE_W * 0.5 - IsleMath.HOUSE_WALL_T + 0.05   # 3.55（内墙面 3.50）
+	var half_z := IsleMath.HOUSE_D * 0.5 - IsleMath.HOUSE_WALL_T + 0.15   # 2.95（内墙面 2.80）
+	var floor_local := IsleMath.HOUSE_FY - 0.05                          # 0.50（地坪 0.55）
+	var ridge := IsleMath.HOUSE_ROOF_BASE + IsleMath.HOUSE_ROOF_H        # 6.20
+	var tan_pitch := IsleMath.HOUSE_ROOF_H / (IsleMath.HOUSE_W * 0.5)    # 2.47/3.8 = 0.65
+	var in_top := IsleMath.HOUSE_FY + IsleMath.HOUSE_ROOM_CLEAR_H        # 2.97
+	RenderingServer.global_shader_parameter_set("g_house",
+		Vector4(o.x, o.y, o.z, cos(yaw)))
+	RenderingServer.global_shader_parameter_set("g_house2",
+		Vector4(sin(yaw), half_x, half_z, floor_local))
+	RenderingServer.global_shader_parameter_set("g_roof",
+		Vector4(ridge, tan_pitch, 0.10, in_top))
+	print("[P81W] house uniform origin=%s yaw=%.4f half=(%.2f,%.2f) floor=%.2f ridge=%.2f tan=%.4f" % [
+		str(o), yaw, half_x, half_z, floor_local, ridge, tan_pitch])
+
+## 季节进度 → g_winter（唯一来源：_season_weights 的冬季分量，与天气完全无关）。
+## whiteness=smoothstep(0.30,0.90,w)：2026-12-01(w=0.514)→0.29，12-06(w=0.830)→0.97，1 月→1.0，02-26→0.30。
+## frost=whiteness*0.65；ground_tint 与 foliage_desat 都取 whiteness，由各材质 winter_recv 分量缩放。
+func _set_winter_season_uniforms() -> void:
+	var winter_w := float(_season_weights[3]) if _season_weights.size() > 3 else 0.0
+	var whiteness := smoothstep(0.30, 0.90, winter_w)
+	RenderingServer.global_shader_parameter_set("g_winter",
+		Vector4(whiteness, whiteness * 0.65, whiteness, whiteness))
+	# 回读证据：global_shader_parameter_get 在非编辑器运行时报错且返回 null（material_storage.cpp:1913），
+	# 因此以「写入侧本地值」+ 截图 ON/OFF 像素差作为 uniform 生效证据。
+	print("[P81W] g_winter=(%.4f,%.4f,%.4f,%.4f) winter_weight=%.4f" % [
+		whiteness, whiteness * 0.65, whiteness, whiteness, winter_w])
+
+## 给 toon/grass 材质写 winter_recv=(snow, frost, ground_tint, foliage_desat)（启动期一次性）。
+## 依据「物体实际类别 + 材质类别」：world 子树节点名未合批可辨；cottage 只合批 MeshInstance3D，
+## 材质身份（self_lit/albedo）仍可读，室内外由 shader 的体积掩码区分，不依赖摄像机。
+## 合批把材质写在 mesh surface 上（isle_batch.gd:146），所以 override 与 surface 两条路径都要读。
+func _tag_winter_materials(holder: Node) -> void:
+	var seen: Dictionary = {}
+	var n_toon := 0
+	var n_grass := 0
+	var n_exempt := 0
+	var n_lit := 0
+	var n_skip := 0
+	var stack: Array[Node] = [holder]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		for c in n.get_children():
+			stack.append(c)
+		if not (n is GeometryInstance3D):
+			continue
+		var gi := n as GeometryInstance3D
+		var rel := String(holder.get_path_to(n))
+		var nm := String(n.name)
+		var mats: Array[ShaderMaterial] = []
+		var mo := gi.material_override
+		if mo is ShaderMaterial:
+			mats.append(mo as ShaderMaterial)
+		if gi is MeshInstance3D:
+			var mi := gi as MeshInstance3D
+			var mesh := mi.mesh
+			if mesh != null:
+				for si in range(mesh.get_surface_count()):
+					var sm := mi.get_surface_override_material(si) as ShaderMaterial
+					if sm == null:
+						var raw := mesh.surface_get_material(si)
+						if raw is ShaderMaterial:
+							sm = raw as ShaderMaterial
+					if sm != null and not mats.has(sm):
+						mats.append(sm)
+		elif gi is MultiMeshInstance3D:
+			var mmi := gi as MultiMeshInstance3D
+			if mmi.multimesh != null and mmi.multimesh.mesh != null:
+				var mmesh := mmi.multimesh.mesh
+				for si in range(mmesh.get_surface_count()):
+					var raw2 := mmesh.surface_get_material(si)
+					if raw2 is ShaderMaterial and not mats.has(raw2 as ShaderMaterial):
+						mats.append(raw2 as ShaderMaterial)
+		for m in mats:
+			var key := m.get_instance_id()
+			if seen.has(key):
+				continue
+			var spath := ""
+			if m.shader != null:
+				spath = String((m.shader as Shader).resource_path)
+			if spath.ends_with("grass.gdshader"):
+				m.set_shader_parameter("winter_recv", Vector4(0.90, 0.0, 0.55, 0.85))
+				seen[key] = true
+				n_grass += 1
+				continue
+			if not spath.ends_with("toon.gdshader"):
+				n_skip += 1
+				continue
+			var recv := _winter_recv_for(rel, nm, m)
+			var sl: Variant = m.get_shader_parameter("self_lit")
+			if sl is float and float(sl) > 0.5:
+				n_lit += 1
+			if recv.x <= 0.0 and recv.y <= 0.0 and recv.z <= 0.0 and recv.w <= 0.0:
+				n_exempt += 1
+			else:
+				n_toon += 1
+			m.set_shader_parameter("winter_recv", recv)
+			seen[key] = true
+	print("[P81W] tagged toon=%d grass=%d exempt=%d self_lit=%d skip=%d materials=%d" % [
+		n_toon, n_grass, n_exempt, n_lit, n_skip, seen.size()])
+
+## 材质类别 → winter_recv。顺序从「身份最确定」到「默认类别」，全部可由截图/探针复核。
+func _winter_recv_for(rel: String, node_name: String, m: ShaderMaterial) -> Vector4:
+	# 自发光灯罩/炉火/窗内暖光：一个像素都不刷白（P8 已知台灯/落地灯只有自发光灯罩）。
+	var sl: Variant = m.get_shader_parameter("self_lit")
+	if sl is float and float(sl) > 0.5:
+		return Vector4.ZERO
+	# 地形：白化主承载（ground_tint 满值 + 大量积雪 + 中等霜）
+	if node_name == "Terrain":
+		return Vector4(0.90, 0.55, 1.00, 0.0)
+	# 常绿植被：以降饱和为主，只挂薄雪（否则树冠会被刷成雪球）
+	if node_name == "Canopy" or node_name == "LeafCards" or node_name == "BgTreeCanopy":
+		return Vector4(0.30, 0.45, 0.0, 0.85)
+	if node_name == "Bushes":
+		return Vector4(0.45, 0.50, 0.0, 0.85)
+	# 屋顶瓦/脊瓦/椽尾（cottage 中层 MultiMesh 未被合批，名字保留）
+	if node_name.begins_with("Roof"):
+		return Vector4(0.95, 0.35, 0.35, 0.0)
+	# 灯塔（石/混凝土，白化强、泛灰中）
+	if rel.contains("Lighthouse"):
+		return Vector4(0.90, 0.45, 0.60, 0.0)
+	# 码头木构：木持雪少、吸收湿暗
+	if rel.contains("Dock"):
+		return Vector4(0.80, 0.35, 0.55, 0.0)
+	# 大树树干/裸枝：枝上只有薄雪
+	if rel.contains("BigTree"):
+		return Vector4(0.50, 0.30, 0.30, 0.0)
+	# 动态对象不参与季节白化（产品决策；与「道路/家具/木构」的静态白化解耦）
+	if rel.contains("Sailboat") or node_name == "Sailboat":
+		return Vector4.ZERO
+	if rel.contains("Islander") or node_name == "Islander":
+		return Vector4.ZERO
+	if rel.contains("PorchCat") or node_name == "PorchCat":
+		return Vector4.ZERO
+	# 花（含冬季红花）：花朵本身不改色，避免红梅变成白点
+	if node_name.begins_with("Flower") or node_name.begins_with("WinterBloom"):
+		return Vector4.ZERO
+	# 默认：外墙/木构/石阶/家具（雪 0.85 + 霜 0.35，垂直面靠 up_mask 自然变弱）
+	return Vector4(0.85, 0.35, 0.0, 0.0)
+
+# ============================================================
+# P8.1-05 强风视觉：纯函数层
+# 运行时与 tools/probe_p81_wind.gd 共用同一份实现，probe 断言的就是线上公式；
+# 所有函数无副作用，便于 headless 单测（F/S 验收项）。
+# ============================================================
+const WIND_LEAF_TR0 := 0.40       # 落叶开始被风输运的风力阈值
+const WIND_LEAF_TR1 := 0.95       # 落叶完全进入强风输运的风力
+const WIND_SWING_TR0 := 0.35      # 秋千开始明显受风的风力阈值
+const WIND_SWING_TR1 := 0.95      # 秋千完全受迫的风力
+const SWING_W0 := 1.3707          # 秋千弹簧固有角频率（周期≈4.585s，贴合旧 idle 观感）
+const SWING_ZETA_C := 0.7676      # 阻尼系数（ζ≈0.56：有回摆但不上晃）
+# P7-FINALIZE：无风被动摆幅（单侧最大偏转角，单位 rad；见 swing_idle_rot）。
+const SWING_IDLE_PITCH := 0.122   # 7.0° 前后摆（相对自然悬垂）
+const SWING_IDLE_ROLL := 0.035    # 2.0° 侧向
+
+## 阵风包络（S4）：与风同向叠加；tr=0 时恒 1，保证无风旧轨迹严格回归（S1）。
+static func wind_gust(t: float, tr: float) -> float:
+	return 1.0 + (0.22 * sin(t * 1.13) + 0.13 * sin(t * 2.7 + 1.2)) * clampf(tr, 0.0, 1.0)
+
+## 落叶风场输运（F2/F3）：direction/gravity/angular 全部由共享风场纯函数给出。
+static func wind_leaf_params(wv: float, wd: Vector2) -> Dictionary:
+	var w := clampf(wv, 0.0, 1.0)
+	var dir := wd
+	if dir.length_squared() < 0.0001:
+		dir = Vector2(0.0, -1.0)
+	dir = dir.normalized()
+	var tr := smoothstep(WIND_LEAF_TR0, WIND_LEAF_TR1, w)
+	var lateral := 1.6 + 1.8 * tr
+	var grav_side := 0.55 + 2.0 * tr
+	return {
+		"direction": Vector3(dir.x * w * lateral, 1.0, dir.y * w * lateral).normalized(),
+		"gravity": Vector3(dir.x * w * grav_side, -(0.55 + 0.10 * w + 1.35 * tr), dir.y * w * grav_side),
+		"angular_min": -(160.0 + 240.0 * tr),
+		"angular_max": 160.0 + 240.0 * tr,
+		"transport": w * lateral,
+		"tr": tr,
+	}
+
+## 冬季落叶门控（F4）：冬季权重>=0.74 完全关闭；过渡期平滑收量，避免“冬季掉绿叶”。
+static func wind_leaf_gate(winter_w: float) -> float:
+	return clampf(1.0 - clampf(winter_w, 0.0, 1.0) * 1.35, 0.0, 1.0)
+
+## 冬季叶色：向秋季暖橙偏移（不产生嫩绿/灰白叶）。
+static func wind_leaf_tint(drift: Color, winter_w: float) -> Color:
+	var u := clampf(winter_w, 0.0, 1.0) * 0.35
+	return drift.lerp(Color(0.95, 0.52, 0.18, drift.a), u)
+
+## 萤火虫三通道解耦（F6/F7）：风/风暴/降水各自可辨，叠加时不再被降水通道吞掉。
+static func firefly_wind_ratio(base_i: float, rain: float, snow: float, wind: float, storm: float) -> float:
+	var windf := 1.0 - smoothstep(0.55, 1.0, clampf(wind, 0.0, 1.0))
+	var stormf := 1.0 - smoothstep(0.20, 0.70, clampf(storm, 0.0, 1.0))
+	var precf := 1.0 - clampf(rain * 1.9 + snow * 1.9, 0.0, 1.0)
+	return clampf(base_i * windf * stormf * precf, 0.0, 1.0)
+
+## 萤火虫可见参数（F8）：低 ratio 缩短寿命真正减少模拟量；高 ratio 恢复原寿命。
+static func firefly_wind_activity(ratio: float) -> Dictionary:
+	var r := clampf(ratio, 0.0, 1.0)
+	return {
+		"emitting": r > 0.02,
+		"amount_ratio": r,
+		"box_extents": Vector3(12.0, 2.4, 12.0) * (0.25 + 0.75 * r),
+		"speed_scale": 0.45 + 0.55 * r,
+		"albedo": Color(2.2, 1.9, 0.75) * (0.55 + 0.45 * r),
+		"lifetime": 4.0 + 5.0 * clampf(r * 2.0, 0.0, 1.0),
+	}
+
+## 秋千风致目标角（S2/S3/S6）：阵风包络 × 水平风加速度 → 侧倾/前后摆目标（已夹紧）。
+static func swing_wind_targets(wv: float, wd: Vector2, t: float) -> Dictionary:
+	var out: Dictionary = {}
+	swing_wind_targets_into(out, wv, wd, t)
+	return out
+
+## P8.2-03：热路径版本——写入调用方复用的 Dictionary，避免每帧新建 5 键容器（测量热点）。
+## 数学与 swing_wind_targets 完全一致（后者只是包一层新容器）。
+static func swing_wind_targets_into(out: Dictionary, wv: float, wd: Vector2, t: float) -> void:
+	var w := clampf(wv, 0.0, 1.0)
+	var dir := wd
+	if dir.length_squared() < 0.0001:
+		dir = Vector2(0.0, -1.0)
+	dir = dir.normalized()
+	var tr := smoothstep(WIND_SWING_TR0, WIND_SWING_TR1, w)
+	var gust := wind_gust(t, tr)
+	var acc := (2.2 * w + 0.8 * tr) * gust
+	out["roll"] = clampf(atan2(dir.x * acc, 9.8), -0.18, 0.42)
+	out["pitch"] = clampf(-atan2(dir.y * acc, 9.8), -0.45, 0.45)
+	out["acc"] = acc
+	out["gust"] = gust
+	out["tr"] = tr
+
+## 秋千"无风"基础姿态（P7-FINALIZE）：只保留轻微的被动摆动，不再像强风一样大幅荡起。
+## 用户要求：无风时最大摆角约 5–10°（相对自然悬垂位置的单侧偏转角）。
+##   前/后摆（绕 X，pitch）幅度 0.122 rad ≈ 7.0°
+##   侧向（绕 Z，roll）  幅度 0.035 rad ≈ 2.0°
+## 合成最大倾斜 ≈ 7.3°（在 5–10° 目标带内；风起时由 swing_wind_targets 平滑叠加）。
+## 角度定义：rotation.x / rotation.z 即绕吊点的偏转角，0 = 自然悬垂。
+static func swing_idle_rot(t: float) -> Vector2:
+	return Vector2(sin(t * 1.15) * SWING_IDLE_PITCH, sin(t * 0.83 + 0.8) * SWING_IDLE_ROLL)
+
+## 半隐式欧拉弹簧-阻尼一步（S1/S4）：返回 [新角度, 新角速度]。
+static func swing_spring_step(x: float, v: float, target: float, dt: float) -> Array:
+	var out: Array = [0.0, 0.0]
+	swing_spring_step_into(out, x, v, target, dt)
+	return out
+
+## P8.2-03：热路径版本——复用调用方传入的 2 元素 Array，避免每帧两次 Array 分配。
+static func swing_spring_step_into(out: Array, x: float, v: float, target: float, dt: float) -> void:
+	var step := clampf(dt, 0.0, 0.05)
+	var a := SWING_W0 * SWING_W0 * (target - x) - 2.0 * SWING_ZETA_C * SWING_W0 * v
+	v += a * step
+	x += v * step
+	out[0] = x
+	out[1] = v
+
+## P8.2-03：分段计时原语（µs）。只在 _p82prof_on 时被调用；不分配容器、不建对象。
+func _p82p_begin() -> void:
+	_p82prof_t = Time.get_ticks_usec()
+
+func _p82p_end(idx: int) -> void:
+	var d := Time.get_ticks_usec() - _p82prof_t
+	_p82prof_us[idx] += d
+	_p82prof_last[idx] = d
+	_p82prof_calls[idx] += 1
+
+func _p82p_reset() -> void:
+	for i in range(P82_WIND_SECTION_NAMES.size()):
+		_p82prof_us[i] = 0
+		_p82prof_last[i] = 0
+		_p82prof_calls[i] = 0
+
+## 每帧推进天气视觉：平滑风、室内判定、粒子跟随/密度/颜色、共享 shader uniform。
+## 这里不改变天气状态，也不新建权威时间；所有参数都来自 _weather_* 投影。
+func _update_weather_fx(delta: float) -> void:
+	if _weather_fx.is_empty():
+		return
+	var advancing := _mode == Mode.PLAYING and (not _paused or _time_source == "real")
+	if _p82prof_on:
+		_p82p_begin()
+	_weather_visual_wind = lerpf(_weather_visual_wind, clampf(_weather_wind, 0.0, 1.0), 1.0 - exp(-1.6 * delta))
+	var target_dir := _weather_wind_dir
+	if target_dir.length_squared() < 0.0001:
+		target_dir = Vector2(0.0, -1.0)
+	target_dir = target_dir.normalized()
+	var smoothed := _weather_wind_dir_smooth.lerp(target_dir, 1.0 - exp(-0.9 * delta))
+	_weather_wind_dir_smooth = smoothed.normalized() if smoothed.length_squared() > 0.0001 else target_dir
+	if _p82prof_on:
+		_p82p_end(0)
+	_weather_gloom = clampf(_weather_cloud * 0.62 + _weather_storm * 0.5 - 0.06, 0.0, 1.0)
+	# 相机在小屋实体盒内 → 室内程度 0→1（平滑），降水随之淡出，避免雨雪穿过屋顶盖在室内画面上
+	var indoor_target := 1.0 if _camera_inside_cottage() else 0.0
+	_weather_indoor = lerpf(_weather_indoor, indoor_target, 1.0 - exp(-8.0 * delta))
+	var cp := _cam.global_position
+	var follow := Vector2(clampf(cp.x, -WEATHER_FX_FOLLOW, WEATHER_FX_FOLLOW),
+		clampf(cp.z, -WEATHER_FX_FOLLOW, WEATHER_FX_FOLLOW))
+	# 室内不再整体关掉降水：雨雪粒子由 precip.gdshader 按小屋实体盒逐粒子剔除，
+	# 这样相机在室内时看不到穿过屋顶的雨雪，但从窗户仍能看到屋外在下雨/下雪。
+	var rain_amt := clampf(_weather_rain, 0.0, 1.0)
+	var snow_amt := clampf(_weather_snow, 0.0, 1.0)
+	var day_f := clampf((_sun_alt + 8.0) / 28.0, 0.10, 1.15)
+	var fogc: Color = _pal.get("fog", Color(0.74, 0.82, 0.92))
+	_weather_precip_room_uniforms()
+	_weather_apply_precip("rain", rain_amt, follow, day_f, fogc, 0.55 + 0.45 * clampf(_weather_storm, 0.0, 1.0))
+	_weather_apply_precip("snow", snow_amt, follow, day_f, fogc, 0.95)
+	# 屋檐滴水：中雨以上才出现（雨越大越密）；位置固定在正面屋檐，不跟随相机。
+	var drip_amt := clampf((rain_amt - 0.22) / 0.78, 0.0, 1.0)
+	_weather_apply_precip("drip", drip_amt, follow, day_f, fogc, 0.0)
+	# 地面水花：只在雨天出现；积雪覆盖后自动减弱（雪地上不会有雨点水花）。
+	var splash: Dictionary = _weather_fx.get("splash", {})
+	if not splash.is_empty():
+		var snode := splash.get("node", null) as MultiMeshInstance3D
+		var smat := splash.get("mat", null) as ShaderMaterial
+		var splash_amt := clampf(rain_amt * 1.1, 0.0, 1.0) * (1.0 - smoothstep(0.18, 0.48, _weather_snow_depth))
+		if snode != null:
+			snode.visible = splash_amt > 0.03
+		if smat != null:
+			smat.set_shader_parameter("strength", splash_amt)
+	# 天气共享 uniform：toon/grass/sea/sky 同一个来源，不各自维护一份天气状态
+	RenderingServer.global_shader_parameter_set("g_weather", Vector4(
+		clampf(_weather_rain, 0.0, 1.0), clampf(_weather_snow, 0.0, 1.0),
+		clampf(_weather_wetness, 0.0, 1.0), clampf(_weather_snow_depth, 0.0, 1.0)))
+	RenderingServer.global_shader_parameter_set("g_weather2", Vector4(
+		clampf(_weather_cloud, 0.0, 1.0), clampf(_weather_storm, 0.0, 1.0),
+		_weather_visual_wind, clampf(_weather_indoor, 0.0, 1.0)))
+	RenderingServer.global_shader_parameter_set("g_wind_dir", Vector4(
+		_weather_wind_dir_smooth.x, _weather_wind_dir_smooth.y, _weather_visual_wind, _frame_t))
+	# 落叶随风：秋叶的方向/横漂跟着同一套风场（不再固定 (0.12,1,0.06)）
+	# P8.1-05：强风时加大横向输运、下落与自旋（F2/F3）；只写 ProcessMaterial 属性，
+	# 不新建节点、不重建/不重启粒子系统（F5/F9），参数变化小于阈值时跳过写入。
+	if _p82prof_on:
+		_p82p_begin()
+	var leaf_wind: Dictionary = _fx.get("leaves", {})
+	var leaf_pm := leaf_wind.get("pm", null) as ParticleProcessMaterial
+	if leaf_pm != null:
+		var wv := _weather_visual_wind
+		var wd := _weather_wind_dir_smooth
+		if _p81wind_legacy:
+			leaf_pm.direction = Vector3(wd.x * wv * 1.6, 1.0, wd.y * wv * 1.6).normalized()
+			leaf_pm.gravity = Vector3(wd.x * wv * 0.55, -0.55 - 0.10 * wv, wd.y * wv * 0.55)
+		else:
+			# P8.2-03：稳定风场下 wv/风向逐帧几乎不变，wind_leaf_params 每帧重建 Dictionary
+			# 是纯开销（测量热点之一）。仅当输入变化超过 0.0005（=direction/gravity 的写入
+			# 阈值本身）时重算；因为下游写入本来就按同一阈值过滤，视觉输出逐帧等价。
+			if not _p82_leaf_lp_valid or _p82opt_off or absf(wv - _p82_leaf_wv) > 0.0005 \
+					or wd.distance_squared_to(_p82_leaf_wd) > 0.00000025:
+				_p82_leaf_lp = wind_leaf_params(wv, wd)
+				_p82_leaf_wv = wv
+				_p82_leaf_wd = wd
+				_p82_leaf_lp_valid = true
+			var lp: Dictionary = _p82_leaf_lp
+			var dir_v: Vector3 = lp["direction"]
+			var grav_v: Vector3 = lp["gravity"]
+			var prev_dir: Vector3 = _wind_leaf_cache.get("dir", Vector3(999.0, 999.0, 999.0))
+			if prev_dir.distance_to(dir_v) > 0.0005:
+				leaf_pm.direction = dir_v
+			var prev_grav: Vector3 = _wind_leaf_cache.get("grav", Vector3(999.0, 999.0, 999.0))
+			if prev_grav.distance_to(grav_v) > 0.0005:
+				leaf_pm.gravity = grav_v
+			var amn: float = lp["angular_min"]
+			var amx: float = lp["angular_max"]
+			if absf(leaf_pm.angular_velocity_min - amn) > 0.5:
+				leaf_pm.angular_velocity_min = amn
+			if absf(leaf_pm.angular_velocity_max - amx) > 0.5:
+				leaf_pm.angular_velocity_max = amx
+			_wind_leaf_cache["dir"] = dir_v
+			_wind_leaf_cache["grav"] = grav_v
+	if _p82prof_on:
+		_p82p_end(1)
+	# 闪电（雷暴/台风）：只影响视觉，不推进权威时间；模拟暂停时亮度冻结
+	_update_lightning(delta, advancing)
+
+## 闪电：雷暴/台风的瞬时照明。只写全局 uniform（sky/toon/grass/sea 同一来源），
+## 不创建光源、不改权威时间；模拟暂停时亮度冻结，避免暂停画面还在闪。
+func _update_lightning(delta: float, advancing: bool) -> void:
+	var type_id := String(_weather_state.get("type", "clear"))
+	var active := clampf(_weather_storm, 0.0, 1.0) > 0.55 and (
+		type_id == "thunder" or type_id == "typhoon" or type_id == "heavy_rain")
+	if active and advancing:
+		_lightning_clock += delta
+		_lightning_wait -= delta
+		if _lightning_wait <= 0.0:
+			# 间隔由天气种子与累计时钟决定，4.5~13 秒一次；只影响观感
+			var seed_v := float(_weather_state.get("seed", 20261022))
+			_lightning_wait = 4.5 + fposmod(_lightning_clock * 0.37 + seed_v * 0.0013, 8.5)
+			_lightning_flash = 1.0
+	if advancing:
+		_lightning_flash = maxf(0.0, _lightning_flash - delta * 5.4)
+		if _lightning_flash < 0.08:
+			_lightning_flash = 0.0
+	RenderingServer.global_shader_parameter_set("g_lightning", _lightning_flash if active else 0.0)
+
+## 把小屋主体遮挡盒写进降水 shader，供逐粒子室内剔除（与 _camera_inside_cottage 同一套盒）。
+func _weather_precip_room_uniforms() -> void:
+	if _weather_fx.is_empty() or _cottage.is_empty():
+		return
+	var raw: Variant = _cottage.get("beam_occluders", [])
+	if not (raw is Array) or (raw as Array).is_empty():
+		return
+	var b: Variant = (raw as Array)[0]
+	if not (b is Dictionary):
+		return
+	var bd: Dictionary = b
+	var center: Vector3 = bd.get("center", Vector3.ZERO)
+	var half: Vector3 = bd.get("half", Vector3.ZERO)
+	var yaw := float(bd.get("yaw", 0.0))
+	for key in ["rain", "snow"]:
+		var entry: Dictionary = _weather_fx.get(key, {})
+		var mat := entry.get("mat", null) as ShaderMaterial
+		if mat != null:
+			mat.set_shader_parameter("room_center", center)
+			mat.set_shader_parameter("room_half", half)
+			mat.set_shader_parameter("room_yaw", yaw)
+
+## 单个降水系统：开/关、密度、跟随位置、风向倾斜、颜色随天色。
+func _weather_apply_precip(key: String, amount: float, follow: Vector2, day_f: float,
+		fogc: Color, wind_push: float) -> void:
+	var entry: Dictionary = _weather_fx.get(key, {})
+	var node := entry.get("node", null) as GPUParticles3D
+	if node == null:
+		return
+	var on := amount > 0.015
+	node.emitting = on
+	node.visible = on
+	if not on:
+		return
+	if key != "drip":
+		var base_y := float(entry.get("base_y", node.position.y))
+		node.position = Vector3(follow.x, base_y, follow.y)
+	node.amount_ratio = clampf(amount * 1.15, 0.0, 1.0)
+	var pm := entry.get("pm", null) as ParticleProcessMaterial
+	if pm != null:
+		var dir := Vector3(_weather_wind_dir_smooth.x * wind_push * _weather_visual_wind, -1.0,
+			_weather_wind_dir_smooth.y * wind_push * _weather_visual_wind).normalized()
+		pm.direction = dir
+	var mat := entry.get("mat", null) as ShaderMaterial
+	if mat != null:
+		var base_c := Color(0.86, 0.91, 1.0) if key == "rain" else Color(0.98, 0.99, 1.0)
+		var lit := base_c.lerp(fogc.lerp(base_c, 0.5), 0.35)
+		var br := 0.55 + 0.55 * day_f
+		mat.set_shader_parameter("albedo_color", Color(lit.r * br, lit.g * br, lit.b * br, 1.0))
+
+## 相机是否在小屋的实体遮挡盒内（复用 Phase6 的 beam_occluders，不另建室内判定数据）。
+func _camera_inside_cottage() -> bool:
+	if _cottage.is_empty() or _cam == null:
+		return false
+	var raw: Variant = _cottage.get("beam_occluders", [])
+	if not (raw is Array) or (raw as Array).is_empty():
+		return false
+	var p := _cam.global_position
+	for b in (raw as Array):
+		if not (b is Dictionary):
+			continue
+		var bd: Dictionary = b
+		if not (bd.has("center") and bd.has("half")):
+			continue
+		var c: Vector3 = bd["center"]
+		var h: Vector3 = bd["half"]
+		var yaw := float(bd.get("yaw", 0.0))
+		var lp := p - c
+		var cs := cos(-yaw)
+		var sn := sin(-yaw)
+		var q := Vector3(cs * lp.x - sn * lp.z, lp.y, sn * lp.x + cs * lp.z)
+		if absf(q.x) < h.x - 0.30 and absf(q.y) < h.y - 0.15 and absf(q.z) < h.z - 0.30:
+			return true
+	return false
+
+# ============================================================
+# 天气对调色板的整体配光（天空/雾/日光/水面）；只做颜色混合，不替换天文/调色板算法
+# ============================================================
+## 阴雨/风暴时把调色板采样结果往冷灰方向压：天色协调而不是叠一层黑罩。
+## 会写 _weather_gloom 供其它系统读取；不修改季节/天文/天气状态本身。
+func _grade_palette_for_weather(p: Dictionary) -> void:
+	var cloud := clampf(_weather_cloud, 0.0, 1.0)
+	var storm := clampf(_weather_storm, 0.0, 1.0)
+	var rain := clampf(maxf(_weather_rain, _weather_snow), 0.0, 1.0)
+	var gloom := clampf(cloud * 0.62 + storm * 0.50 - 0.06, 0.0, 1.0)
+	_weather_gloom = gloom
+	var cool := Color(0.56, 0.62, 0.72)
+	var storm_shade := Color(0.34, 0.38, 0.47)
+	var dim := 1.0 - 0.52 * gloom
+	for key in ["skyZenith", "skyHorizon", "skyHaze"]:
+		p[key] = _grade_color(p[key], cool, gloom * 0.52, dim)
+	p["sunGlow"] = _grade_color(p["sunGlow"], cool, gloom * 0.60, 1.0 - 0.62 * gloom)
+	p["sunDisk"] = _grade_color(p["sunDisk"], cool, gloom * 0.55, 1.0 - 0.80 * gloom)
+	p["cloudLight"] = _grade_color(p["cloudLight"], Color(0.62, 0.66, 0.74), gloom * 0.55, 1.0 - 0.22 * gloom)
+	p["cloudShade"] = _grade_color(p["cloudShade"], storm_shade, gloom * 0.62, 1.0 - 0.18 * gloom)
+	p["fog"] = _grade_color(p["fog"], Color(0.52, 0.58, 0.66), clampf(rain * 0.45 + gloom * 0.30, 0.0, 0.8), 1.0 - 0.16 * gloom)
+	p["hemiSky"] = _grade_color(p["hemiSky"], cool, gloom * 0.35, 1.0 - 0.26 * gloom)
+	p["hemiGround"] = _grade_color(p["hemiGround"], cool, gloom * 0.25, 1.0 - 0.22 * gloom)
+	p["sunColor"] = _grade_color(p["sunColor"], Color(0.86, 0.90, 0.96), gloom * 0.55, 1.0 - 0.45 * gloom)
+	p["sunI"] = float(p["sunI"]) * (1.0 - 0.58 * gloom)
+	p["starAlpha"] = float(p["starAlpha"]) * (1.0 - 0.92 * maxf(cloud, rain))
+	p["moonDiskI"] = float(p["moonDiskI"]) * (1.0 - 0.35 * gloom)
+	p["waterDeep"] = _grade_color(p["waterDeep"], storm_shade, gloom * 0.35, 1.0 - 0.22 * gloom)
+	p["waterMid"] = _grade_color(p["waterMid"], storm_shade, gloom * 0.32, 1.0 - 0.20 * gloom)
+	p["waterShallow"] = _grade_color(p["waterShallow"], storm_shade, gloom * 0.25, 1.0 - 0.16 * gloom)
+	p["waterGlitterI"] = float(p["waterGlitterI"]) * (1.0 - 0.75 * gloom)
+
+func _grade_color(c: Color, target: Color, mix_amt: float, mul: float) -> Color:
+	var out := (c as Color).lerp(target, clampf(mix_amt, 0.0, 1.0)) * mul
+	return Color(out.r, out.g, out.b, 1.0)
+
+func _weather_available_types() -> Array:
+	if _weather_state.is_empty():
+		return []
+	return (_weather_state.get("available_types", []) as Array).duplicate()
+
+## 天气面板：自动/手动开关。切到手动时沿用当前天气作为起点（不硬切），
+## 并写回设置，让下次启动仍保持玩家选择。
+func _on_weather_auto_requested(enabled: bool) -> void:
+	if _weather == null:
+		return
+	_settings["weather_auto"] = enabled
+	if enabled:
+		_weather.set_mode("auto")
+	else:
+		var cur := String(_weather_state.get("type", "clear"))
+		var avail := _weather_available_types()
+		if not avail.has(cur):
+			cur = String(avail[0]) if not avail.is_empty() else "clear"
+		_settings["weather_type"] = cur
+		_weather.set_manual_type(cur)
+	_weather_available_types()
+	_settings_save_delay = 0.25 if not (_selftest or _perf or _shots or _transition) else -1.0
+	_update_weather(0.0, true)
+	# P7-FINALIZE（D §1.4 B4）：天气状态不在设置菜单里编辑，设置菜单的 _values 会过期；
+	# 这里把权威 _settings 推回菜单，避免玩家下次拖任意滑条时把旧天气值合并覆盖回来。
+	if _menu != null:
+		_menu.set_settings(_settings)
+	_hud.show_toast("天气：自动" if enabled else "天气：手动 · %s" % String(_weather_state.get("label", "")))
+
+## 天气面板：手动选择类型。只接受当前季节的合法选项（雪仅冬季、台风主要夏秋），
+## 非法选项给出提示且不改状态；选择本身进入手动模式并写回设置。
+func _on_weather_type_requested(type_id: String) -> void:
+	if _weather == null:
+		return
+	var avail := _weather_available_types()
+	if not avail.has(type_id):
+		var label := String(ISLE_WEATHER.TYPE_LABELS.get(type_id, type_id))
+		_hud.show_toast("该季节不可选：%s" % label)
+		return
+	_settings["weather_type"] = type_id
+	_settings["weather_auto"] = false
+	_weather.set_manual_type(type_id)
+	_settings_save_delay = 0.25 if not (_selftest or _perf or _shots or _transition) else -1.0
+	_update_weather(0.0, true)
+	if _menu != null:
+		_menu.set_settings(_settings)
+	_hud.show_toast("天气：%s" % String(ISLE_WEATHER.TYPE_LABELS.get(type_id, type_id)))
 
 # ============================================================
 # 每帧
@@ -618,8 +1908,34 @@ func _tick(delta: float) -> void:
 		if _settings_save_delay <= 0.0:
 			_settings_save_delay = -1.0
 			Settings.save_settings(_settings)
-	if _mode == Mode.PLAYING and (not _paused or _time_source == "real"):
+	# P7-FINALIZE：世界状态（库存+农田）延迟落盘 + 30s 周期自动落盘。
+	# 正式游戏才启用；自动化/探针不写玩家存档。
+	if _world_save_enabled:
+		if _world_save_delay >= 0.0:
+			_world_save_delay -= delta
+			if _world_save_delay <= 0.0:
+				_world_save_delay = -1.0
+				_save_game_state("deferred")
+		_world_save_auto -= delta
+		if _world_save_auto <= 0.0:
+			_world_save_auto = 30.0
+			_save_game_state("auto")
+	# P7（C-01）：_sim_delta 只在真正推进时更新；暂停/菜单/非游玩阶段必须显式清零，
+	# 否则灯塔光束（main.gd:_update_lighthouse_beam）和远海等待（_update_boat OFFSCREEN_WAIT）
+	# 会继续消费上一帧的陈旧增量，暂停期间世界仍在前进。
+	var _sim_advancing: bool = _mode == Mode.PLAYING and (not _paused or _time_source == "real")
+	if _sim_advancing:
 		_advance_sim(delta)
+	else:
+		_sim_delta = 0.0
+	# P3：农田成长时钟与"游戏模拟时钟"分离（P7-FINALIZE 真实时间农作）：
+	#   正式游戏 clock_mode="real"，每帧注入现实帧时长，暂停/菜单/时间跳转/day_length 都不影响；
+	#   探针/自动化保持 clock_mode="sim"，仍注入 _sim_seconds 以复用既有可控测试时钟。
+	if _farm != null:
+		if String(_farm.call("clock_mode_name")) == "real":
+			_farm.call("advance_realtime", delta)
+		else:
+			_farm.advance_to(_sim_seconds)
 	if _mode == Mode.MENU:
 		_menu_theta += delta * 0.035
 		_movie_theta = lerp_angle(_movie_theta, _menu_theta, 1.0 - exp(-2.0 * delta))
@@ -627,12 +1943,425 @@ func _tick(delta: float) -> void:
 			_apply_pose(_movie_pose())
 	_update_camera(delta)
 	_update_camera_light_dirs()
+	# P8 阶段 5：天气只读权威时钟；放在光照之前，阶段 6 的光照/天空/海面参数消费同帧天气。
+	_update_weather(delta)
 	_update_lighting()
+	# P8 阶段 6：天气视觉（粒子跟随/室内隐藏/共享 uniform）；放在光照之后以复用当帧天空配色。
+	_update_weather_fx(delta)
+	# P8 阶段 4：季节是日历（_sim_seconds）的只读投影；视觉属性和权威时间同一帧刷新。
+	_update_season(delta)
+	# P3：作物视觉同样只是权威状态的投影（节流刷新，状态不变则不产生任何变更）。
+	_update_farm(delta)
+	# P4：每日巡田调度（放在天气之后，用当帧权威天气；放在岛民 tick 之前，当天启动当帧生效）。
+	_update_farm_patrol(delta)
+	# P7-V4：岛民 tick 放在光照之后（当帧 _astro/_sun_alt/_events 已刷新），用真实帧 delta；
+	# 世界时间/暂停/时间来源全部由 ctx 注入，角色自身不建时钟。
+	if _villager != null:
+		_villager.call("sim_tick", delta, _villager_ctx())
 	_update_lighthouse_beam(delta)
 	_update_smoke_clock()
+	# P6：钓鱼结束/中断的收尾提示（状态推进全部在岛民状态机内，这里只消费结果）。
+	_update_fishing()
 	_update_ui(delta)
 
+# ============================================================
+# P3：农田视觉（权威数据 = IsleFarm，可见表现 = IsleFarmView）
+# ============================================================
+func _setup_farm() -> void:
+	var facts: Dictionary = _world.get("front_yard", {})
+	if facts.is_empty():
+		push_warning("P3: world facts 缺少 front_yard，农田视觉未接入")
+		return
+	var fy: Node3D = facts.get("node", null) as Node3D
+	if fy == null:
+		push_warning("P3: front_yard facts 缺少 node，农田视觉未接入")
+		return
+	# 用 preload 而非全局 class 缓存：headless --script 首次运行时 class_name 表可能尚未刷新。
+	const FARM_SCRIPT := preload("res://scripts/isle_farm.gd")
+	const FARM_VIEW_SCRIPT := preload("res://scripts/isle_farm_view.gd")
+	# 数据层：唯一权威状态。库存必须先于农田创建并注入，否则播种/采收只能返回 no_inventory。
+	# P4：正式运行环境注入全岛共享库存；P1 的"未注入即可读"语义保留（探针可传 null）。
+	# P7-FINALIZE：正式游戏先尝试读档；读档成功不再发初始种子。探针/自动化保持旧流程。
+	var grant := not _world_save_enabled
+	_setup_inventory(grant)
+	_farm = FARM_SCRIPT.new(_inventory)
+	if _world_save_enabled:
+		# 生产模式：农田成长时钟 = 现实经过时间（与 _sim_seconds / day_length 解耦）。
+		_farm.call("set_clock_mode", "real")
+		_world_loaded_at_start = _load_game_state()
+		if not _world_loaded_at_start:
+			# 新游戏：发放初始种子并立即落盘，保证下次启动读取到同一份世界状态（不会重复发放）。
+			if bool(_inventory.call("grant_starting_seeds")):
+				_inventory_grant_count += 1
+			else:
+				push_warning("P7: 新游戏初始种子发放失败")
+			_save_game_state("new_game")
+	var view: Node3D = FARM_VIEW_SCRIPT.new()
+	view.name = "FarmCropView"
+	fy.add_child(view)
+	if view.setup(_farm, facts):
+		_farm_view = view
+		_farm_view_timer = FARM_VIEW_INTERVAL
+	else:
+		view.queue_free()
+		_farm_view = null
+		push_warning("P3: IsleFarmView.setup 失败（facts 槽位不完整）")
+
+
+func _update_farm(delta: float) -> void:
+	if _farm_view == null:
+		return
+	_farm_view_timer += delta
+	if _farm_view_timer < FARM_VIEW_INTERVAL:
+		return
+	_farm_view_timer = 0.0
+	_farm_view.sync()
+
+
+# ============================================================
+# P4：全岛共享库存（单次初始化 + 注入农田）
+# ============================================================
+## 创建并初始化共享库存；重复调用返回同一实例，不会重复发放初始种子。
+## 正式初始化只发生在 _build_world -> _setup_farm 中；探针可通过 inventory() 只读取用。
+## grant=false 用于"正式游戏先读档、成功则不发种子"的流程（P7-FINALIZE）。
+func _setup_inventory(grant: bool = true) -> Object:
+	if _inventory != null:
+		return _inventory
+	_inventory = INVENTORY_SCRIPT.new()
+	if grant:
+		if _inventory.grant_starting_seeds():
+			_inventory_grant_count += 1
+		else:
+			push_warning("P4: 共享库存初始种子发放失败")
+	return _inventory
+
+
+# ============================================================
+# P7-FINALIZE：最小世界状态持久化（库存 + 农田；真实时间农作）
+# ============================================================
+## 启动时读档；成功则恢复库存/九格/收获次数，并按现实离线秒数补长生长期。
+## 返回是否成功。失败（无存档/版本不符/数据非法）时不改动任何状态，调用方走新游戏。
+func _load_game_state() -> bool:
+	if _inventory == null or _farm == null:
+		return false
+	var res: Dictionary = SAVE_SCRIPT.load_into(_inventory, _farm)
+	if not bool(res.get("ok", false)):
+		print("[SAVE] load skipped reason=%s" % String(res.get("reason", "")))
+		return false
+	print("[SAVE] loaded offline=%.1fs saved_unix=%.0f farm_clock=%.1f inv_items=%d" % [
+		float(res.get("offline_seconds", 0.0)), float(res.get("saved_unix", 0.0)),
+		float(res.get("farm_clock", 0.0)), (res.get("inventory", {}) as Dictionary).size()])
+	return true
+
+
+## 立即落盘（正式游戏才生效）。tag 只用于日志/诊断。
+func _save_game_state(tag: String = "") -> bool:
+	if not _world_save_enabled or _inventory == null or _farm == null:
+		return false
+	var res: Dictionary = SAVE_SCRIPT.save_state(_inventory, _farm)
+	_world_save_last = res
+	if bool(res.get("ok", false)):
+		_world_save_count += 1
+		if tag != "auto":
+			print("[SAVE] saved tag=%s count=%d farm_clock=%.1f" % [
+				tag, _world_save_count, float(res.get("farm_clock", 0.0))])
+		return true
+	push_warning("[SAVE] save failed tag=%s reason=%s" % [tag, String(res.get("reason", ""))])
+	return false
+
+
+## 标记世界状态有变更，延迟落盘（合并连续事务，避免每次收获都写盘）。
+func _mark_world_dirty(delay: float = 2.0) -> void:
+	if not _world_save_enabled:
+		return
+	_world_save_delay = maxf(_world_save_delay, delay)
+
+
+## 探针只读入口：存档是否启用 / 最近一次写盘结果 / 启动是否读档成功。
+func world_save_state() -> Dictionary:
+	return {
+		"enabled": _world_save_enabled,
+		"automation": _automation_run,
+		"loaded_at_start": _world_loaded_at_start,
+		"save_count": _world_save_count,
+		"last": _world_save_last.duplicate(true),
+		"farm_clock_mode": String(_farm.call("clock_mode_name")) if _farm != null else "",
+		"farm_clock": float(_farm.call("now")) if _farm != null else 0.0,
+	}
+
+
+## P7-FINALIZE：退出时落盘（窗口关闭 / Esc 菜单退出 / 引擎销毁统一覆盖）。
+## 正式游戏：保存设置偏好 + 世界状态；自动化/探针不写玩家数据。
+func _notification(what: int) -> void:
+	if what != NOTIFICATION_WM_CLOSE_REQUEST and what != NOTIFICATION_EXIT_TREE:
+		return
+	if _exit_saved:
+		return
+	_exit_saved = true
+	# 退出时若仍有未确认的显示变更：先回退（菜单会 emit 旧值 → 合回 _settings），再落盘。
+	if _menu != null and _menu.has_method("display_confirm_pending") \
+			and bool(_menu.call("display_confirm_pending")) and _menu.has_method("_cancel_res_confirm"):
+		_menu.call("_cancel_res_confirm")
+	if not _automation_run and not _settings.is_empty():
+		Settings.save_settings(_settings)
+	if _world_save_enabled:
+		_save_game_state("exit")
+
+
+## P4 探针只读入口：正式玩法不使用（返回共享库存实例本身，不改变状态）。
+func inventory() -> Object:
+	return _inventory
+
+
+## 诊断用：初始种子发放次数（重复初始化不得大于 1）。
+func inventory_grant_count() -> int:
+	return _inventory_grant_count
+
+
+## P5：背包面板的只读快照。数量唯一来源仍是共享库存；未初始化时返回空表。
+func _inventory_snapshot() -> Dictionary:
+	if _inventory == null:
+		return {}
+	return _inventory.item_snapshot()
+
+
+## ============================================================
+# P4：每日巡田调度（权威时间 = _sim_seconds；一个游戏日最多一轮）
+# ============================================================
+## 每个游戏日的第一帧判断 08:00（或初始化时已晚于 08:00 的当下），
+## 天气允许则让唯一岛民按九格路线实际走到每一格；雨雪天不启动；当天只处理一次。
+## 自动截图/自检/性能模式不启用（保持既有确定性基线），正式运行与 P4 探针不受影响。
+func _update_farm_patrol(delta: float) -> void:
+	if _farm == null or _villager == null:
+		return
+	if _shots or _selftest or _perf:
+		return
+	# 菜单/标题阶段不启动巡田：此时玩家还没进入游戏，岛民仍在待机取景中。
+	if _mode != Mode.PLAYING:
+		return
+	# P7（C-02）：暂停期间不启动/不重试巡田。暂停是"世界冻结"，不应该在冻结时刻
+	# 产生新的活动状态；恢复后（下一帧）照常按 08:00/天气/窗口重新判断。
+	if _paused:
+		return
+	# P6：钓鱼占用岛民期间不启动/不重试巡田——一个岛民只能有一个有效活动意图；
+	# 不标记"当天已处理"，钓鱼结束后窗口内仍可正常补跑当天的巡田。
+	if bool(_villager.call("fishing_active")):
+		return
+	var day := int(floor(_sim_seconds / 86400.0))
+	var secs := fposmod(_sim_seconds, 86400.0)
+	if day < _patrol_handled_day:
+		# 时间回退：不自动补跑当天，避免"倒带→重播→重复播种/重复发奖"。
+		# P7（A-FARM-01）：_patrol_handled_day 是单调高水位，回退时绝不下调。
+		# 旧实现把高水位降到 day，倒带跨过 00:00 再前进到同一游戏日时，
+		# 新游戏日分支会认为"这天还没巡过"而第二次启动巡田，直接违反"一个游戏日最多一轮"。
+		# 现在只用 _patrol_rewind_day 记录本次回退落到的游戏日：day_rewound 的取消/上报每段回退一次。
+		if _patrol_rewind_day != day:
+			_patrol_rewind_day = day
+			_patrol_deadline_day = day
+			_patrol_deadline = maxf(secs, PATROL_HOUR * 3600.0) + PATROL_START_WINDOW
+			_patrol_phase = "day_rewound"
+			_patrol_last = {"outcome": "day_rewound", "day": day, "sim_seconds": _sim_seconds}
+			if bool(_villager.call("farm_patrol_active")):
+				_villager.call("cancel_farm_patrol", "day_rewound")
+			print("[P4] patrol day rewind -> hold day=%d handled=%d sim=%.0f" % [day, _patrol_handled_day, _sim_seconds])
+		return
+	if day == _patrol_handled_day:
+		_patrol_rewind_day = -2147483647
+		_sync_farm_patrol_phase()
+		return
+	# ---- 新游戏日 ----
+	_patrol_rewind_day = -2147483647
+	if _patrol_deadline_day != day:
+		_patrol_deadline_day = day
+		_patrol_deadline = (PATROL_HOUR * 3600.0 if secs < PATROL_HOUR * 3600.0 else secs) + PATROL_START_WINDOW
+	if bool(_villager.call("farm_patrol_active")):
+		# 跨日时仍在巡田（最快日程档 60s/日 会自然跨过 00:00；探针 J12 覆盖）：
+		# 取消后必须同步投影 phase/last，否则 farm_patrol_state() 会在新日 08:00 前
+		# 一直谎报 running，与被取消的真实状态不一致（旧实现只取消、不投影）。
+		_villager.call("cancel_farm_patrol", "new_day")
+		_patrol_last = _villager.call("farm_patrol_last")
+		_patrol_phase = "cancelled"
+		print("[P4] patrol new_day cancel day=%d visited=%d sim=%.0f" % [
+			day, int((_patrol_last.get("results", []) as Array).size()), _sim_seconds])
+	if secs < PATROL_HOUR * 3600.0:
+		return
+	_patrol_retry_timer -= delta
+	if _patrol_retry_timer > 0.0:
+		return
+	_patrol_retry_timer = PATROL_RETRY_REAL
+	# 1) 天气否决（只读当帧权威天气状态，不看粒子/天空/截图）
+	var precip := String(_weather_state.get("precip_type", "none"))
+	if precip == "rain" or precip == "snow":
+		_patrol_handled_day = day
+		_patrol_phase = "weather_skip"
+		_patrol_last = {"outcome": "weather_skip", "reason": precip, "day": day, "sim_seconds": _sim_seconds}
+		print("[P4] patrol weather_skip day=%d precip=%s sim=%.0f" % [day, precip, _sim_seconds])
+		return
+	# 2) 启动窗口（睡醒/路径等重试机会耗尽后放弃当天，绝不无限等待）
+	if secs > _patrol_deadline:
+		_patrol_handled_day = day
+		_patrol_phase = "start_failed"
+		_patrol_last = {"outcome": "start_failed", "reason": "start_window_expired", "day": day, "sim_seconds": _sim_seconds}
+		print("[P4] patrol start_failed day=%d reason=window sim=%.0f" % [day, _sim_seconds])
+		return
+	# 3) 构建九格路线并交给岛民（岛民到点后才读农田权威状态并执行唯一主操作）
+	var route: Array = _build_farm_patrol_route()
+	if route.is_empty():
+		_patrol_handled_day = day
+		_patrol_phase = "start_failed"
+		_patrol_last = {"outcome": "start_failed", "reason": "no_route", "day": day, "sim_seconds": _sim_seconds}
+		return
+	var season := _farm_season_id()
+	if bool(_villager.call("begin_farm_patrol", route, _farm, season)):
+		_patrol_handled_day = day
+		_patrol_phase = "running"
+		_patrol_start_count += 1
+		_patrol_last = {"outcome": "running", "day": day, "season": season,
+			"route_size": route.size(), "started_sim": _sim_seconds}
+		print("[P4] patrol start day=%d season=%s slots=%d sim=%.0f" % [day, season, route.size(), _sim_seconds])
+	else:
+		# 岛民还在睡/刚被打断等：保持"当天未处理"，窗口内下一帧重试；绝不重复建任务。
+		_patrol_phase = "starting"
+
+
+## 同步岛民侧的结束状态（主控只投影结果，不复制农田状态）。
+func _sync_farm_patrol_phase() -> void:
+	if _patrol_phase != "running" and _patrol_phase != "starting" and _patrol_phase != "returning":
+		return
+	var prev_phase := _patrol_phase
+	if bool(_villager.call("farm_patrol_active")):
+		if String(_villager.call("farm_patrol_phase")) == "returning":
+			_patrol_phase = "returning"
+		elif _patrol_phase == "starting":
+			_patrol_phase = "running"
+		return
+	var last: Dictionary = _villager.call("farm_patrol_last")
+	if last.is_empty():
+		return
+	_patrol_last = last
+	match String(last.get("outcome", "")):
+		"done":
+			_patrol_phase = "completed"
+		"weather_returned", "weather_aborted":
+			_patrol_phase = "weather_aborted"
+		"cancelled":
+			_patrol_phase = "cancelled"
+		_:
+			_patrol_phase = "failed"
+	# P7-FINALIZE：巡田事务（播种/收获/返种）已提交 -> 世界状态有变更，合并落盘。
+	# 只在本帧确实发生 running->terminal 迁移时标脏，避免每帧重复。
+	if prev_phase != _patrol_phase:
+		_mark_world_dirty()
+	print("[P4] patrol day_done day=%d outcome=%s phase=%s visited=%d" % [
+		_patrol_handled_day, String(last.get("outcome", "")), _patrol_phase,
+		(last.get("results", []) as Array).size()])
+
+
+func _farm_season_id() -> String:
+	var cal: Dictionary = ISLE_CALENDAR.parts(_sim_seconds)
+	return str(cal.get("season_id", "spring"))
+
+
+## 九格路线：来自 world facts（P2-B 权威几何）+ 岛民走道图节点。
+## 顺序：门内→北带西端→北带中→北带东端→东带→南带东→南带中→南带西→西带→中心格；
+## P4-CLOSE：中心格（slot 4）不再记为空节点。岛民先走到北排中间苗床的走道边
+## （yard_bed_step），再从床沿上台、沿床顶走到 yard_slot_4 站位——该站位距中心格
+## 格心 1.235 m（≤ P4 的 1.30 m 交互臂展），且九格之间 0.5 m 草坪缝仍然不可通行。
+func _build_farm_patrol_route() -> Array:
+	var facts: Dictionary = _world.get("front_yard", {})
+	var slots: Array = facts.get("slots", [])
+	if slots.size() != 9:
+		push_warning("P4: front_yard facts 槽位数不是 9，巡田路线未构建")
+		return []
+	var by_index: Dictionary = {}
+	for row in slots:
+		var d: Dictionary = row
+		by_index[int(d.get("index", -1))] = d
+	var node_of := {
+		0: "yard_slot_0", 1: "yard_gate_in", 2: "yard_slot_2",
+		3: "yard_slot_3", 4: "yard_slot_4", 5: "yard_slot_5",
+		6: "yard_slot_6", 7: "yard_slot_7", 8: "yard_slot_8",
+	}
+	# P7-FINALIZE：每轮巡田重新洗牌九格访问顺序（用户要求"真正随机"，不得固定 0→1→2… 环绕）。
+	# 约束：每轮每个格最多处理一次（洗牌不会重复/遗漏）；岛民仍按路径图真实走到每个操作点。
+	# 洗牌只决定访问顺序，不改变 slot→节点映射，也不改变每格单主操作语义。
+	var order: Array = _shuffled_patrol_order()
+	var nodes: Dictionary = {}
+	if _villager != null:
+		nodes = (_villager.get("graph") as Dictionary).get("nodes", {})
+	var route: Array = []
+	for idx in order:
+		var row: Dictionary = by_index.get(int(idx), {})
+		if row.is_empty():
+			push_warning("P4: 农田 facts 缺少槽位 %d" % int(idx))
+			continue
+		var nid := String(node_of.get(int(idx), ""))
+		var point: Variant = null
+		if nid != "":
+			if nodes.has(nid):
+				point = (nodes[nid] as Dictionary)["pos"]
+			else:
+				push_warning("P4: 岛民走道图缺少节点 %s，槽位 %d 记为不可达" % [nid, int(idx)])
+				nid = ""
+		var w2: Vector2 = row.get("world", Vector2.ZERO)
+		var deck := float(row.get("deck", 0.0))
+		route.append({"slot": int(idx), "node": nid, "point": point, "face": Vector3(w2.x, deck, w2.y)})
+	return route
+
+
+## P7-FINALIZE：生成一轮随机访问顺序（Fisher–Yates）。
+## 基准集合仍是九格 [0..8]，但每轮顺序独立；不按格位/左右/中心偏好排序。
+func _shuffled_patrol_order() -> Array:
+	var order: Array = [0, 1, 2, 3, 4, 5, 6, 7, 8]
+	for i in range(order.size() - 1, 0, -1):
+		var j: int = _patrol_rng.randi_range(0, i)
+		var tmp: int = order[i]
+		order[i] = order[j]
+		order[j] = tmp
+	return order
+
+
+## 测试/复现入口：固定巡田随机种子（正式游戏每轮用随机源；探针可复现同一顺序）。
+## 注意：种子只影响"之后"的洗牌；已开始的巡田路线不受影响。
+func set_farm_patrol_rng_seed(seed_value: int) -> void:
+	_patrol_rng.seed = seed_value
+
+
+## 诊断：当前巡田 RNG 状态（只读；用于随机性复现/报告）。
+func farm_patrol_rng_state() -> int:
+	return _patrol_rng.state
+
+
+## P4 探针只读入口：巡田调度状态（不改变任何状态）。
+func farm_patrol_state() -> Dictionary:
+	return {
+		"phase": _patrol_phase,
+		"handled_day": _patrol_handled_day,
+		"start_count": _patrol_start_count,
+		"deadline_day": _patrol_deadline_day,
+		"deadline": _patrol_deadline,
+		"last": _patrol_last.duplicate(true),
+		"sim_seconds": _sim_seconds,
+	}
+
+
+## P3 探针只读入口：正式玩法不使用（不改变任何状态）。
+func farm() -> Object:
+	return _farm
+
+
+## P3 探针只读入口：正式玩法不使用（不改变任何状态）。
+func farm_view() -> Node3D:
+	return _farm_view
+
+
 func _update_camera(delta: float) -> void:
+	# 自由视角期间只由 IsleFlyCam 写相机变换/FOV；轨道相机参数（_theta/_elev/_radius/_cam_target/_fov）
+	# 保持冻结，退出混合结束后下一帧 _play_pose() 即原样恢复，不会跳回初始机位。
+	if _flycam != null and _flycam.active:
+		_flycam.update(delta, Callable(IsleMath, "terrain_height"))
+		_flycam.apply_to(_cam)
+		return
 	if not _blending.is_empty():
 		_blend_t += delta
 		var w := clampf(_blend_t / BLEND_DUR, 0.0, 1.0)
@@ -659,6 +2388,9 @@ func _update_camera(delta: float) -> void:
 		_apply_pose(_play_pose())
 	else:
 		_apply_pose(_movie_pose())
+		# P7-V3：设置面板打开时实时预览玩家 FOV（菜单观景机位默认 36°，预览改用 _fov）。
+		if _menu != null and _menu.has_method("is_settings_open") and bool(_menu.call("is_settings_open")):
+			_cam.fov = _fov
 
 var _blending_done := Callable()
 
@@ -671,6 +2403,37 @@ func _start_blend(to: String, from_pose: Dictionary, done: Callable) -> void:
 # ============================================================
 # 光照 / 材质每帧
 # ============================================================
+## P8 阶段 7：供岛民/海鸥/炊烟/萤火消费的天气快照。只读 _weather_state 派生，
+## 不建立第二份天气状态；暂停时数值冻结（状态机自身不推进）。
+func _weather_eco() -> Dictionary:
+	return {
+		"type": String(_weather_state.get("type", "clear")),
+		"precip_type": String(_weather_state.get("precip_type", "none")),
+		"precip_intensity": float(_weather_state.get("precip_intensity", 0.0)),
+		"wind_strength": _weather_wind,
+		"wind_x": _weather_wind_dir_smooth.x,
+		"wind_z": _weather_wind_dir_smooth.y,
+		"storm": _weather_storm,
+		"cloud": _weather_cloud,
+	}
+
+## P7：交给海鸥状态机的权威时间/阶段信息（生态事件只消费这些，不另建世界时钟）。
+func _eco_ctx() -> Dictionary:
+	return {
+		"day": int(floor(_sim_seconds / 86400.0)),
+		"rising": _rising,
+		"sim_seconds": _sim_seconds,
+		"time_source": _time_source,
+		"paused": _paused,
+		"sim_rate": _sim_rate,  # 模拟秒/真实秒：生态超前量 = 过渡时长 × 该倍率
+		"weather": _weather_eco(),
+		# P8.1：海鸥栖点季节门控。winter 权重决定裸枝栖点，canopy_keep 决定树冠栖点。
+		"season": {
+			"winter": float(_season_weights[3]) if _season_weights.size() > 3 else 0.0,
+			"canopy_keep": float(_season_visuals.get("canopy_keep", 1.0)),
+		},
+	}
+
 func _update_lighting() -> void:
 	_astro = IsleAstro.compute(_sim_seconds)
 	_sun_alt = float(_astro["sun_alt"])
@@ -685,6 +2448,11 @@ func _update_lighting() -> void:
 	_theme_t = IsleMath.theme_time(_sun_alt, _rising)
 	_pal = IslePalette.sample(_theme_t)
 	var p := _pal
+	# P8 阶段 6：天气整体配光（云量/风暴 → 天色/雾/日光/水面）；只改颜色，不改天文与调色板算法。
+	_grade_palette_for_weather(p)
+	# 画质档雾距缩放（fog_scale 是 isle_quality 定义但此前从未被渲染消费的键）：
+	# 只缩放自定义 shader 的雾起止距离；雾色仍由调色板决定，低档稍近、极致档稍远。
+	var fog_scale := clampf(float(_quality_state.get("fog_scale", 1.0)), 0.6, 1.4)
 	# environment
 	# 画质档 glow_strength 系数（1.0=预设基准）；让五档的辉光强度真实生效，而不是被调色板每帧覆盖。
 	var gq := clampf(float(_quality_state.get("glow_strength", 1.0)), 0.0, 1.5)
@@ -704,10 +2472,30 @@ func _update_lighting() -> void:
 	_sky_mat.set_shader_parameter("sun_dir", _sun_dir_world)
 	_sky_mat.set_shader_parameter("moon_dir", _moon_dir_world)
 	_sky_mat.set_shader_parameter("sun_disk_i", float(p["sunDiskI"]))
-	_sky_mat.set_shader_parameter("moon_disk_i", float(p["moonDiskI"]))
+	# P8 阶段 3.2：月盘亮度 = 调色板色温 × 相位亮面 × 白天保留 × 真实高度可见性；
+	# 旧实现直接用调色板 moonAlpha/moonDiskI，正午会压到 0.1/0.05，白天即使月亮在地平线上也看不见。
+	var moon_up := _moon_visibility(moon_alt)
+	var moon_day_keep := clampf(1.0 - maxf(_sun_alt, 0.0) / 80.0, 0.45, 1.0)
+	var moon_phase_light := 0.35 + 0.65 * _moon_illum
+	var moon_base := clampf(maxf(float(p["moonDiskI"]), 0.80), 0.0, 1.4)
+	var moon_disk_eff := clampf(moon_base * moon_phase_light * moon_day_keep * moon_up, 0.0, 2.0)
+	var moon_alpha_eff := clampf(maxf(float(p["moonAlpha"]), 0.75) * moon_up, 0.0, 1.0)
+	_sky_mat.set_shader_parameter("moon_disk_i", moon_disk_eff)
 	_sky_mat.set_shader_parameter("star_alpha", float(p["starAlpha"]))
-	_sky_mat.set_shader_parameter("moon_alpha", float(p["moonAlpha"]))
-	_sky_mat.set_shader_parameter("cloud_opacity", clampf(float(p["cloudOpacity"]) * 1.35 + 0.10, 0.0, 0.95))
+	_sky_mat.set_shader_parameter("moon_alpha", moon_alpha_eff)
+	var cloud_op := clampf(maxf(float(p["cloudOpacity"]) * 1.35 + 0.10, 0.10 + _weather_cloud * 0.95), 0.0, 0.985)
+	if _p8_moon_clear:
+		cloud_op = 0.0
+	_sky_mat.set_shader_parameter("cloud_opacity", cloud_op)
+	# 阴雨/风暴强制足够的云层档位：低画质也不能出现“下雨却无云”的割裂，且台风云要成片移动
+	var want_detail := float(_quality_state.get("sky_cloud_detail", 2.0))
+	if _weather_cloud > 0.30:
+		want_detail = maxf(want_detail, 1.0)
+	if _weather_cloud > 0.55 or _weather_storm > 0.20:
+		want_detail = maxf(want_detail, 2.0)
+	if _weather_storm > 0.45:
+		want_detail = maxf(want_detail, 3.0)
+	_sky_mat.set_shader_parameter("cloud_detail", want_detail)
 	_sky_mat.set_shader_parameter("moon_phase", _moon_illum)
 	_sky_mat.set_shader_parameter("moon_waxing", 1.0 if _moon_waxing else 0.0)
 	_sky_mat.set_shader_parameter("time_s", _frame_t)
@@ -728,10 +2516,17 @@ func _update_lighting() -> void:
 	_sea_mat.set_shader_parameter("moon_i", float(p["moonI"]))
 	_sea_mat.set_shader_parameter("glitter_i", float(p["waterGlitterI"]))
 	_sea_mat.set_shader_parameter("moon_phase", _moon_illum)
-	_sea_mat.set_shader_parameter("fog_near", float(p["fogNear"]))
-	_sea_mat.set_shader_parameter("fog_far", float(p["fogFar"]))
+	# 雨雪/风暴时雾更近更浓（自定义雾，不依赖 Environment 体积雾）
+	var wet_fog := clampf(maxf(_weather_rain, _weather_snow) * 0.70 + _weather_storm * 0.50, 0.0, 1.0)
+	_dbg_fog_near = float(p["fogNear"]) * fog_scale * (1.0 - 0.18 * wet_fog)
+	_dbg_fog_far = float(p["fogFar"]) * fog_scale * (1.0 - 0.34 * wet_fog)
+	_sea_mat.set_shader_parameter("fog_near", _dbg_fog_near)
+	_sea_mat.set_shader_parameter("fog_far", _dbg_fog_far)
 	_sea_mat.set_shader_parameter("time_s", _frame_t)
-	_sea_mat.set_shader_parameter("cloud_opacity", clampf(float(p["cloudOpacity"]) * 1.35 + 0.10, 0.0, 0.95))
+	_sea_mat.set_shader_parameter("cloud_opacity", cloud_op)
+	# 风暴/大风时泡沫增多（不动 7 组波系数与 wave_height，船体浮力契约保持不变）
+	_sea_mat.set_shader_parameter("foam_amount", clampf(
+		float(_quality_state.get("sea_foam", 0.78)) * (1.0 + 0.32 * _weather_storm) + _weather_wind * 0.10, 0.0, 1.5))
 	# SSR 深度重建用相机矩阵（每帧随相机变换更新；shader 内零矩阵即自动跳过 SSR）
 	# GDScript 无 Projection*Transform3D；Projection(Transform3D) 构造器存在，顺序必须 projection * view_inverse（世界→裁剪）。
 	var ssr_view: Transform3D = _cam.global_transform.affine_inverse()
@@ -745,40 +2540,54 @@ func _update_lighting() -> void:
 	RenderingServer.global_shader_parameter_set("g_ambient_sky", _lin(p["hemiSky"]) * float(p["hemiI"]))
 	RenderingServer.global_shader_parameter_set("g_ambient_ground", _lin(p["hemiGround"]) * float(p["hemiI"]))
 	RenderingServer.global_shader_parameter_set("g_fog_color", _lin(p["fog"]))
-	RenderingServer.global_shader_parameter_set("g_fog_near", float(p["fogNear"]))
-	RenderingServer.global_shader_parameter_set("g_fog_far", float(p["fogFar"]))
+	RenderingServer.global_shader_parameter_set("g_fog_near", _dbg_fog_near)
+	RenderingServer.global_shader_parameter_set("g_fog_far", _dbg_fog_far)
 	RenderingServer.global_shader_parameter_set("g_wind_time", _frame_t)
 	RenderingServer.global_shader_parameter_set("g_outline_color", _lin(p["outline"]))
-	# 夜间局部灯光 → 全局 uniform（toon/grass/glass 在片元里自算点光衰减）
+	# 夜间局部灯光 → 全局 uniform（toon/grass 在片元里自算点光衰减）
 	var light_scale := clampf(0.10 + float(p["lanternI"]) * 1.05, 0.0, 1.30)
-	# 画质预设可降低参与着色的局部灯数量（4 / 6 / 8），其余仍保留自发光模型与光晕
-	# 船载悬挂灯：动态点光（跟随船体，优先占第一盏；亮度由 light_scale 随昼夜自动收敛）
-	var lights: Array = _lights
-	if _sailboat != null and _boat_fade > 0.02 and _boat_state != "OFFSCREEN_WAIT":
-		var bl := {
-			"pos": _sailboat.to_global(_boat_lantern_local),
-			"color": Color(1.0, 0.74, 0.40),
-			"energy": 1.30,
-			"range": 6.5,
-		}
-		var tmp_lights: Array = [bl]
-		tmp_lights.append_array(_lights)
-		lights = tmp_lights
-	var active_lights := mini(lights.size(), mini(_light_budget, 12))
-	for i in range(12):
-		if i < active_lights:
-			var L: Dictionary = lights[i]
+	# P8.1-06 双池：室外池写 g_l0..g_l9，室内池写 g_l10..g_l15（互斥，由 toon indoor_mask 选池）。
+	var pools := _compute_light_pools()
+	var out_sel: Array = pools["out"]
+	var in_sel: Array = pools["in"]
+	_lights_outdoor = out_sel
+	_lights_indoor = in_sel
+	# 极轻微火光呼吸，避免死板；白天整体压暗。
+	# P8.1-03 证据：对照截图期间可钉住呼吸相位（_p81_pin_light_t），消除时相污染。
+	var lt := _frame_t if _p81_pin_light_t < 0.0 else _p81_pin_light_t
+	for i in range(10):
+		if i < out_sel.size():
+			var L: Dictionary = out_sel[i]
 			var lpos: Vector3 = L["pos"]
 			var lcol: Color = _lin(L["color"])
-			# 极轻微火光呼吸，避免死板；白天整体压暗
-			var fl := 1.0 + sin(_frame_t * 6.7 + float(i) * 2.1) * 0.05 + sin(_frame_t * 11.9 + float(i) * 1.3) * 0.025
+			var fl := 1.0 + sin(lt * 6.7 + float(i) * 2.1) * 0.05 + sin(lt * 11.9 + float(i) * 1.3) * 0.025
 			var en := float(L["energy"]) * light_scale * fl
 			RenderingServer.global_shader_parameter_set("g_l%d_pos" % i, Vector4(lpos.x, lpos.y, lpos.z, float(L["range"])))
 			RenderingServer.global_shader_parameter_set("g_l%d_col" % i, Vector4(lcol.r, lcol.g, lcol.b, en))
 		else:
 			RenderingServer.global_shader_parameter_set("g_l%d_pos" % i, Vector4(0.0, -999.0, 0.0, 1.0))
 			RenderingServer.global_shader_parameter_set("g_l%d_col" % i, Vector4.ZERO)
-	RenderingServer.global_shader_parameter_set("g_light_count", float(active_lights))
+	for j in range(6):
+		var slot := 10 + j
+		if j < in_sel.size():
+			var L2: Dictionary = in_sel[j]
+			var lpos2: Vector3 = L2["pos"]
+			var lcol2: Color = _lin(L2["color"])
+			# 壁炉呼吸振幅更大（火焰感），其余灯保持轻微呼吸。
+			var amp_a := 0.05
+			var amp_b := 0.025
+			if String(L2.get("kind", "")) == "fireplace":
+				amp_a = 0.10
+				amp_b = 0.05
+			var fl2 := 1.0 + sin(lt * 6.7 + float(slot) * 2.1) * amp_a + sin(lt * 11.9 + float(slot) * 1.3) * amp_b
+			var en2 := float(L2["energy"]) * light_scale * fl2
+			RenderingServer.global_shader_parameter_set("g_l%d_pos" % slot, Vector4(lpos2.x, lpos2.y, lpos2.z, float(L2["range"])))
+			RenderingServer.global_shader_parameter_set("g_l%d_col" % slot, Vector4(lcol2.r, lcol2.g, lcol2.b, en2))
+		else:
+			RenderingServer.global_shader_parameter_set("g_l%d_pos" % slot, Vector4(0.0, -999.0, 0.0, 1.0))
+			RenderingServer.global_shader_parameter_set("g_l%d_col" % slot, Vector4.ZERO)
+	RenderingServer.global_shader_parameter_set("g_light_count", float(out_sel.size()))
+	RenderingServer.global_shader_parameter_set("g_light_indoor", float(in_sel.size()))
 	# vignette
 	_vignette_mat.set_shader_parameter("vignette_strength", float(p["vignette"]))
 	_vignette_mat.set_shader_parameter("grain_amount", float(p["grain"]))
@@ -802,11 +2611,28 @@ func _update_lighting() -> void:
 				(hm as StandardMaterial3D).albedo_color = Color(1.35 * wf, 0.86 * wf, 0.43 * wf, 1.0)
 	if _lantern_mat != null:
 		_lantern_mat.set_shader_parameter("glow", 0.06 + float(p["lanternI"]) * 1.0)
-	if _lantern_halo != null:
-		var lm: Material = _lantern_halo.material_override
-		if lm is StandardMaterial3D:
-			var lf := clampf(0.03 + pow(float(p["lanternI"]), 1.6) * 0.85, 0.0, 1.6)
-			(lm as StandardMaterial3D).albedo_color = Color(1.55 * lf, 1.02 * lf, 0.50 * lf, 1.0)
+	# P8.1-06：一层/阁楼吊灯灯罩昼夜调光（白天微亮、夜里全亮）；灯罩本体不再 self_lit。
+	for m in _interior_shade_mats:
+		if m is ShaderMaterial:
+			(m as ShaderMaterial).set_shader_parameter("glow", 0.10 + float(p["lanternI"]) * 1.05)
+	# P8.2-02：室内吊灯光晕随昼收放：白天只有微光点，夜里保留暖光晕；半径同步收小避免近景大白盘。
+	var ihf := clampf(0.02 + pow(float(p["lanternI"]), 1.6) * 0.95, 0.0, 1.2)
+	var ihs := clampf(0.30 + float(p["lanternI"]) * 0.70, 0.30, 1.0)
+	for h in _interior_halos:
+		if h is MeshInstance3D:
+			var ihm: Material = (h as MeshInstance3D).material_override
+			if ihm is StandardMaterial3D:
+				(ihm as StandardMaterial3D).albedo_color = Color(1.25 * ihf, 0.82 * ihf, 0.42 * ihf, 1.0)
+			(h as MeshInstance3D).scale = Vector3(ihs, ihs, 1.0)
+	var lf := clampf(0.03 + pow(float(p["lanternI"]), 1.6) * 0.85, 0.0, 1.6)
+	var lantern_halos: Array = _lantern_halos
+	if lantern_halos.is_empty() and _lantern_halo != null:
+		lantern_halos = [_lantern_halo]
+	for h in lantern_halos:
+		if h is MeshInstance3D:
+			var lm: Material = (h as MeshInstance3D).material_override
+			if lm is StandardMaterial3D:
+				(lm as StandardMaterial3D).albedo_color = Color(1.55 * lf, 1.02 * lf, 0.50 * lf, 1.0)
 	# 码头灯 / 路灯 / 船头灯：与门灯同一套调光（否则白天也是一团过曝亮斑）
 	var lampf := clampf(0.02 + pow(float(p["lanternI"]), 1.6) * 0.85, 0.0, 1.5)
 	for m in _lamp_mats:
@@ -824,19 +2650,246 @@ func _update_lighting() -> void:
 		var bhm: Material = _boat_lantern_halo.material_override
 		if bhm is StandardMaterial3D:
 			(bhm as StandardMaterial3D).albedo_color = Color(1.30 * lampf, 0.83 * lampf, 0.40 * lampf, 1.0)
-	# 萤火
+	# 萤火（C1 修复：原写法按 ShaderMaterial 写 amount_ratio，但实际材质是 StandardMaterial3D，
+	# 赋值恒为 null，夜间粒子从未发射；改为直接驱动 GPUParticles3D 的 emitting / amount_ratio）
+	if _p82prof_on:
+		_p82p_begin()
 	var ff: Dictionary = _fx.get("fireflies", {})
-	if ff.has("mat"):
-		var fm: ShaderMaterial = ff["mat"] as ShaderMaterial
-		if fm != null:
-			fm.set_shader_parameter("amount_ratio", clampf(float(p["fireflyI"]), 0.0, 1.0))
+	if ff.has("node"):
+		var fnode: GPUParticles3D = ff["node"] as GPUParticles3D
+		if fnode != null:
+			var ffi := clampf(float(p["fireflyI"]), 0.0, 1.0)
+			if _p81wind_legacy:
+				# P8 阶段 7 旧实现：三通道乘算后整体押到 amount_ratio（同 build A/B 对照用）。
+				var wx_fire := 1.0 - clampf(_weather_rain * 1.8 + _weather_snow * 1.8, 0.0, 1.0)
+				wx_fire *= 1.0 - clampf((_weather_wind - 0.55) * 1.6, 0.0, 1.0)
+				wx_fire *= 1.0 - clampf((_weather_storm - 0.35) * 1.6, 0.0, 1.0)
+				ffi *= clampf(wx_fire, 0.0, 1.0)
+				fnode.emitting = ffi > 0.02
+				fnode.amount_ratio = maxf(ffi, 0.0)
+				fnode.speed_scale = 1.0
+			else:
+				# P8.1-05：风/风暴/降水三通道解耦（F6/F7）。强风下可见量≈晴夜 1/5，
+				# 且同时收缩活动范围、降速、压暗；ratio 极低才真正关发射，不做硬切。
+				var weather_f := firefly_wind_ratio(1.0, _weather_rain, _weather_snow, _weather_wind, _weather_storm)
+				var ratio := firefly_wind_ratio(ffi, _weather_rain, _weather_snow, _weather_wind, _weather_storm)
+				# 活动范围/速度/亮度只跟天气有关；可见量（amount_ratio）再乘 fireflyI。
+				# P8.2-03：稳定天气下 weather_f 逐帧不变，activity Dictionary 只在变化>0.0005 时重建；
+				# 节点/材质属性也只在发射态或数值真的变化时写（原先逐帧无条件写 4 个属性=测量热点）。
+				if not _p82_ff_act_valid or _p82opt_off or absf(weather_f - _p82_ff_weather_f) > 0.0005:
+					_p82_ff_act = firefly_wind_activity(weather_f)
+					_p82_ff_weather_f = weather_f
+					_p82_ff_act_valid = true
+				var act: Dictionary = _p82_ff_act
+				var emitting_now := ratio > 0.02
+				if _p82opt_off or emitting_now != _wind_firefly_emitting or absf(ratio - _p82_ff_ratio_w) > 0.002:
+					fnode.emitting = emitting_now
+					fnode.amount_ratio = ratio
+					_p82_ff_ratio_w = ratio
+				var fpm := fnode.process_material as ParticleProcessMaterial
+				if fpm != null:
+					var box: Vector3 = act["box_extents"]
+					if _p82opt_off or box.distance_squared_to(_p82_ff_box_w) > 0.000004:
+						fpm.emission_box_extents = box
+						_p82_ff_box_w = box
+				# 速度在 GPUParticles3D 节点上（ProcessMaterial 无 speed_scale）。
+				var spd := float(act["speed_scale"])
+				if _p82opt_off or absf(spd - _p82_ff_speed_w) > 0.002:
+					fnode.speed_scale = spd
+					_p82_ff_speed_w = spd
+				var fmat := ff.get("mat", null) as StandardMaterial3D
+				if fmat != null:
+					var ab: Color = act["albedo"]
+					if _p82opt_off or absf(ab.r - _p82_ff_albedo_w.r) > 0.002 or absf(ab.g - _p82_ff_albedo_w.g) > 0.002 \
+							or absf(ab.b - _p82_ff_albedo_w.b) > 0.002:
+						fmat.albedo_color = ab
+						_p82_ff_albedo_w = ab
+				# 低 ratio 时缩短寿命=真正减少在飞粒子；只在跨过 0.05 变化时写，避免每帧重启风险。
+				var life: float = act["lifetime"]
+				if absf(life - _wind_firefly_lifetime) > 0.05:
+					_wind_firefly_lifetime = life
+					fnode.lifetime = life
+				_wind_firefly_emitting = emitting_now
+	if _p82prof_on:
+		_p82p_end(3)
 	# 特效
 	if _ripples != null:
 		_ripples.update(get_process_delta_time(), _sun_alt)
 	if _birds != null:
-		_birds.update_birds(get_process_delta_time(), _sun_alt)
+		_birds.update_birds(get_process_delta_time(), _sun_alt, _eco_ctx())
 	# 船 / 风车 / 秋千 / 水花推进
 	_update_props(get_process_delta_time())
+
+# ============================================================
+# P6：岛民自主钓鱼（玩家 HUD 按钮 → 岛民走到真实岸边 → 抛竿/等待/咬钩/收线/展示 → 自动下一轮）
+# ============================================================
+## 玩家正式入口（HUD 钓鱼按钮 → fishing_toggle_requested → 这里）：钓鱼中点击即停止。
+func _on_fishing_toggle() -> void:
+	_sfx_ui()
+	if _villager != null and _villager.has_method("fishing_active") and bool(_villager.call("fishing_active")):
+		stop_fishing("player_stop")
+	else:
+		start_fishing()
+
+
+## 发起钓鱼。失败原因会明确提示玩家，绝不静默进入钓鱼状态；
+## 冲突（巡田/强制移动/睡觉/路径不可达）全部由岛民现有的活动仲裁拒绝，main 只转发为可读提示。
+func start_fishing() -> Dictionary:
+	if _villager == null:
+		_hud.show_toast("岛上暂时没有可以钓鱼的岛民")
+		return {"ok": false, "reason": "no_villager"}
+	if _mode != Mode.PLAYING:
+		_hud.show_toast("进入小岛后才能让岛民去钓鱼")
+		return {"ok": false, "reason": "not_playing"}
+	if _inventory == null:
+		_hud.show_toast("背包还没准备好，暂时不能钓鱼")
+		return {"ok": false, "reason": "no_inventory"}
+	# P7（C-02）：暂停期间不接受新的钓鱼活动（暂停=世界冻结，岛民不会开始移动；
+	# 否则 HUD 会提示"往岸边走去"而岛民其实被冻结，状态与提示不一致）。
+	if _paused:
+		_hud.show_toast("时间已暂停，继续后才能让岛民去钓鱼")
+		return {"ok": false, "reason": "paused"}
+	var res: Dictionary = _villager.call("begin_fishing",
+		Callable(self, "_fishing_commit"), Callable(self, "_sfx_splash"))
+	if bool(res.get("ok", false)):
+		_fishing_seen = true
+		_fishing_rounds_seen = 0
+		if _hud.has_method("close_backpack") and bool(_hud.call("backpack_open")):
+			_hud.call("close_backpack")
+		print("[P6] fishing start (player) spot=%s sim=%.0f" % [String((res.get("spot", {}) as Dictionary).get("node", "")), _sim_seconds])
+		_hud.show_toast("岛民拿起鱼竿，往岸边走去")
+	else:
+		var reason := String(res.get("reason", "unknown"))
+		print("[P6] fishing start refused reason=%s sim=%.0f" % [reason, _sim_seconds])
+		_hud.show_toast(_fishing_refuse_text(reason))
+	return res
+
+
+## 玩家停止钓鱼：立即结束当前轮、不再开下一轮；已经提交入账的鱼获保留（不撤销、不重复）。
+func stop_fishing(reason: String = "player_stop") -> void:
+	if _villager == null or not _villager.has_method("fishing_active"):
+		return
+	if bool(_villager.call("fishing_active")):
+		_villager.call("cancel_fishing", reason)
+		print("[P6] fishing stop requested reason=%s sim=%.0f" % [reason, _sim_seconds])
+		_hud.show_toast("岛民收起鱼竿，结束钓鱼")
+
+
+func _fishing_refuse_text(reason: String) -> String:
+	match reason:
+		"already_fishing":
+			return "岛民已经在钓鱼了"
+		"patrol_running":
+			return "岛民正在巡田，等这一轮巡完再钓鱼"
+		"forced_mode":
+			return "岛民现在走不开，稍后再试"
+		"sleeping":
+			return "岛民还在休息，先等他醒来吧"
+		"no_spot":
+			return "没有找到合适的岸边钓位"
+		"path_failed":
+			return "岛民走不到那个岸边钓位"
+		"no_villager":
+			return "岛上暂时没有可以钓鱼的岛民"
+		"no_inventory":
+			return "背包还没准备好，暂时不能钓鱼"
+		"not_playing":
+			return "进入小岛后才能让岛民去钓鱼"
+		"paused":
+			return "时间已暂停，继续后才能让岛民去钓鱼"
+		_:
+			return "现在没法钓鱼（%s）" % reason
+
+
+## 岛民每次成功收线后唯一的一次入账入口：走既有共享库存事务，失败时状态机不会展示鱼获。
+func _fishing_commit(fish_id: String, size: float) -> bool:
+	if _inventory == null or not _inventory.is_known_item(fish_id):
+		print("[P6] inventory reject fish=%s (inventory=%s known=%s)" % [fish_id, str(_inventory != null), str(_inventory != null and _inventory.is_known_item(fish_id))])
+		return false
+	var ok: bool = _inventory.add_items({fish_id: 1})
+	if not ok:
+		print("[P6] inventory add failed fish=%s" % fish_id)
+		return false
+	var fish_name := String(FISH_SCRIPT.display_name(fish_id))
+	var first := not _fish_discovered.has(fish_id)
+	_fish_discovered[fish_id] = true
+	var total: int = _inventory.get_count(fish_id)
+	_fishing_rounds_seen += 1
+	print("[P6] inventory +1 id=%s size=%.2fm total=%d first=%s sim=%.0f" % [fish_id, size, total, str(first), _sim_seconds])
+	if first:
+		_hud.show_toast("首次发现：%s ×1 · %.2f m" % [fish_name, size])
+	else:
+		_hud.show_toast("钓到 %s ×1 · %.2f m" % [fish_name, size])
+	return true
+
+
+## HUD 只读快照：状态机阶段 + 已钓条数 + 最近一尾鱼（名称/尺寸来自生产的鱼类目录）。
+func _fishing_hud_state() -> Dictionary:
+	if _villager == null or not _villager.has_method("fishing_state"):
+		return {"active": false, "phase": "", "rounds": 0, "label": "", "last_catch": {}}
+	var st: Dictionary = _villager.call("fishing_state")
+	var phase := String(st.get("phase", ""))
+	st["label"] = _fishing_phase_text(phase)
+	var catches: Array = st.get("catches", [])
+	var last_catch: Dictionary = {}
+	if not catches.is_empty():
+		last_catch = catches.back()
+	st["last_catch"] = last_catch
+	if _inventory != null and not last_catch.is_empty():
+		st["last_fish_total"] = _inventory.get_count(String(last_catch.get("fish_id", "")))
+	else:
+		st["last_fish_total"] = 0
+	return st
+
+
+func _fishing_phase_text(phase: String) -> String:
+	match phase:
+		"walking":
+			return "岛民走向码头…"
+		"casting":
+			return "抛竿中…"
+		"waiting":
+			return "等待咬钩…"
+		"bite":
+			return "咬钩了！"
+		"reeling":
+			return "收线中…"
+		"reveal":
+			return "展示鱼获…"
+		"between":
+			return "准备下一竿…"
+		_:
+			return ""
+
+
+## 消费岛民状态机的结束结果（状态推进不在这里，避免第二套状态机）。
+func _update_fishing() -> void:
+	if _villager == null or not _villager.has_method("fishing_active"):
+		return
+	var active := bool(_villager.call("fishing_active"))
+	if _fishing_seen and not active:
+		_fishing_seen = false
+		var last: Dictionary = _villager.call("fishing_last")
+		var outcome := String(last.get("outcome", ""))
+		var reason := String(last.get("reason", ""))
+		var rounds := int(last.get("rounds", 0))
+		print("[P6] fishing ended outcome=%s reason=%s rounds=%d sim=%.0f" % [outcome, reason, rounds, _sim_seconds])
+		if outcome == "cancelled" and reason == "player_stop":
+			if rounds > 0:
+				_hud.show_toast("钓鱼结束：这一趟钓到 %d 条" % rounds)
+			else:
+				_hud.show_toast("钓鱼结束：岛民收起了鱼竿")
+		elif outcome == "cancelled":
+			_hud.show_toast("钓鱼已安全结束（%s）· 已钓 %d 条" % [reason, rounds])
+		elif outcome == "inventory_failed":
+			_hud.show_toast("鱼获没能放进背包，钓鱼已停止")
+		elif outcome == "path_failed":
+			_hud.show_toast("岛民到不了岸边，钓鱼已结束")
+		elif outcome == "failed":
+			_hud.show_toast("钓鱼中断（%s）" % reason)
+	elif active:
+		_fishing_seen = true
+
 
 # ============================================================
 # HUD
@@ -871,10 +2924,24 @@ func _update_ui(delta: float) -> void:
 	if _ui_timer <= 0.0:
 		_ui_timer = 0.12
 		_phase_update()
+		# P8：日历/季节是权威模拟秒数的只读投影；显示日期仍遵循显示时区（现实模式可切时区）。
+		var cal: Dictionary = ISLE_CALENDAR.parts(_sim_seconds)
 		_hud.update_all({
 			"clock": clock,
-			"date": "%d月%d日" % [int(dt["month"]), int(dt["day"])],
+			"date": "%04d年%d月%d日" % [int(dt["year"]), int(dt["month"]), int(dt["day"])],
 			"weekday": IsleAstro.weekday_cn(dt),
+			"year": int(dt["year"]),
+			"month": int(dt["month"]),
+			"day": int(dt["day"]),
+			"hour": int(dt["hour"]),
+			"minute": int(dt["minute"]),
+			"season": int(cal["season"]),
+			"season_id": str(cal["season_id"]),
+			"season_label": str(cal["season_label"]),
+			"season_t": float(cal["season_t"]),
+			"season_weights": cal["season_weights"],
+			"day_index": int(cal["day_index"]),
+			"p8_cal": cal,
 			"phase": _phase_name,
 			"phase_short": _phase_short,
 			"sun_alt": _sun_alt,
@@ -896,6 +2963,12 @@ func _update_ui(delta: float) -> void:
 			"day_length_sec": _day_length,
 			"quality": _hud_quality_label,
 			"auto_orbit": _auto_orbit,
+			# P8 阶段 5：天气面板数据（唯一状态源 _weather_state，面板只读）。
+			"weather": _weather_state,
+			# P5：背包只读快照（数量唯一来源仍是 _inventory；HUD 只展示、不回写）。
+			"inventory_items": _inventory_snapshot(),
+			# P6：钓鱼只读快照（权威状态在岛民状态机；HUD 只展示、按钮只发请求）。
+			"fishing": _fishing_hud_state(),
 		})
 	if _blending.is_empty() and _mode == Mode.PLAYING and _started:
 		pass
@@ -927,22 +3000,19 @@ func _phase_update() -> void:
 		_phase_name = "深夜"
 		_phase_short = "NIGHT"
 
+## P8 阶段 3.2：月盘可见度只由真实天文高度决定（0=地平线下, 1=升到约 +3.4° 以上）。
+## 调色板的 moonAlpha/moonDiskI 只提供夜色/色温，不再单独决定“月亮出不出现”。
+func _moon_visibility(alt_deg: float) -> float:
+	return smoothstep(-0.02, 0.06, sin(deg_to_rad(alt_deg)))
+
+## 八相按日月视黄经距角 Δλ 每 45° 划分（NASA/USNO 定义），不再用照亮比例猜：
+## 照亮比例 0.5 附近对应上/下弦，旧阈值会把它误标成盈凸/亏凸。
 func _moon_name() -> String:
-	var i := _moon_illum
-	var wax := _moon_waxing
-	if i < 0.04:
-		return "新月"
-	if i < 0.22:
-		return "娥眉月" if wax else "残月"
-	if i < 0.40:
-		return "上弦月" if wax else "下弦月"
-	if i < 0.62:
-		return "盈凸月" if wax else "亏凸月"
-	if i < 0.80:
-		return "盈凸月" if wax else "亏凸月"
-	if i < 0.96:
-		return "满月前" if wax else "满月后"
-	return "满月"
+	if not _astro.has("moon_phase_deg"):
+		return "--"
+	var phase_deg := float(_astro["moon_phase_deg"])
+	var sector := int(floor(phase_deg / 45.0 + 0.5)) % 8
+	return ["新月", "娥眉月", "上弦月", "盈凸月", "满月", "亏凸月", "下弦月", "残月"][sector]
 
 # ============================================================
 # 状态切换
@@ -965,6 +3035,11 @@ func _enter_playing() -> void:
 func _open_menu() -> void:
 	if _blending == "to_game":
 		return
+	# 防御：若外部流程在飞行中要求开菜单，先安全退出自由相机，杜绝两套相机同时写变换。
+	if _flycam != null and _flycam.active:
+		_flycam.request_exit()
+		if _hud != null and _hud.has_method("set_fly_hints"):
+			_hud.set_fly_hints(false)
 	_mode = Mode.MENU
 	_menu.open(true)
 	_hud.set_hud_visible(false, true)
@@ -978,8 +3053,64 @@ func _toggle_auto_orbit() -> void:
 	_settings["auto_orbit"] = _auto_orbit
 	if _hud != null and _hud.has_method("set_auto_orbit"):
 		_hud.set_auto_orbit(_auto_orbit, true)
+	# P7-FINALIZE（B4）：H 键自动运镜状态同步回设置菜单，避免菜单旧草稿覆盖。
+	if _menu != null:
+		_menu.set_settings(_settings)
 	if not (_selftest or _perf or _shots or _transition):
 		_settings_save_delay = 0.25
+
+# ============================================================
+# P7-V2 自由飞行观景相机（Minecraft 创造飞行习惯的观景相机，不移动任何场景物体）
+# ============================================================
+func _enter_flycam() -> void:
+	if _flycam == null or _flycam.active:
+		return
+	# 用户灵敏度随设置生效；进入瞬间从当前画面位姿起飞，不重置视角。
+	_flycam.configure({"look_sensitivity": _flycam_look_base * maxf(_sensitivity, 0.05)})
+	# P7-V3：自由视角基础 FOV = 玩家设置 FOV（默认 42），与轨道视角 _play_pose 一致。
+	_flycam.set_base_fov(_fov)
+	_flycam.enter(_cam.global_transform, _fov)
+	_dragging = false
+	_panning = false
+	_fly_click_pos = Vector2.INF
+	_fly_click_moved = 0.0
+	Input.set_default_cursor_shape(Input.CURSOR_ARROW)
+	if _hud != null:
+		_hud.hide_hover_hint()
+		if _hud.has_method("set_fly_hints"):
+			_hud.set_fly_hints(true)
+		_hud.show_toast(_flycam.help_text())
+
+func _exit_flycam() -> void:
+	if _flycam == null or not _flycam.active:
+		return
+	_flycam.request_exit()
+	_fly_click_pos = Vector2.INF
+	_fly_click_moved = 0.0
+	if _hud != null:
+		if _hud.has_method("set_fly_hints"):
+			_hud.set_fly_hints(false)
+		_hud.show_toast("返回观景视角")
+
+## P7-V3：自由视角下 UI（菜单 / 设置面板）打开时，左键点击不透传给场景。
+func _fly_click_blocked() -> bool:
+	if _menu == null:
+		return false
+	if _menu.has_method("is_settings_open") and bool(_menu.call("is_settings_open")):
+		return true
+	return bool(_menu.get("menu_visible"))
+
+## 探针接口：自由相机状态 + 被冻结等待恢复的轨道相机参数。
+func debug_flycam() -> Dictionary:
+	if _flycam == null:
+		return {"available": false}
+	var d: Dictionary = _flycam.debug_state()
+	d["available"] = true
+	d["orbit"] = {
+		"theta": _theta, "elev": _elev, "radius": _radius, "fov": _fov,
+		"target": _cam_target, "auto_orbit": _auto_orbit,
+	}
+	return d
 
 ## Phase6：灯塔光束遮挡盒。优先用 cottage 导出的贴合盒；缺失时退回房屋整体包围盒，
 ## 保证「光穿墙」在任何情况下都不会再出现（宁大勿小，但只覆盖建筑实体）。
@@ -1032,27 +3163,117 @@ func _node_global_aabb(root: Node3D) -> AABB:
 
 ## Phase6：炊烟双时间窗由统一模拟时钟驱动（11:00-13:00 / 17:00-19:00）。
 ## fx.gd 的 smoke() 返回字典，T5 会把 SmokeClock 节点挂在 smoke["ctl"] 上。
+## P7-V2：海鸥在烟囱上且时间跳入出烟窗口时，BirdFlock 会请求 max(起飞过渡)+0.6 秒的
+## 烟雾压制（安全回退，避免跳时瞬间烟穿鸟）；这里把该 hold 标志透传给炊烟控制器。
+## 正常提前起飞不触发 hold；压制原因由 fx 控制器记录，可从 debug_state()/smoke_debug() 读取。
 func _update_smoke_clock() -> void:
 	var smoke: Variant = _fx.get("smoke", null)
 	if not (smoke is Dictionary):
 		return
 	var ctl: Variant = (smoke as Dictionary).get("ctl", null)
 	if ctl != null and ctl.has_method("set_sim_seconds"):
-		ctl.set_sim_seconds(fposmod(_sim_seconds, 86400.0))
+		var hold := false
+		if _birds != null and _birds.has_method("smoke_hold_remaining"):
+			hold = float(_birds.smoke_hold_remaining()) > 0.0
+		# P8 阶段 7：强风把烟吹斜/吹短，雨雪把烟压淡（复用既有粒子系统，不新建特效）。
+		if ctl.has_method("set_weather"):
+			ctl.set_weather(_weather_wind, _weather_rain, _weather_snow, _weather_storm)
+		ctl.set_sim_seconds(fposmod(_sim_seconds, 86400.0), hold)
 
 func _on_settings_changed(s: Dictionary) -> void:
 	_settings.merge(s, true)
 	# 自动化测试（自测/截图/性能/转场）不写入玩家配置，避免污染下次启动；
 	# 拖动滑条时每帧都会发出设置，写盘用 0.25s 防抖合并，避免频繁 IO。
 	_apply_user_settings(false)
-	if not (_selftest or _perf or _shots or _transition):
+	# P7-FINALIZE（D §1.4 B5）：分辨率/窗口模式的 12s 确认期间只应用、不落盘；
+	# 确认后菜单再 emit 一次，此时才安排写盘；超时/回退 emit 旧值，不写入未确认值。
+	var display_pending: bool = _menu != null and _menu.has_method("display_confirm_pending") \
+		and bool(_menu.call("display_confirm_pending"))
+	if not (_selftest or _perf or _shots or _transition) and not display_pending:
 		_settings_save_delay = 0.25
 	_sfx_ui()
 
 # ============================================================
 # 输入
 # ============================================================
+## P7.2 背包入口加固：B 键在 GUI 层机会之前先捕获一次。
+## 背景：用户反馈「按 B 打不开背包」；真实 OS 键盘复测（tools/probe_p9_bag_realinput.gd
+## 配合系统级 SendKeys）未能复现，但 GUI 控件抢焦点或物理键位差异仍可能让
+## _unhandled_input 收不到 B。这里只做一件事：把 B 规范地交给 _handle_key(KEY_B)
+## 并标记事件已处理，避免与 _unhandled_input 里的同一分支双触发（开→关）。
+func _input(event: InputEvent) -> void:
+	if not (event is InputEventKey):
+		return
+	var ke := event as InputEventKey
+	if not ke.pressed or ke.echo:
+		return
+	if _mode != Mode.PLAYING or _shots:
+		return
+	if _flycam != null and _flycam.active:
+		return
+	var code: int = ke.keycode
+	if code == 0:
+		code = ke.physical_keycode
+	if code != KEY_B:
+		return
+	if _hud == null or not _hud.has_method("toggle_backpack"):
+		return
+	var focus := get_viewport().gui_get_focus_owner()
+	if focus is LineEdit or focus is TextEdit:
+		return
+	_handle_key(KEY_B)
+	get_viewport().set_input_as_handled()
+
+
 func _unhandled_input(event: InputEvent) -> void:
+	# P7-V2 自由飞行视角：F 进入/退出；ESC 优先退出（不打开菜单）。
+	# P7-V3 交互：右键按住拖动转向（相对位移交给 flycam）；左键=场景点击（不改变视角）；
+	# 菜单/设置面板打开时左键不透传；其余事件飞行期间吞掉，避免 Space 暂停、C 自动运镜冲突。
+	if _flycam != null and _flycam.active and not _shots:
+		var esc_hit := event is InputEventKey and (event as InputEventKey).pressed \
+			and not (event as InputEventKey).echo and (event as InputEventKey).keycode == KEY_ESCAPE
+		if event.is_action_pressed("fly_toggle") or esc_hit:
+			_exit_flycam()
+			get_viewport().set_input_as_handled()
+			return
+		if event is InputEventMouseButton:
+			var mb := event as InputEventMouseButton
+			if mb.button_index == MOUSE_BUTTON_RIGHT:
+				# 右键按下/松开：开始/结束拖动转向（只有按住右键的 motion 才转视角）。
+				_flycam.handle_event(event)
+				get_viewport().set_input_as_handled()
+				return
+			if mb.button_index == MOUSE_BUTTON_LEFT:
+				if mb.pressed:
+					_fly_click_pos = mb.position
+					_fly_click_moved = 0.0
+				else:
+					# 位移 < 7px 视为点击；设置面板/菜单打开时交给 UI，不误触场景。
+					if _fly_click_pos != Vector2.INF and _fly_click_moved < 7.0 and not _fly_click_blocked():
+						_click_at(mb.position)
+					_fly_click_pos = Vector2.INF
+					_fly_click_moved = 0.0
+				get_viewport().set_input_as_handled()
+				return
+			# 滚轮/中键等：飞行期间不改变视角、不触发场景操作。
+			get_viewport().set_input_as_handled()
+			return
+		if event is InputEventMouseMotion:
+			var mm := event as InputEventMouseMotion
+			if _fly_click_pos != Vector2.INF:
+				_fly_click_moved += mm.relative.length()
+			# 只有右键按住时 flycam 才消费 motion（左键/无键拖动不转视角）。
+			_flycam.handle_event(event)
+			get_viewport().set_input_as_handled()
+			return
+		# 键盘等其它事件：交给 flycam（当前不消费）后吞掉，避免与飞行冲突。
+		_flycam.handle_event(event)
+		get_viewport().set_input_as_handled()
+		return
+	if event.is_action_pressed("fly_toggle") and _mode == Mode.PLAYING and not _shots and _blending.is_empty():
+		_enter_flycam()
+		get_viewport().set_input_as_handled()
+		return
 	# Phase6：自动运镜开关（正式 InputMap 动作 toggle_auto_orbit，默认 C 键）
 	if event.is_action_pressed("toggle_auto_orbit") and _mode == Mode.PLAYING and not _shots:
 		_toggle_auto_orbit()
@@ -1060,6 +3281,10 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 	if event is InputEventKey and event.pressed and not event.echo:
 		var k: int = (event as InputEventKey).keycode
+		# P7.2：少数输入后端只填 physical_keycode（keycode 为 0），兜底用物理键位，
+		# 否则 F11/ESC/B 等按 keycode 分支会全部失效。
+		if k == 0:
+			k = (event as InputEventKey).physical_keycode
 		if k == KEY_F11:
 			_toggle_fullscreen()
 			get_viewport().set_input_as_handled()
@@ -1118,11 +3343,7 @@ func _unhandled_input(event: InputEvent) -> void:
 
 func _handle_key(k: int) -> void:
 	if k == KEY_SPACE:
-		if _time_source == "real":
-			_hud.show_toast("现实时间模式：时间随现实时钟前进")
-			return
-		_paused = not _paused
-		_hud.show_toast("时间暂停" if _paused else "时间继续")
+		_toggle_pause()
 	elif k == KEY_R:
 		_toggle_time_source()
 	elif k == KEY_TAB:
@@ -1135,6 +3356,17 @@ func _handle_key(k: int) -> void:
 		_toggle_hud_visible()
 	elif k == KEY_T:
 		_hud.toggle_time_panel()
+	elif k == KEY_W:
+		if _hud.has_method("toggle_weather_panel"):
+			_hud.call("toggle_weather_panel")
+	elif k == KEY_B:
+		# P5：背包开关（与左下角入口按钮共用同一个 HUD 路径；B 键此前未被占用）。
+		if _hud == null or not _hud.has_method("toggle_backpack"):
+			return
+		if not bool(_hud.get("_visible_now")):
+			# 界面被 H 隐藏时 B 也能用：先恢复 HUD，再打开背包。
+			_toggle_hud_visible()
+		_hud.call("toggle_backpack")
 	elif k == KEY_F2:
 		_take_photo()
 	elif k == KEY_F3:
@@ -1142,6 +3374,9 @@ func _handle_key(k: int) -> void:
 	elif k == KEY_BRACKETLEFT:
 		if _time_source == "real":
 			_hud.show_toast("现实时间模式不可调时")
+			return
+		if _paused:
+			_hud.show_toast("时间已暂停，继续后才能调整时间")
 			return
 		_time_jump -= 600.0
 		_sim_seconds -= 600.0
@@ -1151,6 +3386,9 @@ func _handle_key(k: int) -> void:
 		if _time_source == "real":
 			_hud.show_toast("现实时间模式不可调时")
 			return
+		if _paused:
+			_hud.show_toast("时间已暂停，继续后才能调整时间")
+			return
 		_time_jump += 600.0
 		_sim_seconds += 600.0
 		_events = IsleAstro.day_events(_sim_seconds)
@@ -1158,6 +3396,9 @@ func _handle_key(k: int) -> void:
 	elif k >= KEY_1 and k <= KEY_5:
 		if _time_source == "real":
 			_hud.show_toast("现实时间模式不可调时")
+			return
+		if _paused:
+			_hud.show_toast("时间已暂停，继续后才能调整时间")
 			return
 		var times := [5.6, 12.0, 17.4, 18.6, 22.0]
 		var target_min := float(times[k - KEY_1]) * 60.0
@@ -1168,11 +3409,28 @@ func _handle_key(k: int) -> void:
 		_sync_boat_clock()
 		_hud.show_toast("跳至 %s" % ["清晨", "正午", "黄金时刻", "日落", "夜晚"][k - KEY_1])
 
+## P8：暂停/继续的唯一入口。空格键与 HUD 可见暂停按钮都调用这里，共用 _paused 状态；
+## 现实时间模式下拒绝（时间跟随现实时钟，不能暂停）。
+func _toggle_pause() -> void:
+	if _time_source == "real":
+		_hud.show_toast("现实时间模式：时间随现实时钟前进")
+		return
+	_paused = not _paused
+	_hud.show_toast("时间暂停" if _paused else "时间继续")
+
+## P8：HUD 日历弹层请求跳转 → 立即落到合法状态（不补演中间天气/日程）。
+func _on_datetime_jump_requested(year: int, month: int, day: int, hour: int, minute: int) -> void:
+	if _paused:
+		_hud.show_toast("时间已暂停，继续后才能调整时间")
+		return
+	_jump_datetime(year, month, day, hour, minute, 0)
+
 func _reset_camera() -> void:
 	_theta = IsleMath.CAM_START_THETA
 	_elev = 0.28
 	_radius = IsleMath.CAM_START_R
-	_fov = 42.0
+	# P7-V3：复位机位保留玩家 FOV 设置（默认 42），不覆盖用户偏好。
+	_fov = Settings.sanitize_fov(_settings.get("fov", Settings.FOV_DEFAULT))
 	_cam_target = IsleMath.CAM_TARGET
 	_hud.show_toast("视角已复位")
 
@@ -1205,16 +3463,52 @@ func _click_at(screen_pos: Vector2) -> void:
 				return
 
 func _toggle_door() -> void:
+	# 玩家开关门：覆盖 NPC 请求，按当前状态反向切换；音效/提示只在此路径播放。
+	var want := not _door_open
+	_door_npc = false
+	_door_player = want
+	_set_door_state(want, false)
+
+## P7-V4：门状态唯一仲裁入口。
+## silent=true 为岛民请求（不播音效/提示）；玩家请求（silent=false）清掉 NPC 请求后优先生效。
+## 两者任一需要开即保持开启；目标角度与 P7 原实现完全一致。
+func _set_door_state(open: bool, silent: bool = true) -> void:
+	if silent:
+		_door_npc = open
+	else:
+		_door_player = open
 	var pivot: Node3D = _cottage.get("door_pivot", null) as Node3D
 	if pivot == null:
 		return
-	_door_open = not _door_open
+	var want := _door_npc or _door_player
+	if want == _door_open:
+		return
+	_door_open = want
 	var target := -1.85 if _door_open else 0.0
 	var tw := create_tween()
 	tw.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN_OUT)
 	tw.tween_property(pivot, "rotation:y", target, 0.95)
-	_sfx_door(_door_open)
-	_hud.show_toast("小屋的门开了" if _door_open else "小屋的门轻轻合上")
+	if not silent:
+		_sfx_door(_door_open)
+		_hud.show_toast("小屋的门开了" if _door_open else "小屋的门轻轻合上")
+
+## P7-V4：岛民每帧上下文。世界时间/时间来源/暂停全部来自 main 权威状态，
+## 角色不读系统时间、不建独立时钟；frozen 时岛民冻结动画与逻辑。
+func _villager_ctx() -> Dictionary:
+	var advancing := _mode == Mode.PLAYING and (not _paused or _time_source == "real")
+	return {
+		"sim_seconds": _sim_seconds,
+		"sim_rate": _sim_rate,
+		"sim_delta": _sim_delta if advancing else 0.0,
+		"sun_alt": _sun_alt,
+		"events": _events,
+		"time_jump": _time_jump,
+		"frozen": (_mode != Mode.PLAYING) or _paused,
+		"door_set": Callable(self, "_set_door_state"),
+		"weather": _weather_eco(),
+		# P6：鱼类出现条件只读当帧权威季节（与 P8 日历同一投影）。
+		"season_id": _farm_season_id(),
+	}
 
 # ============================================================
 # 自动截图
@@ -1243,6 +3537,34 @@ func _shot_boat_cruise(route: Dictionary, frac: float) -> void:
 	var d: Vector3 = smp["dir"]
 	_boat_apply(p, atan2(d.x, d.z), _boat_route_speed, 1.0 / 60.0)
 	_apply_boat_fade()
+
+# ---- P7-V2 截图专用摆位：把指定海鸥放到某 kind 的真实栖点上并返回其 Node3D。
+# 仅用于截图取景（P7-V2 分布随机化后自然分布可能不在镜头里），不改生态规则、不改选点/可用性逻辑。
+func _stage_bird_for_shot(index: int, perch_kind: String) -> Node3D:
+	if _birds == null or not _birds.has_method("debug_force_perch") or not _birds.has_method("debug_perch_stats"):
+		return null
+	var arr: Array = _birds.get("_birds") as Array
+	if index < 0 or index >= arr.size():
+		return null
+	var st: Dictionary = _birds.call("debug_perch_stats")
+	for p_v in (st.get("perches", []) as Array):
+		var p: Dictionary = p_v
+		if String(p.get("kind", "")) != perch_kind:
+			continue
+		if int(p.get("used", 0)) >= int(p.get("slots", 1)):
+			continue
+		var pid := String(p.get("id", ""))
+		if pid == "":
+			continue
+		if not bool(_birds.call("debug_force_perch", index, pid)):
+			continue
+		var b: Dictionary = arr[index]
+		b["timer"] = 30.0  # 截图专用：保持停栖，避免计时起飞打断取景
+		var nv = b.get("node", null)
+		if nv is Node3D:
+			return nv as Node3D
+		return null
+	return null
 
 func _run_shots() -> void:
 	_mode = Mode.MENU
@@ -1309,12 +3631,17 @@ func _run_shots() -> void:
 		await _save_shot(String(h[0]))
 	# ---- 第三阶段细节验收镜头 ----
 	# 屋顶 / 山墙 / 檐口近景
-	var house_gy: float = IsleMath.house_ground_y()
+	# 新屋尺寸（isle_math.gd）：门前地面 door_world().y = 地坪(fy 0.55)，其上是墙 3.18 + 屋顶 2.47，
+	# 故屋脊 = door_world().y + HOUSE_WALL_H + HOUSE_ROOF_H（= 地面 +6.20），不再硬编码 6.2。
+	var house_door := IsleMath.door_world()
+	var house_eave_y: float = house_door.y + IsleMath.HOUSE_WALL_H
+	var house_ridge_y: float = house_eave_y + IsleMath.HOUSE_ROOF_H
+	var house_door_top_y: float = house_door.y + 1.94  # 门洞高 1.94（新门高）
 	_set_time_of_day(12.0 * 60.0 + 20.0)
 	_theta = 0.62
 	_elev = 0.46
 	_radius = 26.0
-	_cam_target = Vector3(IsleMath.HOUSE_X, house_gy + 6.2, IsleMath.HOUSE_Z)
+	_cam_target = Vector3(IsleMath.HOUSE_X, house_ridge_y, IsleMath.HOUSE_Z)
 	_fov = 42.0
 	await get_tree().create_timer(0.5).timeout
 	await _save_shot("03_roof_close")
@@ -1322,7 +3649,8 @@ func _run_shots() -> void:
 	_theta = IsleMath.HOUSE_YAW
 	_elev = 0.30
 	_radius = 20.0
-	_cam_target = Vector3(IsleMath.HOUSE_X, house_gy + 2.9, IsleMath.HOUSE_Z)
+	# 正立面取景对准门洞顶（≈ 地面 +2.49），取代旧的 ground+2.9
+	_cam_target = Vector3(IsleMath.HOUSE_X, house_door_top_y, IsleMath.HOUSE_Z)
 	_fov = 48.0
 	await get_tree().create_timer(0.5).timeout
 	await _save_shot("03_house_front")
@@ -1331,8 +3659,9 @@ func _run_shots() -> void:
 	_elev = 0.25
 	_radius = 8.0
 	var stair_door := IsleMath.door_world()
-	var stair_gy: float = IsleMath.terrain_height(stair_door.x, stair_door.z)
-	_cam_target = Vector3(stair_door.x, stair_gy + 0.75, stair_door.z)
+	# P7-V3.2：取景对准门槛下方约一档台阶。door_world().y = 地坪 + 0.55（门槛高），
+	# 不再用 terrain+0.75 硬编码（地形采样点在台阶体下方，会与踏面高度不一致）。
+	_cam_target = Vector3(stair_door.x, stair_door.y + 0.20, stair_door.z)
 	_fov = 50.0
 	await get_tree().create_timer(0.5).timeout
 	await _save_shot("03_stairs_close")
@@ -1517,7 +3846,7 @@ func _run_shots() -> void:
 	_theta = IsleMath.HOUSE_YAW
 	_elev = 0.05
 	_radius = 9.5
-	_cam_target = IsleMath.door_world() + Vector3(0, 1.7, 0)
+	_cam_target = house_door + Vector3(0.0, 1.38, 0.0)  # 1.38 m = 1.50 m 岛民眼高
 	_fov = 54.0
 	if not _door_open:
 		_toggle_door()
@@ -1528,7 +3857,8 @@ func _run_shots() -> void:
 	_theta = 0.74
 	_elev = 0.20
 	_radius = 34.0
-	_cam_target = Vector3(IsleMath.HOUSE_X, 4.0, IsleMath.HOUSE_Z)
+	# 立面视觉中心 ≈ 门洞顶（门顶世界高 = house_door_top_y ≈ 地面 +2.49），取代旧硬编码 4.0
+	_cam_target = Vector3(IsleMath.HOUSE_X, house_door_top_y, IsleMath.HOUSE_Z)
 	_fov = 42.0
 	await get_tree().create_timer(0.6).timeout
 	await _save_shot("04_night_lights")
@@ -1546,13 +3876,15 @@ func _run_shots() -> void:
 	_theta = IsleMath.HOUSE_YAW + 0.45
 	_elev = 0.22
 	_radius = 17.0
-	_cam_target = Vector3(IsleMath.HOUSE_X, 7.6, IsleMath.HOUSE_Z)
+	# 鸟群/栖枝取景对准新屋脊（旧硬编码 7.6 高于屋脊）
+	_cam_target = Vector3(IsleMath.HOUSE_X, house_ridge_y, IsleMath.HOUSE_Z)
 	_fov = 54.0
 	await get_tree().create_timer(3.0).timeout
 	await _save_shot("04_birds")
 	# 栖息鸟近景：找一只此刻停在栖枝上的个体，从侧后方 2.6m 拍站姿
-	var perched_node: Node3D = null
-	if _birds != null:
+	# P7-V2 截图专用摆位：预置一只到真实屋脊栖点，保证近景有主体（不改生态规则）
+	var perched_node: Node3D = _stage_bird_for_shot(9, "ridge")
+	if perched_node == null and _birds != null:
 		for b_v in (_birds.get("_birds") as Array):
 			var b: Dictionary = b_v
 			if int(b.get("state", -1)) == 3:
@@ -1726,6 +4058,9 @@ func _run_shots() -> void:
 	await _save_shot("06_smoke_noon")
 	# ---- P6 专项：海鸥停在真实瓦面（近景，验证脚接触瓦片） ----
 	_set_time_of_day(10.0 * 60.0)
+	# P7-V2 截图专用摆位：分布随机化后自然分布可能不在此机位，预置两只到真实屋脊栖点保证取景有主体（不改生态规则）
+	_stage_bird_for_shot(8, "ridge")
+	_stage_bird_for_shot(9, "ridge")
 	_pose_look(Vector3(4.5, 20.5, 3.0), Vector3(-0.11, 18.05, -3.54), 26.0)
 	await get_tree().create_timer(1.6).timeout
 	await _save_shot("06_bird_roof")
@@ -1741,6 +4076,11 @@ func _run_shots() -> void:
 	await get_tree().create_timer(0.8).timeout
 	await _save_shot("06_attic_window_night")
 	# ---- P6 专项：灯塔光束扫过房屋两侧对比（同一机位/同一光束，只改光束角） ----
+	# 新屋尺度（isle_math）：地坪 door_world().y + 墙 3.18 = 檐口，+ 屋顶 2.47 = 屋脊；
+	# 取景目标取檐口—屋脊之间，取代旧的地面+4.4/4.0 硬编码。
+	var beam_house_door := IsleMath.door_world()
+	var beam_eave_y: float = beam_house_door.y + IsleMath.HOUSE_WALL_H
+	var beam_ridge_y: float = beam_eave_y + IsleMath.HOUSE_ROOF_H
 	_shot_beam_lock = true
 	var lamp_o: Vector3 = _lighthouse_lamp.global_position if _lighthouse_lamp != null else Vector3(0.0, 22.0, 0.0)
 	var beam_h := Vector3(IsleMath.HOUSE_X - lamp_o.x, 0.0, IsleMath.HOUSE_Z - lamp_o.z).normalized()
@@ -1748,7 +4088,7 @@ func _run_shots() -> void:
 	_theta = atan2(beam_h.x, beam_h.z)
 	_elev = 0.12
 	_radius = 26.0
-	_cam_target = Vector3(IsleMath.HOUSE_X, IsleMath.house_ground_y() + 4.4, IsleMath.HOUSE_Z)
+	_cam_target = Vector3(IsleMath.HOUSE_X, beam_eave_y + (beam_ridge_y - beam_eave_y) * 0.30, IsleMath.HOUSE_Z)
 	_fov = 46.0
 	await get_tree().create_timer(0.8).timeout
 	await _save_shot("06_beam_house_a")
@@ -1760,7 +4100,7 @@ func _run_shots() -> void:
 	_theta = atan2(beam_h.x, beam_h.z) + PI * 0.5
 	_elev = 0.08
 	_radius = 30.0
-	_cam_target = Vector3(IsleMath.HOUSE_X, IsleMath.house_ground_y() + 4.0, IsleMath.HOUSE_Z)
+	_cam_target = Vector3(IsleMath.HOUSE_X, beam_eave_y + (beam_ridge_y - beam_eave_y) * 0.20, IsleMath.HOUSE_Z)
 	_fov = 58.0
 	await get_tree().create_timer(0.8).timeout
 	await _save_shot("06_beam_house_side")
@@ -2036,6 +4376,15 @@ func _run_selftest() -> void:
 		night_glow = float((_window_mats[0] as ShaderMaterial).get_shader_parameter("glow"))
 	results.append(["夜间窗灯亮于白天", night_glow > day_glow + 0.15])
 	# 22. 场景动效：大船（状态机出港）/ 灯塔旋转灯室 / 秋千
+	# P8 阶段 7：出港已按天气门控；本条只验证状态机本身，测试窗口内固定晴天，测完恢复自动天气。
+	# 固定白天晴天 + 停靠状态：夜间休息与自动天气不再影响状态机验证。
+	if _weather != null:
+		_on_weather_type_requested("clear")
+		_update_weather(0.0, true)
+		_update_weather_fx(0.0)
+	_set_time_of_day(12.0 * 60.0 + 20.0)
+	_boat_state = "DOCKED"
+	_boat_rest_until = 0.0
 	if _sail_dwell > 0.0:
 		_sail_dwell = -1.0
 	var sail0: Vector3 = _sailboat.global_position if _sailboat != null else Vector3.ZERO
@@ -2048,6 +4397,9 @@ func _run_selftest() -> void:
 	results.append(["帆船出港航行", sail_moved])
 	results.append(["灯塔灯室旋转", lh_moved])
 	results.append(["秋千摆动", sw_moved])
+	if _weather != null:
+		_on_weather_auto_requested(true)
+		_update_weather(0.0, true)
 	# 23. 设置持久化（写临时文件，避免覆盖玩家真实设置）
 	# 本沙箱环境禁止 Godot 写 C:/Users（user://），持久化测试改用工作区绝对路径；
 	# 读取/写入代码路径与正式 user://settings.cfg 完全一致（ConfigFile）。
@@ -2161,6 +4513,8 @@ func _run_selftest() -> void:
 		results.append(["时间轴可真实鼠标拖动并改变时刻", scrub_routed and scrub_time])
 		_hud.toggle_time_panel()
 	# 24. 现实时间模式 + IANA 时区（切东京立即生效，切回模拟不丢状态）
+	# T7 修复：现实模式下天文/生态时钟固定为岛屿参考时区（广州 UTC+8）；
+	#          切换“显示时区”只改 HUD 文本与事件显示时刻，不得平移天体位置。
 	var saved_src := _time_source
 	var saved_tz := _timezone
 	_settings["time_source"] = "real"
@@ -2172,24 +4526,32 @@ func _run_selftest() -> void:
 	var expect_dt := Time.get_datetime_dict_from_unix_time(int(_abs_unix + float(_offset_for(_abs_unix))))
 	var tz_ok: bool = _time_api != null and tokyo_off == 32400 and int(_display_datetime().get("hour", -1)) == int(expect_dt.get("hour", -2))
 	var tz_label_ok: bool = _tz_label_text().find("Asia/Tokyo") >= 0
-	# 统一时间源：天空天文时钟必须与 HUD 显示的所选时区当地时刻同源（不是广州时间）。
-	var d_tokyo: float = fposmod(_sim_seconds - (_abs_unix + float(tokyo_off)), 86400.0)
-	var sky_tokyo_ok: bool = minf(d_tokyo, 86400.0 - d_tokyo) < 5.0
+	# 天体时钟必须与系统绝对时间 + 参考时区同源（不是所选显示时区）。
+	var d_ref: float = fposmod(_sim_seconds - (_abs_unix + float(IsleAstro.TZ_SECONDS)), 86400.0)
+	var sky_ref_ok: bool = minf(d_ref, 86400.0 - d_ref) < 5.0
+	# 事件显示时刻按显示时区偏移换算（日出/日落等文本随所选时区平移，但天文事件不变）。
+	var sr_ev := float(_events["sunrise"])
+	var sr_unix_ev := sr_ev - float(IsleAstro.TZ_SECONDS)
+	var sr_tokyo_dt := Time.get_datetime_dict_from_unix_time(int(sr_unix_ev + float(tokyo_off)))
+	var sr_txt_ok: bool = _local_seconds_to_display_text(sr_ev) == "%02d:%02d" % [int(sr_tokyo_dt["hour"]), int(sr_tokyo_dt["minute"])]
+	# 切换显示时区前后天体位置不变（同一绝对时刻）。
+	var sky_alt_a := _sun_alt
+	var sky_az_a := _sun_az
 	_settings["timezone"] = "America/New_York"
 	_apply_user_settings(false)
 	await get_tree().process_frame
 	var ny_off: int = _offset_for(_abs_unix)
 	var ny_expect := Time.get_datetime_dict_from_unix_time(int(_abs_unix + float(ny_off)))
-	var d_ny: float = fposmod(_sim_seconds - (_abs_unix + float(ny_off)), 86400.0)
-	var sky_ny_ok: bool = minf(d_ny, 86400.0 - d_ny) < 5.0 and int(_display_datetime().get("hour", -1)) == int(ny_expect.get("hour", -2))
+	var sky_same: bool = absf(_sun_alt - sky_alt_a) < 0.05 and absf(wrapf(_sun_az - sky_az_a, -180.0, 180.0)) < 0.05
+	var sky_ny_ok: bool = sky_same and int(_display_datetime().get("hour", -1)) == int(ny_expect.get("hour", -2))
 	_settings["time_source"] = saved_src
 	_settings["timezone"] = saved_tz
 	_apply_user_settings(false)
 	await get_tree().process_frame
 	results.append(["现实时间模式", real_mode_ok])
 	results.append(["IANA 时区切换（东京 UTC+09）", tz_ok and tz_label_ok])
-	results.append(["现实时间天空与东京时区同源", sky_tokyo_ok])
-	results.append(["切换时区天空立即同源（纽约）", sky_ny_ok])
+	results.append(["现实时间天体时钟固定为岛屿参考时区", sky_ref_ok and sr_txt_ok])
+	results.append(["切换显示时区天体不移动（纽约）", sky_ny_ok])
 	# 25. 大船航线：≥8 组、每组 out/back 且贴海面
 	var routes_ok: bool = _sail_routes.size() >= 8
 	if routes_ok:
@@ -2286,6 +4648,293 @@ func _run_selftest() -> void:
 		if ctl != null and ctl.has_method("debug_state"):
 			smoke_ok = (ctl.debug_state() as Dictionary).has("emitting")
 	results.append(["炊烟双时间窗时钟已接入", smoke_ok])
+	# --- P8（第七阶段）：完整公历 / 可见暂停 / 日历编辑跳转 ---
+	var cal_a: Dictionary = ISLE_CALENDAR.parts(ISLE_CALENDAR.to_local_seconds(2024, 2, 29, 23, 59, 59) + 1.0)
+	var cal_b: Dictionary = ISLE_CALENDAR.parts(ISLE_CALENDAR.to_local_seconds(2026, 12, 31, 23, 59, 59) + 1.0)
+	var cal_w: Array = ISLE_CALENDAR.parts(ISLE_CALENDAR.to_local_seconds(2026, 10, 22, 12, 0, 0)).get("season_weights", [])
+	var weights_sum := 0.0
+	for wv in cal_w:
+		weights_sum += float(wv)
+	results.append(["P8 公历跨闰日/跨年推进", int(cal_a.get("month", 0)) == 3 and int(cal_a.get("day", 0)) == 1 and int(cal_b.get("year", 0)) == 2027 and int(cal_b.get("month", 0)) == 1 and int(cal_b.get("day", 0)) == 1 and cal_w.size() == 4 and absf(weights_sum - 1.0) < 0.0001])
+	# 可见暂停按钮：与空格共用 main._paused，点击→暂停再点击→继续
+	_mode = Mode.PLAYING
+	_time_source = "sim"
+	_paused = false
+	_hud.set_hud_visible(true, false)
+	if not bool(_hud.get("_time_open")):
+		_hud.toggle_time_panel()
+	_ui_timer = 0.0
+	_update_ui(0.0)
+	await get_tree().process_frame
+	var pause_btn := _hud.get("_pause_btn") as Button
+	if pause_btn != null:
+		pause_btn.pressed.emit()
+	await get_tree().process_frame
+	_ui_timer = 0.0
+	_update_ui(0.0)
+	var paused_by_btn: bool = _paused and pause_btn != null and pause_btn.text == "继续"
+	if pause_btn != null:
+		pause_btn.pressed.emit()
+	await get_tree().process_frame
+	_ui_timer = 0.0
+	_update_ui(0.0)
+	var resumed_by_btn: bool = (not _paused) and pause_btn != null and pause_btn.text == "暂停"
+	results.append(["P8 可见暂停按钮与空格共享状态", paused_by_btn and resumed_by_btn])
+	# 暂停冻结权威时钟（模拟模式）；恢复后继续推进
+	_paused = true
+	var frozen_t := _sim_seconds
+	await get_tree().create_timer(0.4).timeout
+	var freeze_ok: bool = absf(_sim_seconds - frozen_t) < 0.0001
+	_paused = false
+	await get_tree().create_timer(0.3).timeout
+	results.append(["P8 暂停冻结权威时钟", freeze_ok and _sim_seconds > frozen_t + 0.05])
+	# 日历编辑区：打开→+1 天→跳转；权威时钟立刻落在草稿日期
+	_hud.call("_toggle_calendar")
+	var cal_open_ok: bool = bool(_hud.get("_cal_open")) and is_equal_approx((_hud.get("_time_panel") as Control).offset_top, -744.0)
+	_hud.call("_seed_cal_draft", true)
+	var draft0: Dictionary = _hud.get("_cal_draft")
+	_hud.call("_cal_step", "day", 1)
+	var draft1: Dictionary = _hud.get("_cal_draft")
+	var step_ok: bool = int(draft1.get("day", 0)) != int(draft0.get("day", 0)) or int(draft1.get("month", 1)) != int(draft0.get("month", 1))
+	_hud.call("_on_cal_jump")
+	await get_tree().process_frame
+	var cal_now: Dictionary = ISLE_CALENDAR.parts(_sim_seconds)
+	var jump_ok: bool = int(cal_now.get("year", 0)) == int(draft1.get("year", 0)) and int(cal_now.get("month", 0)) == int(draft1.get("month", 0)) and int(cal_now.get("day", 0)) == int(draft1.get("day", 0)) and int(cal_now.get("hour", 0)) == int(draft1.get("hour", 0)) and int(cal_now.get("minute", 0)) == int(draft1.get("minute", 0))
+	results.append(["P8 日历编辑后跳转即时生效", cal_open_ok and step_ok and jump_ok])
+	# 直接跨年跳转：合法状态，不补演中间时间
+	_jump_datetime(2026, 12, 31, 23, 59, 30)
+	_jump_datetime(2027, 1, 1, 0, 0, 15)
+	var cal_y: Dictionary = ISLE_CALENDAR.parts(_sim_seconds)
+	results.append(["P8 跨年跳转进入合法状态", int(cal_y.get("year", 0)) == 2027 and int(cal_y.get("month", 0)) == 1 and int(cal_y.get("day", 0)) == 1 and int(cal_y.get("hour", 0)) == 0 and int(cal_y.get("minute", 0)) == 0])
+	_hud.call("_close_calendar")
+	var cal_closed_ok: bool = not bool(_hud.get("_cal_open")) and is_equal_approx((_hud.get("_time_panel") as Control).offset_top, -524.0)
+	_hud.toggle_time_panel()
+	results.append(["P8 日历收折恢复面板高度", cal_closed_ok])
+	# --- P8 阶段 3.2：月球相位/位置/可见性（固定日期样本，不依赖现实时间） ---
+	var old_source := _time_source
+	_time_source = "sim"
+	_jump_datetime(2026, 10, 26, 12, 12, 0)   # 本地 10-26 12:12 = UTC 04:12 满月时刻
+	var moon_full_i := _moon_illum
+	var moon_full_name := _moon_name()
+	_jump_datetime(2026, 12, 9, 8, 52, 0)     # 本地 12-09 08:52 = UTC 00:52 新月时刻
+	var moon_new_i := _moon_illum
+	var moon_new_name := _moon_name()
+	_jump_datetime(2026, 10, 19, 0, 13, 0)    # 上弦时刻
+	var moon_q1_name := _moon_name()
+	_jump_datetime(2026, 11, 2, 4, 28, 0)     # 下弦时刻
+	var moon_q3_name := _moon_name()
+	results.append(["P8 月相随机跳日期更新", absf(moon_full_i - moon_new_i) > 0.5 and moon_full_name == "满月" and moon_new_name == "新月" and moon_q1_name == "上弦月" and moon_q3_name == "下弦月"])
+	# 可见性由真实高度决定：满月刚落 +2.3° 可见；新月日 18:00 已落到 −4° 必须不可见
+	_jump_datetime(2026, 10, 26, 18, 0, 0)
+	var vis_full := _moon_visibility(float(_astro["moon_alt"]))
+	_jump_datetime(2026, 12, 9, 18, 0, 0)
+	var vis_new := _moon_visibility(float(_astro["moon_alt"]))
+	results.append(["P8 月球可见性由真实高度决定", vis_full > 0.5 and vis_new <= 0.0001 and _moon_visibility(-90.0) <= 0.0001 and _moon_visibility(45.0) >= 0.9999])
+	# --- P8 阶段 4：四季（日历权重 → 视觉参数；固定日期样本，不依赖现实时间） ---
+	_jump_datetime(2026, 4, 15, 10, 0, 0)
+	var spring_v: Dictionary = _season_visuals.duplicate()
+	_jump_datetime(2026, 10, 20, 16, 30, 0)
+	var autumn_v: Dictionary = _season_visuals.duplicate()
+	var leaf_node := _fx.get("leaves", {}).get("node", null) as GPUParticles3D
+	var autumn_ok := String(_season_label) == "秋季" \
+		and float(autumn_v.get("leaf_fall", 0.0)) > 0.95 \
+		and float(autumn_v.get("canopy_keep", 1.0)) < 1.0 \
+		and leaf_node != null and leaf_node.emitting
+	_jump_datetime(2027, 1, 15, 10, 0, 0)
+	var winter_v: Dictionary = _season_visuals.duplicate()
+	var winter_flowers: Array = winter_v.get("flower_keep", [0.0, 0.0, 0.0, 0.0])
+	var winter_flowers_zero := float(winter_flowers[0]) <= 0.02 and float(winter_flowers[1]) <= 0.02 \
+		and float(winter_flowers[2]) <= 0.02 and float(winter_flowers[3]) <= 0.02
+	var wb_heads := _winter_bloom.get("heads", null) as MultiMeshInstance3D
+	var winter_ok := String(_season_label) == "冬季" \
+		and float(winter_v.get("canopy_keep", 1.0)) <= 0.001 \
+		and winter_flowers_zero \
+		and leaf_node != null and not leaf_node.emitting \
+		and wb_heads != null and wb_heads.visible
+	var tint_ok := (autumn_v.get("grass_tint", Color.WHITE) as Color).r > 1.1 \
+		and (spring_v.get("grass_tint", Color.WHITE) as Color).g > 1.0
+	results.append(["P8 四季视觉参数与日历联动", autumn_ok and winter_ok and tint_ok])
+	# 冬季树冠实例确实按比例收起（不是只改参数不生效）
+	var canopy_entry: Dictionary = {}
+	for raw in _season_nodes:
+		var e: Dictionary = raw
+		if String(e["kind"]) == "canopy" and String((e["node"] as Node).name) == "Canopy":
+			canopy_entry = e
+			break
+	# 说明：--headless 的 dummy Renderer 不回读 MultiMesh 实例 Transform（读回恒为单位阵），
+	# 因此这里断言"收起数量"这一纯逻辑结果；实际像素效果由 --p8seasons 窗口截图验收。
+	var canopy_hidden_ok := false
+	if not canopy_entry.is_empty():
+		var canopy_mm: MultiMesh = (canopy_entry["node"] as MultiMeshInstance3D).multimesh
+		canopy_hidden_ok = int(canopy_entry.get("count", 0)) > 0 \
+			and int(canopy_entry.get("hidden", 0)) == int(canopy_entry.get("count", 0)) \
+			and canopy_mm.visible_instance_count == 0
+	results.append(["P8 冬季树冠实例按比例收起", canopy_hidden_ok])
+	# P8.1：屋前冬季红花只在冬季出现；树顶红梅节点已删除。
+	_jump_datetime(2026, 7, 15, 10, 0, 0)
+	var bloom_summer_hidden := wb_heads != null and not wb_heads.visible
+	var world_root: Node = _world.get("root", null) as Node
+	var plum_removed := world_root != null and world_root.find_child("WinterPlum", true, false) == null
+	results.append(["P8.1 冬季红花只在冬季出现且树顶红梅已移除", bloom_summer_hidden and plum_removed])
+	# P8.1 栖点季节门控：冬季裸枝点开、树冠点关；盛夏相反（P7 旧 36 点契约不受影响）。
+	_birds.set_season_gate(1.0, 0.0)
+	var winter_avail: Array = _birds.debug_perch_availability(_sim_seconds, _sun_alt, false)
+	var w_gate_ok := true
+	var w_count := 0
+	var t_count := 0
+	for ev_v in winter_avail:
+		var ev: Dictionary = ev_v
+		if String(ev["kind"]) == "winter_branch":
+			w_count += 1
+			w_gate_ok = w_gate_ok and bool(ev["eligible"])
+		elif String(ev["kind"]) == "tree_branch":
+			t_count += 1
+			w_gate_ok = w_gate_ok and not bool(ev["eligible"]) and String(ev["reason"]) == "season_off"
+	results.append(["P8.1 冬季裸枝栖点开/树冠栖点关", w_gate_ok and w_count == 5 and t_count == 6])
+	_birds.set_season_gate(0.0, 1.0)
+	var summer_avail: Array = _birds.debug_perch_availability(_sim_seconds, _sun_alt, false)
+	var s_gate_ok := true
+	for ev_v in summer_avail:
+		var ev: Dictionary = ev_v
+		if String(ev["kind"]) == "winter_branch":
+			s_gate_ok = s_gate_ok and not bool(ev["eligible"]) and String(ev["reason"]) == "season_off"
+		elif String(ev["kind"]) == "tree_branch":
+			s_gate_ok = s_gate_ok and bool(ev["eligible"])
+	results.append(["P8.1 盛夏裸枝栖点关/树冠栖点开", s_gate_ok])
+	_birds.set_season_gate(float(_season_weights[3]), float(_season_visuals.get("canopy_keep", 1.0)))
+	# --- P8 阶段 5：天气状态机（固定日期样本；唯一权威时钟仍是 _sim_seconds） ---
+	_time_source = "sim"
+	_paused = false
+	_jump_datetime(2027, 1, 15, 10, 0, 0)
+	var wstate: Dictionary = _weather_state
+	var w_required := ["mode", "type", "label", "intensity", "transition", "cloud",
+		"wind_strength", "wind_dir", "precip_type", "precip_intensity", "wetness",
+		"snow_depth", "snow_trend", "season", "season_label", "available_types",
+		"hold_left", "hold_total", "auto", "manual_type", "seed"]
+	var w_contract := not wstate.is_empty()
+	for wk in w_required:
+		w_contract = w_contract and wstate.has(String(wk))
+	var w_avail: Array = wstate.get("available_types", [])
+	var w_winter_ok := String(wstate.get("season_label", "")) == "冬季" \
+		and (String(wstate.get("type", "")) in ISLE_WEATHER.TYPE_ORDER) \
+		and w_avail.has("light_snow") and not w_avail.has("typhoon")
+	results.append(["P8 天气状态契约与季节合法性", w_contract and w_winter_ok])
+	# 暂停：天气调度与过渡一起冻结（暂停不推进模拟时钟，也不补演天气过渡）
+	_paused = true
+	var w_frozen_t := _sim_seconds
+	var w_frozen_cloud := float(_weather_state.get("cloud", -1.0))
+	var w_frozen_type := String(_weather_state.get("type", ""))
+	_weather_prev_t = _sim_seconds - 400.0   # 若误把暂停当推进，会补 400 模拟秒的过渡
+	_update_weather(0.5)
+	_update_weather(0.5)
+	_update_weather(0.5, true)
+	var w_freeze_ok: bool = absf(float(_weather_state.get("cloud", -2.0)) - w_frozen_cloud) < 0.0001 \
+		and String(_weather_state.get("type", "")) == w_frozen_type \
+		and absf(_sim_seconds - w_frozen_t) < 0.0001
+	_paused = false
+	results.append(["P8 暂停冻结天气调度与过渡", w_freeze_ok])
+	# 手动：冬季可选雪；跨到夏季后同一手动类型立即回退为合法天气（不残留雪）
+	_on_weather_type_requested("light_snow")
+	_update_weather(0.0, true)
+	var w_manual_snow := String(_weather_state.get("manual_type", "")) == "light_snow" \
+		and String(_weather_state.get("type", "")) == "light_snow" \
+		and String(_weather_state.get("precip_type", "")) == "snow"
+	_jump_datetime(2026, 7, 15, 10, 0, 0)
+	var w_summer_avail: Array = _weather_state.get("available_types", [])
+	var w_summer_ok: bool = not w_summer_avail.has("light_snow") \
+		and (String(_weather_state.get("type", "")) in w_summer_avail) \
+		and String(_weather_state.get("precip_type", "")) != "snow"
+	# 夏季手动点"小雪"必须被拒绝，状态保持合法
+	_on_weather_type_requested("light_snow")
+	var w_reject_ok: bool = String(_weather_state.get("type", "")) in w_summer_avail \
+		and String(_weather_state.get("precip_type", "")) != "snow"
+	_on_weather_auto_requested(true)
+	results.append(["P8 手动天气按季节合法且跨季回退", w_manual_snow and w_summer_ok and w_reject_ok])
+	# 天气面板：W 键路径（toggle_weather_panel）展开/收折，且 H 隐藏界面时同步收起
+	if not bool(_hud.get("_weather_open")):
+		_hud.call("toggle_weather_panel")
+	var w_panel_open: bool = bool(_hud.get("_weather_open")) \
+		and (_hud.get("_weather_panel") as Control).visible
+	_hud.call("toggle_weather_panel")
+	var w_panel_closed: bool = not bool(_hud.get("_weather_open")) \
+		and not (_hud.get("_weather_panel") as Control).visible
+	_hud.call("toggle_weather_panel")
+	_hud.set_hud_visible(false, false)
+	var w_panel_hidden: bool = not bool(_hud.get("_weather_open")) \
+		and not (_hud.get("_weather_panel") as Control).visible
+	_hud.set_hud_visible(true, false)
+	results.append(["P8 天气面板展开收折与 H 同步", w_panel_open and w_panel_closed and w_panel_hidden])
+	# --- P8 阶段 6：天气视觉（降水系统 / 室内剔除数据 / 画质降级 / 积雪累积） ---
+	_jump_datetime(2026, 7, 15, 12, 20, 0)
+	_on_weather_type_requested("heavy_rain")
+	_update_weather(0.0, true)
+	_update_weather_fx(0.0)
+	var rain_entry: Dictionary = _weather_fx.get("rain", {})
+	var snow_entry: Dictionary = _weather_fx.get("snow", {})
+	var drip_entry: Dictionary = _weather_fx.get("drip", {})
+	var splash_entry: Dictionary = _weather_fx.get("splash", {})
+	var rain_node := rain_entry.get("node", null) as GPUParticles3D
+	var snow_node := snow_entry.get("node", null) as GPUParticles3D
+	var drip_node := drip_entry.get("node", null) as GPUParticles3D
+	var splash_node := splash_entry.get("node", null) as MultiMeshInstance3D
+	var rain_mat := rain_entry.get("mat", null) as ShaderMaterial
+	var room_half: Variant = rain_mat.get_shader_parameter("room_half") if rain_mat != null else null
+	var rain_ok: bool = rain_node != null and rain_node.emitting and rain_node.visible 		and drip_node != null and drip_node.emitting and drip_node.visible 		and splash_node != null and splash_node.visible 		and snow_node != null and not snow_node.emitting
+	var room_ok: bool = room_half is Vector3 and (room_half as Vector3).z > 0.5
+	# 室内判定：把相机临时放到小屋内部点，_camera_inside_cottage() 必须为真（shader 剔除用的同一套盒）
+	var cam_tf: Transform3D = _cam.global_transform
+	var cam_inside: bool = false
+	if not _cottage.is_empty():
+		_cam.global_position = _cottage.get("interior_pos", Vector3(0.35, 10.9, 0.0))
+		cam_inside = _camera_inside_cottage()
+	_cam.global_transform = cam_tf
+	results.append(["P8 降水系统与室内剔除数据就绪", rain_ok and room_ok and cam_inside])
+	# 低画质：降水必须仍然可见（不能因为降档把天气全部关掉）
+	_apply_quality(0)
+	_update_weather_fx(0.0)
+	var low_rain_ok: bool = rain_node != null and rain_node.emitting and rain_node.amount_ratio > 0.05
+	_apply_quality(2)
+	# 冬季手动大雪：按模拟秒累积后地面积雪量上升，降水类型为雪
+	_jump_datetime(2027, 1, 15, 10, 0, 0)
+	_on_weather_type_requested("heavy_snow")
+	_update_weather(0.0, true)
+	_p8_wfx_accumulate(18000.0)
+	var snow_depth_now := float(_weather_state.get("snow_depth", 0.0))
+	var snow_ok: bool = String(_weather_state.get("precip_type", "")) == "snow" 		and snow_depth_now > 0.3 and snow_node != null and snow_node.emitting
+	results.append(["P8 低画质仍保留降水且积雪随降雪累积", low_rain_ok and snow_ok])
+	_on_weather_auto_requested(true)
+	_update_weather(0.0, true)
+	_update_weather_fx(0.0)
+	# --- P8 阶段 7：生态联动（岛民天气上下文 / 海鸥 / 船只停航 / 萤火） ---
+	_jump_datetime(2026, 7, 15, 22, 0, 0)
+	_on_weather_type_requested("clear")
+	_update_weather(0.0, true)
+	_update_weather_fx(0.0)
+	_update_lighting()
+	var eco_wx: Dictionary = _eco_ctx().get("weather", {})
+	var vil_wx: Dictionary = _villager_ctx().get("weather", {})
+	var eco_ok: bool = eco_wx.has("type") and eco_wx.has("precip_type") 		and eco_wx.has("wind_strength") and eco_wx.has("storm") 		and String(vil_wx.get("type", "")) == String(eco_wx.get("type", ""))
+	# 晴夜萤火应亮；大雨时萤火避雨（同一 _update_lighting，不新建状态）。
+	var ff_entry: Dictionary = _fx.get("fireflies", {})
+	var ff_node := ff_entry.get("node", null) as GPUParticles3D
+	var fire_clear := ff_node != null and ff_node.emitting and ff_node.amount_ratio > 0.1
+	_on_weather_type_requested("heavy_rain")
+	_update_weather(0.0, true)
+	_update_weather_fx(0.0)
+	_update_lighting()
+	var fire_rain := ff_node != null and (not ff_node.emitting) and ff_node.amount_ratio <= 0.02
+	# 船只停航判定：大雨停航、转晴后恢复出航资格。
+	var boat_hold_rain := _boat_weather_hold()
+	_on_weather_type_requested("clear")
+	_update_weather(0.0, true)
+	_update_weather_fx(0.0)
+	var boat_hold_clear := _boat_weather_hold()
+	results.append(["P8 生态天气上下文与雨天船只停航", eco_ok and fire_clear and fire_rain and boat_hold_rain and not boat_hold_clear])
+	_on_weather_auto_requested(true)
+	_update_weather(0.0, true)
+	_update_weather_fx(0.0)
+	_time_source = old_source
+	_update_lighting()
 	# 汇总
 	var passed := 0
 	for r in results:
@@ -2301,11 +4950,11 @@ func _set_time_of_day(minutes: float) -> void:
 	_sim_seconds = today + minutes * 60.0
 	_events = IsleAstro.day_events(_sim_seconds)
 
-func _save_shot(name: String) -> void:
+func _save_shot(name: String, dir: String = SHOTS_DIR) -> void:
 	await RenderingServer.frame_post_draw
-	DirAccess.make_dir_recursive_absolute(SHOTS_DIR)
+	DirAccess.make_dir_recursive_absolute(dir)
 	var img := get_viewport().get_texture().get_image()
-	img.save_png(SHOTS_DIR + name + ".png")
+	img.save_png(dir + name + ".png")
 	print("[SHOT] ", name, " ", img.get_width(), "x", img.get_height())
 	await get_tree().process_frame
 
@@ -2349,6 +4998,114 @@ func _scale_halos(arr: Array, k: float) -> void:
 			(h as Node3D).scale = (h as Node3D).scale * k
 
 # ============================================================
+# P8.1-06 双池：把 _lights 拆成室外池（g_l0..g_l9）/ 室内池（g_l10..g_l15）
+# 槽位契约见 toon.gdshader 顶部注释；室内外由片元 indoor_mask 判定，与摄像机无关。
+# ============================================================
+
+## 双池 rank：数值小的优先保留（同 rank 按 priority 降序、再 energy 降序）。
+func _light_rank_of(kind: String, indoor: bool) -> int:
+	if indoor:
+		match kind:
+			"fireplace":
+				return 0
+			"chandelier":
+				return 1
+			"table_lamp":
+				return 2
+			"floor_lamp":
+				return 3
+			"attic_chandelier":
+				return 4
+			"attic_table_lamp":
+				return 5
+			_:
+				return 9
+	# Lead 复核 2026-10-22：码头灯提前到 rank 2（priority 800）——q2 默认档必须能看到码头灯照明，
+	# 否则「户外灯照亮附近环境」在默认档失效（任务书 §6）。顺序：路灯0 → 灯塔1 → 码头2 → 门廊3 → 窗光4。
+	match kind:
+		"street_lamp":
+			return 0
+		"lighthouse":
+			return 1
+		"dock":
+			return 2
+		"porch_lantern":
+			return 3
+		"window_glow":
+			return 4
+		"boat_lantern":
+			return 4
+		_:
+			return 5
+
+func _light_rank_less(a: Dictionary, b: Dictionary) -> bool:
+	var ra := _light_rank_of(String(a.get("kind", "other")), bool(a.get("indoor", false)))
+	var rb := _light_rank_of(String(b.get("kind", "other")), bool(b.get("indoor", false)))
+	if ra != rb:
+		return ra < rb
+	var pa := int(a.get("priority", 0))
+	var pb := int(b.get("priority", 0))
+	if pa != pb:
+		return pa > pb
+	return float(a.get("energy", 0.0)) > float(b.get("energy", 0.0))
+
+## 按当前画质预算切池：室外 = light_budget - 室内预算（上限 10），室内 = LIGHT_INDOOR_BUDGET（上限 6）。
+## 船灯只在帆船可见时替换「窗光聚合槽」（淡入淡出），绝不挤掉码头灯/门廊灯/壁炉。
+func _compute_light_pools() -> Dictionary:
+	var in_budget := maxi(1, mini(6, IsleQuality.light_indoor_budget(_quality)))
+	var out_budget := clampi(_light_budget - in_budget, 1, 10)
+	# P7-V2 路灯保底：室外池至少留 6 槽，避免旧存档/低预算把道路照明整排挤掉。
+	out_budget = maxi(out_budget, mini(6, 10))
+	var out_pool: Array = []
+	var in_pool: Array = []
+	for L0 in _lights:
+		var Ld: Dictionary = L0
+		if bool(Ld.get("indoor", false)):
+			in_pool.append(Ld)
+		else:
+			out_pool.append(Ld)
+	var target := 0.0
+	if _sailboat != null and _boat_fade > 0.02 and _boat_state != "OFFSCREEN_WAIT":
+		target = 1.0
+	_boat_light_gain = move_toward(_boat_light_gain, target, get_process_delta_time() * 2.5)
+	if _boat_light_gain > 0.001 and _sailboat != null:
+		var filtered: Array = []
+		for Lb in out_pool:
+			if String((Lb as Dictionary).get("kind", "")) != "window_glow":
+				filtered.append(Lb)
+		filtered.append({
+			"pos": _sailboat.to_global(_boat_lantern_local),
+			"color": Color(1.0, 0.74, 0.40),
+			"energy": 1.30 * _boat_light_gain,
+			"range": 6.5,
+			"kind": "boat_lantern",
+			"indoor": false,
+			"priority": 665,
+		})
+		out_pool = filtered
+	out_pool.sort_custom(_light_rank_less)
+	in_pool.sort_custom(_light_rank_less)
+	_light_out_budget = out_budget
+	_light_in_budget = in_budget
+	return {
+		"out": out_pool.slice(0, out_budget),
+		"in": in_pool.slice(0, in_budget),
+		"out_budget": out_budget,
+		"in_budget": in_budget,
+	}
+
+## debug_light_state 的池条目投影（保留旧键 lights 的字段形状）。
+func _light_pool_entry(L: Dictionary) -> Dictionary:
+	return {
+		"kind": String(L.get("kind", "other")),
+		"pos": L["pos"],
+		"color": L["color"],
+		"energy": float(L["energy"]),
+		"range": float(L["range"]),
+		"indoor": bool(L.get("indoor", false)),
+		"priority": int(L.get("priority", 0)),
+	}
+# ============================================================
 # 夜间局部灯光：收集 cottage / world 提供的 light_sources
 # 结构：{pos: Vector3, color: Color, energy: float, range: float}（可选 node）
 # ============================================================
@@ -2358,6 +5115,31 @@ func _collect_lights() -> void:
 		_light_sources.append(src)
 	for src in (_world.get("light_sources", []) as Array):
 		_light_sources.append(src)
+	# P7-V2 夜间道路照明修复：路灯固定占位。
+	# 旧实现把所有光源按 energy 降序后按画质 _light_budget 截断；路灯 energy=1.35，
+	# 低/中档（budget 4/6）会被小屋灯（1.60/1.50/1.42…）整体挤出，夜里道路没有任何受光。
+	# 现在先单独收集路灯（P7.1 起 5 盏）并永远排在最前，剩余名额才按能量分给环境灯。
+	var lamp_lights: Array = []
+	var lamp_positions: Array = []
+	for l in (_world.get("lamps", []) as Array):
+		if not (l is Array) or (l as Array).size() < 3:
+			continue
+		var ld: Variant = (l as Array)[2]
+		if typeof(ld) != TYPE_DICTIONARY:
+			continue
+		var ldct: Dictionary = ld
+		var lp: Vector3 = ldct.get("pos", ldct.get("position", Vector3.ZERO))
+		lamp_positions.append(lp)
+		lamp_lights.append({
+			"pos": lp,
+			"color": ldct.get("color", ldct.get("col", Color(1.0, 0.76, 0.45))),
+			"energy": float(ldct.get("energy", ldct.get("intensity", 1.35))),
+			"range": maxf(float(ldct.get("range", ldct.get("radius", 7.5))), 0.6),
+			"kind": "street_lamp",
+			"indoor": false,
+			# 同 rank 内用 priority 保持世界路灯原始顺序（探针按坐标逐盏核对）。
+			"priority": 1000 - lamp_lights.size(),
+		})
 	var norm: Array = []
 	for src in _light_sources:
 		if typeof(src) != TYPE_DICTIONARY:
@@ -2366,14 +5148,91 @@ func _collect_lights() -> void:
 		var pos: Vector3 = d.get("pos", d.get("position", Vector3.ZERO))
 		if d.has("node") and (d["node"] as Object) is Node3D:
 			pos = (d["node"] as Node3D).global_position
+		# world.light_sources 里也包含这些路灯（P7.1 起 5 盏）：按位置去重，避免同一盏灯被算两次。
+		var dup := false
+		for lp2 in lamp_positions:
+			if pos.distance_squared_to(lp2) < 0.0025:
+				dup = true
+				break
+		if dup:
+			continue
 		var col: Color = d.get("color", d.get("col", Color(1.0, 0.72, 0.42)))
 		var energy := float(d.get("energy", d.get("intensity", 1.2)))
 		var rng := float(d.get("range", d.get("radius", 7.0)))
-		norm.append({"pos": pos, "color": col, "energy": energy, "range": maxf(rng, 0.6)})
-	# 取最重要的 12 盏（toon/grass shader 上限；实际参与着色的数量由画质 _light_budget 决定）
+		var kind := String(d.get("kind", "other"))
+		if kind == "other":
+			# 灯塔/码头灯是夜景里的地标光，单独打标签（探针与排序可核对）
+			var lh: Variant = _world.get("lighthouse_light", {})
+			if lh is Dictionary and (lh as Dictionary).has("pos"):
+				if pos.distance_squared_to((lh as Dictionary)["pos"] as Vector3) < 0.25:
+					kind = "lighthouse"
+			if kind == "other":
+				var dock: Variant = _world.get("dock", {})
+				if dock is Dictionary:
+					var dl: Variant = (dock as Dictionary).get("light", {})
+					if dl is Dictionary and (dl as Dictionary).has("pos"):
+						if pos.distance_squared_to((dl as Dictionary)["pos"] as Vector3) < 0.25:
+							kind = "dock"
+		# P8.1-06 双池：cottage 源自带 indoor/priority（灯种语义），world 源按 kind 补默认权重。
+		var indoor := bool(d.get("indoor", false))
+		var prio := int(d.get("priority", 0))
+		if prio == 0:
+			match kind:
+				"lighthouse":
+					prio = 900
+				"dock":
+					prio = 800
+				_:
+					prio = 500
+		norm.append({"pos": pos, "color": col, "energy": energy, "range": maxf(rng, 0.6), "kind": kind, "indoor": indoor, "priority": prio})
+	# P8.1-06：不再在这里按 energy 截断（双池上限由 _compute_light_pools 按画质分别限制：
+	# 室外 10 槽 + 室内 6 槽）。_lights 保留全部候选，路灯永远在最前（probe 逐盏核对坐标）。
 	norm.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a["energy"]) > float(b["energy"]))
-	_lights = norm.slice(0, 12)
-	RenderingServer.global_shader_parameter_set("g_light_count", float(_lights.size()))
+	var merged: Array = []
+	merged.append_array(lamp_lights)
+	merged.append_array(norm)
+	_lights = merged
+	_lights_outdoor = []
+	_lights_indoor = []
+	RenderingServer.global_shader_parameter_set("g_light_count", 0.0)
+	RenderingServer.global_shader_parameter_set("g_light_indoor", 0.0)
+
+## P7-V2 / P8.1-06 探针接口：当前参与着色的光源清单（含 kind 标签）、双池明细与真实路灯世界坐标。
+## 旧键（lights / active / budget / lamp_count / lamp_positions）保持兼容：lights = 室外池 + 室内池，前 5 盏仍是路灯（P7.1 删灯前为 6）。
+func debug_light_state() -> Dictionary:
+	var pools := _compute_light_pools()
+	var out_sel: Array = pools["out"]
+	var in_sel: Array = pools["in"]
+	var arr: Array = []
+	for L in out_sel:
+		arr.append(_light_pool_entry(L))
+	for L in in_sel:
+		arr.append(_light_pool_entry(L))
+	var lamp_positions: Array = []
+	for l in (_world.get("lamps", []) as Array):
+		if l is Array and (l as Array).size() >= 3 and typeof((l as Array)[2]) == TYPE_DICTIONARY:
+			var ld: Dictionary = (l as Array)[2]
+			lamp_positions.append(ld.get("pos", ld.get("position", Vector3.ZERO)))
+	var pool_out: Array = []
+	for Lo in out_sel:
+		pool_out.append(_light_pool_entry(Lo))
+	var pool_in: Array = []
+	for Li in in_sel:
+		pool_in.append(_light_pool_entry(Li))
+	return {
+		"quality": _quality,
+		"budget": _light_budget,
+		"active": out_sel.size() + in_sel.size(),
+		"lamp_count": lamp_positions.size(),
+		"lamp_positions": lamp_positions,
+		"lights": arr,
+		"pool_outdoor": pool_out,
+		"pool_indoor": pool_in,
+		"outdoor_count": out_sel.size(),
+		"indoor_count": in_sel.size(),
+		"outdoor_budget": int(pools["out_budget"]),
+		"indoor_budget": int(pools["in_budget"]),
+	}
 
 # ============================================================
 # 船 / 风车 / 秋千 场景动效引用
@@ -2391,6 +5250,8 @@ func _collect_props() -> void:
 	# 旋转组件挂在灯室节点上，既让灯具/玻璃旋转，也让光束同轴转动。
 	_beam_origin_node = _lighthouse_lamp if _lighthouse_lamp != null else _lighthouse
 	_swing_pivot = _world.get("swing", null) as Node3D
+	# 注：秋千→岛民的目标注入在 _build_world() 内、岛民创建后完成（见 set_swing_target 调用），
+	# 这里只保存视觉旋转节点。
 	_sailboat = _world.get("sailboat", null) as Node3D
 	_sail_speed = maxf(float(_world.get("sailboat_speed", 3.4)), 0.2)
 	_sail_trip_speed = _sail_speed
@@ -2466,6 +5327,11 @@ func _collect_props() -> void:
 func _on_time_adjust(seconds_delta: float) -> void:
 	if _time_source == "real" or absf(seconds_delta) < 0.001:
 		return
+	# P7（C-02）：暂停中拒绝交互式调时（HUD 时间轴/快捷调时统一走这里）。
+	# 冻结中的世界不接受时间跳变：否则农田时钟已前进、岛民却因冻结分支不检测跳变，
+	# 巡田/钓鱼活动不会被取消，暂停结束后状态就与"跳变即取消活动"的既有契约不一致。
+	if _paused:
+		return
 	_time_jump += seconds_delta
 	_sim_seconds += seconds_delta
 	_events = IsleAstro.day_events(_sim_seconds)
@@ -2476,6 +5342,8 @@ func _on_time_adjust(seconds_delta: float) -> void:
 func _on_time_set(sec_of_day: float) -> void:
 	if _time_source == "real":
 		return
+	if _paused:
+		return
 	var day_start := _sim_seconds - fposmod(_sim_seconds, 86400.0)
 	var next_seconds := day_start + clampf(sec_of_day, 0.0, 86399.0)
 	_time_jump += next_seconds - _sim_seconds
@@ -2483,6 +5351,32 @@ func _on_time_set(sec_of_day: float) -> void:
 	_events = IsleAstro.day_events(_sim_seconds)
 	_events_timer = 0.0
 	_sync_boat_clock()
+
+## P8：完整公历日期时间跳转（唯一权威时钟仍是 _sim_seconds）。
+## 合法性：先按公历夹取（闰年/大小月/年月日时分秒范围），不抛错、不产生非法状态。
+## 不补演：直接落点，随后当帧重算 _events 并刷新光照；船只/生态按“跳时”对齐。
+func _jump_datetime(year: int, month: int, day: int, hour: int, minute: int, second: int = 0) -> void:
+	if _time_source == "real":
+		_hud.show_toast("现实时间模式：时间随现实时钟前进")
+		return
+	var c: Dictionary = ISLE_CALENDAR.clamp_parts(year, month, day, hour, minute, second)
+	var target: float = ISLE_CALENDAR.to_local_seconds(
+		int(c["year"]), int(c["month"]), int(c["day"]),
+		int(c["hour"]), int(c["minute"]), int(c["second"]))
+	if absf(target - _sim_seconds) < 0.001:
+		return
+	_time_jump += target - _sim_seconds
+	_sim_seconds = target
+	_events = IsleAstro.day_events(_sim_seconds)
+	_events_timer = 0.0
+	_sim_delta = 0.0
+	_sync_boat_clock()
+	_update_lighting()
+	# 跳转后立即进入合法季节状态（不补演中间季节的视觉过渡）。
+	_update_season(0.0, true)
+	# 天气同样不补演：tick 检测到时间跳变会 reset，直接落到新时刻的合法天气。
+	_update_weather(0.0, true)
+	_hud.show_toast("已跳至 %s %02d:%02d" % [str(c["year"]) + "年" + str(c["month"]) + "月" + str(c["day"]) + "日", int(c["hour"]), int(c["minute"])])
 
 # ============================================================
 # 右键平移（受约束：水平沿相机右向，竖直调整观察中心高度）
@@ -2508,9 +5402,46 @@ func _clamp_target() -> void:
 # ============================================================
 func _update_props(delta: float) -> void:
 	# 秋千（绕吊点摆动）
+	# P8.1-05：idle 正弦保留为“无风基准姿态”，强风下叠加顺风侧倾/前后摆的
+	# 弹簧-阻尼响应（S2/S4）；wind≈0 时逐字退回旧公式（S1 回归误差<1e-6）。
+	# 几何（吊点/绳长/座椅尺寸）一律不碰（S5）。
+	if _p82prof_on:
+		_p82p_begin()
 	if _swing_pivot != null:
-		_swing_pivot.rotation.x = sin(_frame_t * 1.15) * 0.42
-		_swing_pivot.rotation.z = sin(_frame_t * 0.83 + 0.8) * 0.06
+		var idle := swing_idle_rot(_frame_t)
+		if _p81wind_legacy or _weather_visual_wind <= 0.0005:
+			_swing_roll = 0.0
+			_swing_roll_v = 0.0
+			_swing_pitch = 0.0
+			_swing_pitch_v = 0.0
+			_swing_pivot.rotation.x = idle.x
+			_swing_pivot.rotation.z = idle.y
+		else:
+			var dt_step := clampf(delta, 0.0, 0.05)
+			if _p82opt_off:
+				# 优化前路径（每帧新建 3 个临时容器）：同一 build 内交替 A/B 归因用，数学与纯函数一致。
+				var tg0 := swing_wind_targets(_weather_visual_wind, _weather_wind_dir_smooth, _frame_t)
+				var sp0 := swing_spring_step(_swing_pitch, _swing_pitch_v, float(tg0["pitch"]), dt_step)
+				_swing_pitch = sp0[0]
+				_swing_pitch_v = sp0[1]
+				var sr0 := swing_spring_step(_swing_roll, _swing_roll_v, float(tg0["roll"]), dt_step)
+				_swing_roll = sr0[0]
+				_swing_roll_v = sr0[1]
+			else:
+				# P8.2-03：复用目标/弹簧容器（每帧 3 个临时容器分配=第二热点），数学与纯函数逐字一致。
+				swing_wind_targets_into(_p82_swing_tg, _weather_visual_wind, _weather_wind_dir_smooth, _frame_t)
+				swing_spring_step_into(_p82_swing_out, _swing_pitch, _swing_pitch_v, float(_p82_swing_tg["pitch"]), dt_step)
+				_swing_pitch = _p82_swing_out[0]
+				_swing_pitch_v = _p82_swing_out[1]
+				swing_spring_step_into(_p82_swing_out, _swing_roll, _swing_roll_v, float(_p82_swing_tg["roll"]), dt_step)
+				_swing_roll = _p82_swing_out[0]
+				_swing_roll_v = _p82_swing_out[1]
+			_swing_pivot.rotation = Vector3(
+				clampf(idle.x + _swing_pitch, -0.62, 0.62),
+				0.0,
+				clampf(idle.y + _swing_roll, -0.18, 0.42))
+	if _p82prof_on:
+		_p82p_end(4)
 	# 立体水花
 	if _splash != null:
 		_splash.update(delta)
@@ -2716,6 +5647,17 @@ func _boat_dock_anchor() -> Array:
 func _choose_sail_route() -> void:
 	_start_boat_departure()
 
+## P8 阶段 7：出港天气门控——大雨/雷暴/台风/大雪或风暴强时停航。
+func _boat_weather_hold() -> bool:
+	var type_id := String(_weather_state.get("type", "clear"))
+	if _weather_storm > 0.55:
+		return true
+	if type_id == "heavy_rain" or type_id == "thunder" or type_id == "typhoon" or type_id == "heavy_snow":
+		return true
+	if _weather_snow >= 0.55:
+		return true
+	return false
+
 ## 出航：从码头锚点出发，随机选一条完整路线；整条路线在出港瞬间确定，途中不再重随机
 func _start_boat_departure() -> void:
 	if _sail_routes.is_empty():
@@ -2736,6 +5678,7 @@ func _start_boat_departure() -> void:
 	_boat_wait_total = maxf(60.0, float(_sail_route.get("wait_sim_seconds", 28800.0)))
 	_boat_route_speed = maxf(_sail_speed, float(_sail_route.get("speed", _sail_speed)))
 	_boat_route_len = _polyline_len(_sail_route["_out_pts"])
+	_set_boat_shore_window(_sail_route)
 	_boat_route_dist = 0.0
 	_boat_speed_cur = 0.0
 	_boat_turn_rate = 0.0
@@ -2747,6 +5690,20 @@ func _start_boat_departure() -> void:
 	_sail_dist2 = 0.0
 	_apply_boat_fade()
 	print("[BOAT] depart #", _boat_trip, " route=", String(_sail_route.get("name", str(idx))), " kind=", _boat_route_kind, " out_len=", snappedf(_boat_route_len, 0.1), " far_entries=", _boat_far_entries.size(), " wait=", snappedf(_boat_wait_total, 1.0), "s")
+
+## P7：按航线真实几何计算近海航段的一次性触发距离；远海 / 无近海元数据的航次直接禁用。
+func _set_boat_shore_window(route: Dictionary) -> void:
+	_boat_shore_done = true
+	_boat_shore_trigger = -1.0
+	if String(route.get("kind", "")) != "coastal" or not route.has("shore_a0"):
+		return
+	var pts: Array = route.get("_out_pts", [])
+	if pts.is_empty():
+		pts = _route_points(route.get("out", []))
+	var d: float = IsleWorld.shore_trigger_dist(pts, float(route["shore_a0"]), float(route["shore_a1"]))
+	if d > 0.0:
+		_boat_shore_trigger = d
+		_boat_shore_done = false
 
 ## 沿路线推进（弧长参数化），船头始终对准路径切线
 func _boat_step(pts: Array, speed: float, delta: float) -> Dictionary:
@@ -2821,7 +5778,7 @@ func _enter_resting() -> void:
 		_boat_rest_until = maxf(_boat_rest_until, _next_rest_end_sim())
 	print("[BOAT] arrived dock -> RESTING until sim=", snappedf(_boat_rest_until, 1.0))
 
-## 18:00—次日 08:00 为小船休息窗口（按所选时区的当地模拟时钟判定）
+## 18:00—次日 08:00 为小船休息窗口（按岛屿参考时区/模拟时钟判定；显示时区不影响生态行为）
 func _is_boat_rest_hour() -> bool:
 	var hour := fposmod(_sim_seconds, 86400.0) / 3600.0
 	return hour >= BOAT_REST_START_HOUR or hour < BOAT_REST_END_HOUR
@@ -2838,14 +5795,20 @@ func _next_rest_end_sim() -> float:
 func _sync_boat_clock() -> void:
 	if _sailboat == null:
 		return
-	if absf(_time_jump) > 0.001:
+	var jumped := absf(_time_jump) > 0.001
+	if jumped:
 		if _boat_state == "OFFSCREEN_WAIT":
 			_boat_wait_sim = maxf(0.0, _boat_wait_sim - absf(_time_jump))
 		_time_jump = 0.0
 	if _boat_state == "DOCKED" and _is_boat_rest_hour():
 		_enter_resting()
-	elif _boat_state == "RESTING" and _is_boat_rest_hour():
-		_boat_rest_until = maxf(_boat_rest_until, _next_rest_end_sim())
+	elif _boat_state == "RESTING":
+		if _is_boat_rest_hour():
+			_boat_rest_until = maxf(_boat_rest_until, _next_rest_end_sim())
+		elif jumped and _boat_rest_until > _sim_seconds:
+			# C4 修复：向后拖时间/跳到白天时，夜间长休息不应把船锁在 RESTING 约 20 游戏小时；
+			# 只在真正的跳时（_time_jump）时提前结束，正常白天短停靠不受影响。
+			_boat_rest_until = _sim_seconds
 
 func _update_boat(delta: float) -> void:
 	if _sailboat == null:
@@ -2866,7 +5829,17 @@ func _update_boat(delta: float) -> void:
 			if not _paused:
 				_sail_dwell -= delta
 			if _sail_dwell <= 0.0:
-				_start_boat_departure()
+				# P8 阶段 7：恶劣天气不出港（只在出港判定处拦截，不改航线数据）。
+				# 停航时把等待时间往后顺延，天气转好后自然恢复出航。
+				if _boat_weather_hold():
+					if not _boat_wx_hold:
+						_boat_wx_hold = true
+						print("[BOAT] weather_hold type=", String(_weather_state.get("type", "clear")),
+							" storm=", snappedf(_weather_storm, 0.01))
+					_sail_dwell = 30.0
+				else:
+					_boat_wx_hold = false
+					_start_boat_departure()
 		"DEPARTING":
 			# 平滑加速，离港段不瞬间到最大速度
 			_boat_speed_cur = minf(_boat_route_speed, _boat_speed_cur + maxf(0.8, _boat_route_speed * 0.55) * delta)
@@ -2877,6 +5850,13 @@ func _update_boat(delta: float) -> void:
 		"COASTAL_CRUISE":
 			_boat_speed_cur = minf(_boat_route_speed, _boat_speed_cur + 1.1 * delta)
 			var c := _boat_step(_sail_route.get("_out_pts", []), _boat_speed_cur, delta)
+			# P7：进入真实近海航段的一次性边界触发；_boat_shore_done 保证同一航次只调用一次。
+			if not _boat_shore_done and _boat_shore_trigger > 0.0 and _boat_route_dist >= _boat_shore_trigger and not _paused:
+				_boat_shore_done = true
+				var eco: Dictionary = {}
+				if _birds != null:
+					eco = _birds.on_boat_shore_pass(_boat_trip, _sailboat.global_position, _sun_alt)
+				print("[ECO] boat_shore trip=", _boat_trip, " birds=", int(eco.get("birds", 0)), " reason=", String(eco.get("reason", "")), " dist=", snappedf(_boat_route_dist, 0.1))
 			if bool(c["done"]):
 				_begin_return(_sail_route.get("_back_pts", []))
 		"OUTBOUND_FAR":
@@ -3237,6 +6217,11 @@ func _apply_user_settings(save: bool) -> void:
 	_settings["day_length"] = _day_length
 	_sensitivity = clampf(float(_settings.get("sensitivity", 1.0)), 0.2, 3.0)
 	_auto_orbit = bool(_settings.get("auto_orbit", true))
+	# P7-V3：玩家视野范围（FOV，35–65°，默认 42），轨道视角 _play_pose 与自由视角 base_fov 共用。
+	_fov = Settings.sanitize_fov(_settings.get("fov", Settings.FOV_DEFAULT))
+	_settings["fov"] = _fov
+	if _flycam != null and bool(_flycam.active):
+		_flycam.set_base_fov(_fov)
 	_time_source = String(_settings.get("time_source", "sim"))
 	if _time_source != "sim" and _time_source != "real":
 		_time_source = "sim"
@@ -3245,9 +6230,9 @@ func _apply_user_settings(save: bool) -> void:
 	_settings["resolution"] = Settings.sanitize_resolution(_settings.get("resolution", Settings.default_resolution()))
 	_settings["window_mode"] = Settings.sanitize_window_mode(_settings.get("window_mode", "windowed"), _settings.get("fullscreen", false))
 	if _realtime:
-		# 统一时间源：每次应用设置都以所选时区重算天文时钟，切换时区立即生效。
+		# 现实时间：天文/生态时钟固定用岛屿参考时区；显示时区只改 HUD 文本（T7 修复）。
 		_abs_unix = Time.get_unix_time_from_system()
-		_sim_seconds = _abs_unix + float(_offset_for(_abs_unix))
+		_sim_seconds = _abs_unix + float(IsleAstro.TZ_SECONDS)
 		_events = IsleAstro.day_events(_sim_seconds)
 	_apply_quality(_quality)
 	_apply_audio_volume()
@@ -3285,15 +6270,12 @@ func _display_clock_text() -> String:
 	var dt := _display_datetime()
 	return "%02d:%02d" % [int(dt.get("hour", 0)), int(dt.get("minute", 0))]
 
-## 广州本地秒 → 所选时区的显示时间（用于日出/日落/月出/月落）
+## 岛屿参考时区（广州）本地秒 → 所选显示时区的墙上时间（日出/日落/月出/月落）。
+## 现实与模拟模式同一换算：天体事件始终发生在参考时区，显示时区只改文本（T7 修复）。
 func _local_seconds_to_display_text(local_seconds: float) -> String:
 	if local_seconds < -1.0e8:
 		return "--:--"
-	var unix := local_seconds - 28800.0
-	if _time_source == "real":
-		# 现实模式下 _sim_seconds/_events 已是所选时区当地秒，直接格式化，避免二次换算。
-		var dt_direct := Time.get_datetime_dict_from_unix_time(int(local_seconds))
-		return "%02d:%02d" % [int(dt_direct.get("hour", 0)), int(dt_direct.get("minute", 0))]
+	var unix := local_seconds - float(IsleAstro.TZ_SECONDS)
 	var off := _offset_for(unix)
 	var dt2 := Time.get_datetime_dict_from_unix_time(int(unix + float(off)))
 	return "%02d:%02d" % [int(dt2.get("hour", 0)), int(dt2.get("minute", 0))]
@@ -3333,12 +6315,12 @@ func _on_time_mode_requested(mode: String) -> void:
 	_realtime = mode == "real"
 	_abs_unix = Time.get_unix_time_from_system()
 	if mode == "real":
-		# 切到现实：以系统绝对时间 + 所选时区重新同步。
-		_sim_seconds = _abs_unix + float(_offset_for(_abs_unix))
+		# 切到现实：以系统绝对时间 + 岛屿参考时区重新同步（显示时区只改文本）。
+		_sim_seconds = _abs_unix + float(IsleAstro.TZ_SECONDS)
 	else:
 		# 切到模拟：从当前显示时刻连续初始化模拟钟，太阳/月亮/船/鸟不会瞬间跳变。
 		if was_real:
-			_sim_seconds = _abs_unix + float(_offset_for(_abs_unix))
+			_sim_seconds = _abs_unix + float(IsleAstro.TZ_SECONDS)
 		_paused = false
 	_events = IsleAstro.day_events(_sim_seconds)
 	_events_timer = 0.0
@@ -3385,7 +6367,7 @@ func _apply_audio_volume() -> void:
 
 func _apply_window_mode(mode_name: String) -> void:
 	# Phase6：窗口化 / 独占全屏 / 无边框三态。自动测试保持固定窗口。
-	if _shots or _perf or _selftest or _transition:
+	if _shots or _perf or _p8perf or _selftest or _transition:
 		return
 	if DisplayServer.get_name() == "headless":
 		return
@@ -3424,7 +6406,7 @@ func _apply_resolution(target: Variant = null, force: bool = false) -> void:
 	# 自动截图 / 性能 / 转场测试保持固定窗口；自测通过 force 做一次真实窗口验证后恢复
 	if DisplayServer.get_name() == "headless":
 		return
-	if not force and (_shots or _perf or _transition):
+	if not force and (_shots or _perf or _p8perf or _transition):
 		return
 	var win := get_window()
 	if win != null:
@@ -3471,8 +6453,9 @@ func _apply_quality(q: int) -> void:
 		_env.tonemap_exposure = clampf(float(p.get("exposure", 1.0)), 0.5, 2.0)
 		_env.glow_enabled = _quality >= 1
 		_env.glow_intensity = clampf(float(p.get("glow_strength", 0.6)), 0.0, 2.0)
-		# 引擎 SSAO/SSIL/体积雾对全 unshaded 自定义管线基本不产生可见效果，
-		# 仅在极致档尝试开启 SSAO 并在报告中标注「兼容性核查：未观察到可见差异」；不依赖它做画质卖点。
+		# 引擎 SSAO/SSIL 对全 unshaded 自定义管线不产生可见效果；引擎体积雾虽会改变画面，
+		# 但在黎明/黄昏会被未受光的雾染暗海面（2026-10-20 T7 实测：黎明海面接近全黑、远景山体成黑带），
+		# 与既有暖色天空/海面艺术风格冲突，故不接入，也不在菜单暴露覆盖开关。详见 docs/P6_AO_FOG_EVAL.md。
 		_env.ssao_enabled = false
 		_env.ssil_enabled = false
 		_env.volumetric_fog_enabled = false
@@ -3491,11 +6474,22 @@ func _apply_quality(q: int) -> void:
 		_sea_mat.set_shader_parameter("sea_normal_detail", float(sp.get("sea_normal_detail", 1.0)))
 		_sea_mat.set_shader_parameter("sea_foam_detail", float(sp.get("sea_foam_detail", 1.0)))
 		_sea_mat.set_shader_parameter("sea_refl_detail", float(sp.get("sea_refl_detail", 1.0)))
-	_light_budget = int(p.get("light_budget", 8))
+	# P8.1-06：双池 16 槽后预算下限 10（低画质不关灯）、上限 16；旧存档里的 7/8 在此被抬到 10。
+	_light_budget = clampi(int(p.get("light_budget", 12)), 10, 16)
 	_apply_sea_mesh(float(p.get("sea_mesh_scale", 1.0)))
-	# 自定义 AO：仅极高/极致档启用；radius/samples/bias 固定，强度随档位。
+	_apply_lod_bias(float(p.get("lod_bias", 1.0)))
+	# 自定义 AO：开关由 posts_ao 布尔决定（同时兼容菜单高级覆盖写入的 UI 别名 post_ao），
+	# ao_strength 只表达强度。此前只读 ao_strength，导致「高级覆盖=关」只改状态不动渲染。
 	if _post_ao_mat != null and _post_ao_mi != null:
+		var ao_on := bool(p.get("posts_ao", true))
+		if p.has("post_ao"):
+			ao_on = bool(p["post_ao"])
 		var ao_s := clampf(float(p.get("ao_strength", 0.0)), 0.0, 1.0)
+		if not ao_on:
+			ao_s = 0.0
+		elif ao_s <= 0.001:
+			# 低/中档预设默认关 AO（strength=0）；玩家在高级覆盖里手动打开时给一个可见强度。
+			ao_s = 0.35
 		_post_ao_mat.set_shader_parameter("ao_strength", ao_s)
 		_post_ao_mat.set_shader_parameter("ao_radius", float(p.get("ao_radius", 0.9)))
 		_post_ao_mat.set_shader_parameter("ao_samples", int(p.get("ao_samples", 12)))
@@ -3518,7 +6512,7 @@ func _apply_quality(q: int) -> void:
 		_grass_visible_count += int(mi.multimesh.visible_instance_count)
 	# 粒子预算（烟 / 花瓣 / 萤火）
 	var pratio := clampf(float(p.get("particle_density", 1.0)), 0.1, 1.5)
-	for key in ["smoke", "petals", "fireflies"]:
+	for key in ["smoke", "petals", "fireflies", "leaves"]:
 		var entry: Dictionary = _fx.get(key, {})
 		var node = entry.get("node", null)
 		if node is GPUParticles3D:
@@ -3526,15 +6520,24 @@ func _apply_quality(q: int) -> void:
 			if not gp.has_meta("base_amount"):
 				gp.set_meta("base_amount", gp.amount)
 			gp.amount = maxi(6, int(round(float(gp.get_meta("base_amount")) * float(pratio))))
+	# 天气降水同样随画质档缩放（低档仍保留可见雨雪，不是直接关掉）
+	for key in ["rain", "snow", "drip"]:
+		var wentry: Dictionary = _weather_fx.get(key, {})
+		var wnode = wentry.get("node", null)
+		if wnode is GPUParticles3D:
+			var wgp := wnode as GPUParticles3D
+			if not wgp.has_meta("base_amount"):
+				wgp.set_meta("base_amount", wgp.amount)
+			wgp.amount = maxi(12, int(round(float(wgp.get_meta("base_amount")) * float(pratio))))
 
 ## 五档兜底参数表（isle_quality.gd 缺键时补齐；数值即真实渲染参数）。
 func _fallback_quality_params(q: int) -> Dictionary:
 	var tiers: Array = [
-		{"msaa_3d": 0, "msaa_2d": 0, "screen_space_aa": 1, "taa": false, "scaling_3d_scale": 0.82, "scaling_3d_mode": 0, "max_fps": 45, "sky_cloud_detail": 0.0, "sea_wave_detail": 0.35, "sea_foam": 0.35, "sea_reflection": 0.0, "sea_ssr": 0.0, "sea_mesh_scale": 0.55, "grass_density": 0.45, "particle_density": 0.45, "light_budget": 4, "glow_strength": 0.45, "tonemap": 0, "exposure": 1.0, "lod_bias": 0.8},
-		{"msaa_3d": 1, "msaa_2d": 0, "screen_space_aa": 1, "taa": false, "scaling_3d_scale": 0.95, "scaling_3d_mode": 0, "max_fps": 60, "sky_cloud_detail": 1.0, "sea_wave_detail": 0.65, "sea_foam": 0.6, "sea_reflection": 1.0, "sea_ssr": 0.0, "sea_mesh_scale": 0.8, "grass_density": 0.72, "particle_density": 0.65, "light_budget": 6, "glow_strength": 0.6, "tonemap": 1, "exposure": 1.0, "lod_bias": 1.0},
-		{"msaa_3d": 2, "msaa_2d": 1, "screen_space_aa": 1, "taa": false, "scaling_3d_scale": 1.0, "scaling_3d_mode": 0, "max_fps": 0, "sky_cloud_detail": 2.0, "sea_wave_detail": 1.0, "sea_foam": 0.78, "sea_reflection": 1.0, "sea_ssr": 0.0, "sea_mesh_scale": 1.0, "grass_density": 1.0, "particle_density": 0.85, "light_budget": 8, "glow_strength": 0.6, "tonemap": 2, "exposure": 1.0, "lod_bias": 1.1},
-		{"msaa_3d": 2, "msaa_2d": 1, "screen_space_aa": 2, "taa": false, "scaling_3d_scale": 1.2, "scaling_3d_mode": 0, "max_fps": 0, "sky_cloud_detail": 3.0, "sea_wave_detail": 1.45, "sea_foam": 0.9, "sea_reflection": 1.0, "sea_ssr": 0.6, "sea_mesh_scale": 1.3, "grass_density": 1.0, "particle_density": 1.0, "light_budget": 10, "glow_strength": 0.75, "tonemap": 3, "exposure": 1.03, "lod_bias": 1.3},
-		{"msaa_3d": 3, "msaa_2d": 1, "screen_space_aa": 2, "taa": true, "scaling_3d_scale": 1.5, "scaling_3d_mode": 0, "max_fps": 0, "sky_cloud_detail": 3.0, "sea_wave_detail": 2.0, "sea_foam": 1.0, "sea_reflection": 1.0, "sea_ssr": 1.0, "sea_mesh_scale": 1.6, "grass_density": 1.0, "particle_density": 1.15, "light_budget": 12, "glow_strength": 0.9, "tonemap": 3, "exposure": 1.06, "lod_bias": 1.5},
+		{"msaa_3d": 0, "msaa_2d": 0, "screen_space_aa": 1, "taa": false, "scaling_3d_scale": 0.82, "scaling_3d_mode": 0, "max_fps": 45, "sky_cloud_detail": 0.0, "sea_wave_detail": 0.35, "sea_foam": 0.35, "sea_reflection": 0.0, "sea_ssr": 0.0, "sea_mesh_scale": 0.55, "grass_density": 0.45, "particle_density": 0.45, "light_budget": 10, "glow_strength": 0.45, "tonemap": 0, "exposure": 1.0, "lod_bias": 0.8},
+		{"msaa_3d": 1, "msaa_2d": 0, "screen_space_aa": 1, "taa": false, "scaling_3d_scale": 0.95, "scaling_3d_mode": 0, "max_fps": 60, "sky_cloud_detail": 1.0, "sea_wave_detail": 0.65, "sea_foam": 0.6, "sea_reflection": 1.0, "sea_ssr": 0.0, "sea_mesh_scale": 0.8, "grass_density": 0.72, "particle_density": 0.65, "light_budget": 11, "glow_strength": 0.6, "tonemap": 1, "exposure": 1.0, "lod_bias": 1.0},
+		{"msaa_3d": 2, "msaa_2d": 1, "screen_space_aa": 1, "taa": false, "scaling_3d_scale": 1.0, "scaling_3d_mode": 0, "max_fps": 0, "sky_cloud_detail": 2.0, "sea_wave_detail": 1.0, "sea_foam": 0.78, "sea_reflection": 1.0, "sea_ssr": 0.0, "sea_mesh_scale": 1.0, "grass_density": 1.0, "particle_density": 0.85, "light_budget": 12, "glow_strength": 0.6, "tonemap": 2, "exposure": 1.0, "lod_bias": 1.1},
+		{"msaa_3d": 2, "msaa_2d": 1, "screen_space_aa": 2, "taa": false, "scaling_3d_scale": 1.2, "scaling_3d_mode": 0, "max_fps": 0, "sky_cloud_detail": 3.0, "sea_wave_detail": 1.45, "sea_foam": 0.9, "sea_reflection": 1.0, "sea_ssr": 0.6, "sea_mesh_scale": 1.3, "grass_density": 1.0, "particle_density": 1.0, "light_budget": 14, "glow_strength": 0.75, "tonemap": 3, "exposure": 1.03, "lod_bias": 1.3},
+		{"msaa_3d": 3, "msaa_2d": 1, "screen_space_aa": 2, "taa": true, "scaling_3d_scale": 1.5, "scaling_3d_mode": 0, "max_fps": 0, "sky_cloud_detail": 3.0, "sea_wave_detail": 2.0, "sea_foam": 1.0, "sea_reflection": 1.0, "sea_ssr": 1.0, "sea_mesh_scale": 1.6, "grass_density": 1.0, "particle_density": 1.15, "light_budget": 16, "glow_strength": 0.9, "tonemap": 3, "exposure": 1.06, "lod_bias": 1.5},
 	]
 	return (tiers[clampi(q, 0, tiers.size() - 1)] as Dictionary).duplicate(true)
 
@@ -3545,6 +6548,12 @@ func _quality_params() -> Dictionary:
 	if ov is Dictionary:
 		overrides = ov as Dictionary
 	var p: Dictionary = Settings.quality_effective(_quality, overrides)
+	# 菜单高级覆盖历史上把 AO 开关存成 UI 别名 "post_ao"，而参数表/渲染键是
+	# "posts_ao"。这里做唯一一次归一（保留外部存档契约，内部只留规范键），
+	# 避免"改开关不改渲染"的两套键并存。
+	if p.has("post_ao"):
+		p["posts_ao"] = bool(p["post_ao"])
+		p.erase("post_ao")
 	var fb := _fallback_quality_params(_quality)
 	for k in fb.keys():
 		if not p.has(k):
@@ -3580,6 +6589,23 @@ func _apply_sea_mesh(scale: float) -> void:
 	sea.mesh = pm
 	if _sea_mat != null:
 		_sea_mat.set_shader_parameter("wave_scale", 1.0)
+
+# 画质档 LOD 偏置：缩放世界层岩石近/远 LOD 的可见范围（world.gd 建出的
+# Rocks_<family>_Near / Rocks_<family>_Far 的 visibility_range，基准 28m / 24m）。
+# 两段同时等比缩放，重叠区间始终存在，切档不会出现岩石空洞或突跳。
+func _apply_lod_bias(bias: float) -> void:
+	var b := clampf(bias, 0.6, 1.6)
+	var holder := get_node_or_null("World")
+	if holder == null:
+		return
+	# 岩石挂在 World/Island 下（world.gd build() 的 root），必须递归查找。
+	for child in holder.find_children("Rocks_*", "", true, false):
+		var nm := String(child.name)
+		if child is GeometryInstance3D:
+			if nm.begins_with("Rocks_") and nm.ends_with("_Near"):
+				(child as GeometryInstance3D).visibility_range_end = 28.0 * b
+			elif nm.begins_with("Rocks_") and nm.ends_with("_Far"):
+				(child as GeometryInstance3D).visibility_range_begin = 24.0 * b
 
 func _find_grass_node(node_name: String) -> MultiMeshInstance3D:
 	var root = _world.get("root", null)
@@ -3621,6 +6647,8 @@ func _sfx_ui() -> void:
 		_audio.play_ui_click()
 
 func _update_hover(delta: float) -> void:
+	if _flycam != null and _flycam.active:
+		return
 	if _mode != Mode.PLAYING or _shots or _perf or _selftest or _transition:
 		return
 	if _blending != "" or _dragging or _panning:
@@ -3659,7 +6687,7 @@ func _update_perf_overlay(delta: float) -> void:
 	_perf_timer = 0.5
 	var fps := maxf(Engine.get_frames_per_second(), 1.0)
 	_hud.update_perf({
-		"clock": IsleAstro.clock_text(int(fposmod(_sim_seconds, 86400.0) / 60.0)),
+		"clock": _display_clock_text(),
 		"phase": _phase_name,
 		"fps": fps,
 		"frame_ms": 1000.0 / fps,
@@ -3667,7 +6695,8 @@ func _update_perf_overlay(delta: float) -> void:
 		"draw_calls": int(Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME)),
 		"objects": int(Performance.get_monitor(Performance.RENDER_TOTAL_OBJECTS_IN_FRAME)),
 		"vram_mb": Performance.get_monitor(Performance.RENDER_VIDEO_MEM_USED) / 1048576.0,
-		"lights": mini(_lights.size(), _light_budget),
+		# P8.1-06：_lights 已是全候选清单（24 盏），显示实际激活盏数（室外池+室内池）。
+		"lights": _lights_outdoor.size() + _lights_indoor.size(),
 		"grass": _grass_visible_count,
 		"quality": _hud_quality_label,
 	})
@@ -3702,3 +6731,1684 @@ func _take_photo() -> void:
 	else:
 		if _hud != null:
 			_hud.show_toast("截图保存失败")
+
+# ============================================================
+# P7 专项截图（--p7shots）：黄昏归栖 / 夜间稳定 / 清晨恢复 / 船鸟联动
+# 仅用于视觉验收：只放慢太阳并固定机位，不改变正式运行的生态规则。
+# ============================================================
+## P8 截图序列：日历 / 季节 / 月相 / 天气视觉的可复跑证据（固定日期时刻，不依赖现实时间）。
+func _run_p8shots() -> void:
+	_mode = Mode.PLAYING
+	_started = true
+	_paused = false
+	_menu.instant_finish()
+	_blending = ""
+	_apply_pose(_play_pose())
+	_hud.set_hud_visible(false, false)
+	_auto_orbit = false
+	_shot_beam_lock = false
+	_day_length = 3600.0
+	await get_tree().create_timer(0.9).timeout
+	# 1) 时间面板 + 日历编辑区（可见暂停按钮、年月日时分编辑、跳转按钮）
+	_hud.set_hud_visible(true, false)
+	_hud.toggle_time_panel()
+	_hud.call("_toggle_calendar")
+	await get_tree().create_timer(0.4).timeout
+	await _save_shot("p8_00_time_panel_calendar", P8_SHOTS_DIR)
+	print("[P8SHOTS] p8_00_time_panel_calendar date=", ISLE_CALENDAR.full_label(_sim_seconds))
+	_hud.call("_toggle_calendar")
+	_hud.toggle_time_panel()
+	_hud.set_hud_visible(false, false)
+	# 2) 四季正午：固定日期，验证季节底色 / 花卉 / 季节标签（视觉在阶段 4 回填）
+	for spec in [
+		["p8_01_spring_noon", 2026, 3, 20, 12, 20],
+		["p8_02_summer_noon", 2026, 6, 21, 12, 20],
+		["p8_03_autumn_noon", 2026, 9, 23, 12, 20],
+		["p8_04_winter_noon", 2026, 12, 21, 12, 20],
+	]:
+		_jump_datetime(int(spec[1]), int(spec[2]), int(spec[3]), int(spec[4]), int(spec[5]))
+		_p8_camera_island()
+		_update_lighting()
+		await get_tree().create_timer(1.2).timeout
+		await _save_shot(str(spec[0]), P8_SHOTS_DIR)
+		var cal: Dictionary = ISLE_CALENDAR.parts(_sim_seconds)
+		print("[P8SHOTS] ", str(spec[0]), " ", str(cal.get("date_label", "")), " ", str(cal.get("season_label", "")), " weights=", str(cal.get("season_weights", [])))
+	print("[P8SHOTS] done")
+	get_tree().quit()
+
+## P8 阶段 5 天气专项截图（--p8weather）：固定日期 + 天气面板四个状态（自动/冬季手动雪/
+## 夏季合法选项/秋季台风）。天气由权威模拟时钟驱动，手动选择走与键盘 UI 相同的入口。
+func _run_p8weathershots() -> void:
+	_mode = Mode.PLAYING
+	_started = true
+	_paused = true            # 固定时刻：模拟时钟不走，天气不会在截图期间漂移
+	_menu.instant_finish()
+	_blending = ""
+	_auto_orbit = false
+	_shot_beam_lock = false
+	_time_source = "sim"
+	_hud.set_hud_visible(true, false)
+	_hud.call("_collapse_time_panel")
+	if not bool(_hud.get("_weather_open")):
+		_hud.call("toggle_weather_panel")
+	_jump_datetime(2027, 1, 15, 10, 0, 0)
+	_on_weather_auto_requested(true)
+	_p8_camera_island()
+	await get_tree().create_timer(1.0).timeout
+	await _save_shot("p8_weather_00_winter_auto", P8_WEATHER_DIR)
+	print("[P8WEATHER] auto ", String(_weather_state.get("season_label", "")),
+		" type=", String(_weather_state.get("type", "")),
+		" label=", String(_weather_state.get("label", "")),
+		" avail=", str(_weather_state.get("available_types", [])))
+	# 冬季手动选雪：选项合法，状态立即进入手动小雪
+	_on_weather_type_requested("light_snow")
+	await get_tree().create_timer(0.7).timeout
+	await _save_shot("p8_weather_01_winter_manual_snow", P8_WEATHER_DIR)
+	print("[P8WEATHER] manual ", String(_weather_state.get("mode", "")),
+		" type=", String(_weather_state.get("type", "")),
+		" precip=", String(_weather_state.get("precip_type", "")),
+		" snow_depth=", "%.2f" % float(_weather_state.get("snow_depth", 0.0)))
+	# 夏季：手动列表不含雪，自动天气合法
+	_jump_datetime(2026, 7, 15, 10, 0, 0)
+	_on_weather_auto_requested(true)
+	_p8_camera_island()
+	await get_tree().create_timer(0.9).timeout
+	await _save_shot("p8_weather_02_summer_auto", P8_WEATHER_DIR)
+	print("[P8WEATHER] summer avail=", str(_weather_state.get("available_types", [])))
+	# 秋季手动台风：复合强天气的合法选项
+	_jump_datetime(2026, 9, 20, 10, 0, 0)
+	if (_weather_state.get("available_types", []) as Array).has("typhoon"):
+		_on_weather_type_requested("typhoon")
+	await get_tree().create_timer(0.7).timeout
+	await _save_shot("p8_weather_03_autumn_typhoon", P8_WEATHER_DIR)
+	print("[P8WEATHER] typhoon type=", String(_weather_state.get("type", "")),
+		" storm=", "%.2f" % float(_weather_state.get("storm", 0.0)))
+	# 收折态胶囊（面板收起后左下角两枚胶囊并列）
+	_hud.call("toggle_weather_panel")
+	await get_tree().create_timer(0.5).timeout
+	await _save_shot("p8_weather_04_pills", P8_WEATHER_DIR)
+	print("[P8WEATHER] done")
+	get_tree().quit()
+
+
+## P8 阶段 7 生态联动截图（--p8eco）：雨日岛民改在门廊、晴夜/雨夜萤火对比。
+## 全部使用固定日期 + 手动天气 + 真实 sim_tick 推进，打印状态供报告引用；不是硬编码摆拍。
+func _run_p8ecoshots() -> void:
+	_mode = Mode.PLAYING
+	_started = true
+	_paused = true
+	_menu.instant_finish()
+	_blending = ""
+	_auto_orbit = false
+	_shot_beam_lock = true
+	_time_source = "sim"
+	_realtime = false
+	_hud.set_hud_visible(false, false)
+	_apply_quality(2)
+	# 1) 雨日上午：岛民应从户外/散步改为门廊避雨
+	_jump_datetime(2026, 7, 15, 10, 0, 0)
+	_on_weather_type_requested("heavy_rain")
+	_update_weather(0.0, true)
+	_update_weather_fx(0.0)
+	var vs0: Dictionary = {}
+	if _villager != null:
+		vs0 = _villager.debug_state()
+	print("[P8ECO] start state=", String(vs0.get("state", "-")),
+		" kind=", String(vs0.get("kind", "-")),
+		" window=", String(vs0.get("window", "-")))
+	# 暂停中岛民不推进；短暂恢复真实时间让 _detect_jump 与天气重规划落地，再暂停取证。
+	_paused = false
+	await get_tree().create_timer(3.6).timeout
+	_paused = true
+	_update_weather(0.0, true)
+	_update_weather_fx(0.0)
+	var vs: Dictionary = {}
+	if _villager != null:
+		vs = _villager.debug_state()
+	var sch: Dictionary = vs.get("schedule", {})
+	print("[P8ECO] rain state=", String(vs.get("state", "-")),
+		" kind=", String(vs.get("kind", "-")),
+		" region=", String(vs.get("region", "-")),
+		" window=", String(vs.get("window", "-")),
+		" pos=", str(vs.get("pos", Vector3.ZERO)),
+		" schedule_last_kind=", String(sch.get("last_kind", "-")))
+	_p8_camera_porch_villager()
+	await get_tree().create_timer(0.5).timeout
+	await _save_shot("p8_eco_00_rain_villager_porch", P8_ECO_DIR)
+	# 2) 萤火对比：同一天 22:00 晴夜 vs 雨夜，同一机位
+	_jump_datetime(2026, 7, 15, 22, 0, 0)
+	_on_weather_type_requested("clear")
+	_update_weather(0.0, true)
+	_update_weather_fx(0.0)
+	var ff_center := Vector3(-3.0, IsleMath.terrain_height(-3.0, 3.5) + 1.5, 3.5)
+	_pose_look(ff_center + Vector3(-7.0, 1.6, 5.5), ff_center + Vector3(0.0, 0.8, 0.0), 52.0)
+	# 粒子数量 90、寿命 9s：夜间刚点亮时约 10 粒/秒，等 3s 才有稳定可见密度。
+	await get_tree().create_timer(3.0).timeout
+	await _save_shot("p8_eco_01_clear_night_fireflies", P8_ECO_DIR)
+	print("[P8ECO] clear firefly amount_ratio=", "%.3f" % _p8_firefly_ratio())
+	_on_weather_type_requested("heavy_rain")
+	_update_weather(0.0, true)
+	_update_weather_fx(0.0)
+	# 已有萤火粒子寿命 9s：等它们自然消失，避免用 restart() 造假。
+	await get_tree().create_timer(9.6).timeout
+	await _save_shot("p8_eco_02_rain_night_fireflies", P8_ECO_DIR)
+	print("[P8ECO] rain firefly amount_ratio=", "%.3f" % _p8_firefly_ratio())
+	# 3) 停航判定（只打印状态机输入，不移动船只）
+	print("[P8ECO] rain boat_hold=", _boat_weather_hold(),
+		" type=", String(_weather_state.get("type", "")),
+		" storm=", "%.2f" % float(_weather_state.get("storm", 0.0)))
+	_on_weather_type_requested("clear")
+	_update_weather(0.0, true)
+	print("[P8ECO] clear boat_hold=", _boat_weather_hold(),
+		" type=", String(_weather_state.get("type", "")))
+	print("[P8ECO] done")
+	get_tree().quit()
+
+
+## 门廊机位：从房屋正面稍高处看向大门，覆盖整个门廊（岛民常驻点之一）。
+func _p8_camera_porch_villager() -> void:
+	var front := Vector3(0.0, 0.0, 1.0)
+	var raw: Variant = _cottage.get("beam_occluders", [])
+	if raw is Array and not (raw as Array).is_empty() and (raw as Array)[0] is Dictionary:
+		var bd: Dictionary = (raw as Array)[0]
+		var yaw := float(bd.get("yaw", 0.0))
+		var rot_y := -yaw
+		front = Vector3(sin(rot_y), 0.0, cos(rot_y))
+	var pivot: Node3D = _cottage.get("door_pivot", null) as Node3D
+	var door := Vector3.ZERO
+	if pivot != null:
+		door = pivot.global_position
+	else:
+		door = _cottage.get("interior_pos", Vector3.ZERO)
+	var side := front.cross(Vector3.UP).normalized()
+	var target := door + Vector3(0.0, 1.05, 0.0)
+	var eye := door + front * 7.0 + side * 1.8 + Vector3(0.0, 2.35, 0.0)
+	_pose_look(eye, target, 58.0)
+
+
+func _p8_firefly_ratio() -> float:
+	var ff: Dictionary = _fx.get("fireflies", {})
+	var node := ff.get("node", null) as GPUParticles3D
+	if node == null:
+		return -1.0
+	return node.amount_ratio
+
+
+## P8 阶段 6 天气视觉截图（--p8wfx）：固定日期样本，逐类天气拍宽景/近景/夜景/室内/低画质。
+## 湿润度与积雪由权威天气实例在同一时刻累积（手动模式 + 直接喂模拟秒），不是硬编码 uniform。
+func _run_p8wfxs() -> void:
+	_mode = Mode.PLAYING
+	_started = true
+	_paused = true            # 固定时刻：天气不会在截图期间漂移
+	_menu.instant_finish()
+	_blending = ""
+	_hud.set_hud_visible(false, false)
+	_auto_orbit = false
+	_shot_beam_lock = true
+	_time_source = "sim"
+	await get_tree().create_timer(0.9).timeout
+	# 1) 晴 / 阴：天气整体配光的两端，云量与天色必须肉眼可辨
+	_p8_wfx_apply(2026, 7, 15, 12, 20, "clear", 0.0)
+	_p8_camera_island()
+	await get_tree().create_timer(1.2).timeout
+	await _save_shot("p8_wfx_00_summer_clear", P8_WFX_DIR)
+	_p8_wfx_print("clear")
+	_p8_wfx_apply(2026, 7, 15, 12, 20, "overcast", 0.0)
+	await get_tree().create_timer(1.2).timeout
+	await _save_shot("p8_wfx_01_summer_overcast", P8_WFX_DIR)
+	_p8_wfx_print("overcast")
+	# 2) 大雨：白天宽景（雨丝/湿地/雨雾/海面雨纹）
+	_p8_wfx_apply(2026, 7, 15, 12, 20, "heavy_rain", 900.0)
+	await get_tree().create_timer(1.8).timeout
+	await _save_shot("p8_wfx_02_summer_heavy_rain_day", P8_WFX_DIR)
+	_p8_wfx_print("heavy_rain_day")
+	# 3) 大雨夜景：雨丝在天色转暗后仍需可见，且窗灯/灯塔不受影响
+	_p8_wfx_apply(2026, 7, 15, 21, 40, "heavy_rain", 600.0)
+	await get_tree().create_timer(1.8).timeout
+	await _save_shot("p8_wfx_03_summer_heavy_rain_night", P8_WFX_DIR)
+	_p8_wfx_print("heavy_rain_night")
+	# 4) 秋季台风：复合环境事件（云动/风/海面/雨斜），不是黑屏滤镜
+	_p8_wfx_apply(2026, 9, 20, 15, 30, "typhoon", 600.0)
+	await get_tree().create_timer(2.2).timeout
+	await _save_shot("p8_wfx_04_autumn_typhoon", P8_WFX_DIR)
+	_p8_wfx_print("typhoon")
+	# 5) 大雪：白天宽景（地面/屋顶/树冠上侧积雪）
+	_p8_wfx_apply(2027, 1, 15, 10, 30, "heavy_snow", 30000.0)
+	await get_tree().create_timer(2.2).timeout
+	await _save_shot("p8_wfx_05_winter_heavy_snow_day", P8_WFX_DIR)
+	_p8_wfx_print("heavy_snow_day")
+	# 6) 大雪近景：树冠/枝干上侧积雪细节
+	_p8_camera_tree()
+	await get_tree().create_timer(1.2).timeout
+	await _save_shot("p8_wfx_06_winter_snow_tree", P8_WFX_DIR)
+	# 7) 雪夜：雪在暗天色下仍可见
+	_p8_wfx_apply(2027, 1, 15, 21, 10, "mid_snow", 24000.0)
+	_p8_camera_island()
+	await get_tree().create_timer(2.0).timeout
+	await _save_shot("p8_wfx_07_winter_snow_night", P8_WFX_DIR)
+	_p8_wfx_print("snow_night")
+	# 8) 室内：相机在小屋内部时降水淡出，不能有雨丝盖到室内画面上
+	_p8_wfx_apply(2026, 7, 15, 12, 20, "heavy_rain", 900.0)
+	_p8_camera_inside()
+	await get_tree().create_timer(1.8).timeout
+	await _save_shot("p8_wfx_08_rain_indoor", P8_WFX_DIR)
+	_p8_wfx_print("rain_indoor")
+	# 9) 雨中地面近景：地面渐湿 + 雨点水花（近距离才能看清）
+	_p8_camera_ground_rain()
+	await get_tree().create_timer(1.6).timeout
+	await _save_shot("p8_wfx_09_rain_ground_close", P8_WFX_DIR)
+	# 10) 正面屋檐近景：屋檐滴水线（雨越大越密）
+	_p8_camera_eave()
+	await get_tree().create_timer(1.6).timeout
+	await _save_shot("p8_wfx_10_rain_eave_close", P8_WFX_DIR)
+	# 11) 水花近景：直接俯拍第一个水花锚点，确认雨点打在地面的水花环
+	_p8_camera_splash()
+	await get_tree().create_timer(1.2).timeout
+	await _save_shot("p8_wfx_11_rain_splash_close", P8_WFX_DIR)
+	# 12) 低画质大雨：最低档仍能看出下雨，不允许"低画质直接没天气"
+	_apply_quality(0)
+	_p8_camera_island()
+	await get_tree().create_timer(2.0).timeout
+	await _save_shot("p8_wfx_12_rain_low_quality", P8_WFX_DIR)
+	_p8_wfx_print("rain_low_quality")
+	# 13) 雷暴闪电：固定时刻 + 人为把脉冲拉到峰值截图（真实运行由 _update_lightning 以 4.5~13s 随机间隔触发）
+	_apply_quality(2)
+	_p8_wfx_apply(2026, 7, 15, 21, 40, "thunder", 900.0)
+	_p8_camera_island()
+	_lightning_flash = 1.0
+	_update_weather(0.0, true)
+	_update_weather_fx(0.0)
+	await get_tree().create_timer(0.25).timeout
+	await _save_shot("p8_wfx_13_summer_thunder_flash", P8_WFX_DIR)
+	_p8_wfx_print("thunder_flash")
+	_lightning_flash = 0.0
+	_update_weather_fx(0.0)
+	# 14) 秋叶随风：秋日强风 + 树旁近景，落叶粒子按共享风向横漂（不再固定方向）
+	_p8_wfx_apply(2026, 10, 20, 16, 30, "strong_wind", 0.0)
+	_p8_camera_tree()
+	await get_tree().create_timer(2.4).timeout
+	await _save_shot("p8_wfx_14_autumn_leaves_wind", P8_WFX_DIR)
+	_p8_wfx_print("autumn_leaves_wind")
+	print("[P8WFX] done")
+	get_tree().quit()
+
+## 应用一组固定日期 + 手动天气，并按模拟秒累积湿润/积雪（只推进天气实例，不推进权威时钟）。
+func _p8_wfx_apply(year: int, month: int, day: int, hour: int, minute: int,
+		type_id: String, accum_seconds: float) -> void:
+	_jump_datetime(year, month, day, hour, minute, 0)
+	var avail: Array = _weather_state.get("available_types", [])
+	if not avail.has(type_id):
+		push_warning("[P8WFX] type not legal this season: %s" % type_id)
+		return
+	_on_weather_type_requested(type_id)
+	# 切到新天气后先复位到该天气的即时稳态（湿润/积雪不继承上一组的残留），再按模拟秒累积
+	_weather.reset(_sim_seconds)
+	_update_weather(0.0, true)
+	_p8_wfx_accumulate(accum_seconds)
+	_update_lighting()
+
+func _p8_wfx_accumulate(seconds: float) -> void:
+	if seconds <= 0.0 or _weather == null:
+		return
+	var left := seconds
+	while left > 0.0:
+		var step := minf(240.0, left)
+		_weather.tick(_sim_seconds, step, true)
+		left -= step
+	_weather_prev_t = _sim_seconds
+	_update_weather(0.0, true)
+	_update_weather_fx(0.0)
+
+func _p8_wfx_print(tag: String) -> void:
+	var st := _weather_state
+	var parts: Array = []
+	for key in ["rain", "snow"]:
+		var entry: Dictionary = _weather_fx.get(key, {})
+		var node := entry.get("node", null) as GPUParticles3D
+		if node != null:
+			parts.append("%s_emit=%s ratio=%.2f" % [key, str(node.emitting), node.amount_ratio])
+	print("[P8WFX] %s type=%s ptype=%s cloud=%.2f storm=%.2f wind=%.2f wet=%.2f snow_depth=%.2f indoor=%.2f %s" % [
+		tag, String(st.get("type", "")), String(st.get("precip_type", "")),
+		float(st.get("cloud", 0.0)), float(st.get("storm", 0.0)), float(st.get("wind_strength", 0.0)),
+		float(st.get("wetness", 0.0)), float(st.get("snow_depth", 0.0)), _weather_indoor,
+		" ".join(parts)])
+
+# ============================================================
+# P8 阶段 6 性能对比（--p8perf）：天气视觉在 5 档画质下的帧率/绘制开销
+# ============================================================
+func _run_p8perf() -> void:
+	_mode = Mode.PLAYING
+	_started = true
+	_paused = true              # 固定日期/时刻，天气由手动类型锁死，采样期间不漂移
+	_menu.instant_finish()
+	_blending = ""
+	_hud.set_hud_visible(false, false)
+	_auto_orbit = false
+	_shot_beam_lock = true
+	_time_source = "sim"
+	Engine.max_fps = 0
+	_apply_quality(2)
+	_p8_camera_island()
+	await get_tree().create_timer(1.2).timeout
+	print("[P8PERF] begin viewport=%s quality=%d rain_base=%d snow_base=%d drip_base=%d splash_base=%d" % [
+		str(get_viewport().get_visible_rect().size), _quality,
+		int(_weather_fx.get("rain", {}).get("base_amount", 0)),
+		int(_weather_fx.get("snow", {}).get("base_amount", 0)),
+		int(_weather_fx.get("drip", {}).get("base_amount", 0)),
+		int(_weather_fx.get("splash", {}).get("base_amount", 0))])
+	var scenes: Array = [
+		["clear", 2026, 7, 15, 12, 20, "clear", 0.0, 2],
+		["overcast", 2026, 7, 15, 12, 20, "overcast", 0.0, 2],
+		["heavy_rain", 2026, 7, 15, 12, 20, "heavy_rain", 900.0, 2],
+		["thunder", 2026, 7, 15, 18, 40, "thunder", 600.0, 2],
+		["heavy_snow", 2027, 1, 15, 10, 30, "heavy_snow", 30000.0, 2],
+		["typhoon", 2026, 9, 20, 15, 30, "typhoon", 600.0, 2],
+		["heavy_rain_q0", 2026, 7, 15, 12, 20, "heavy_rain", 900.0, 0],
+		["heavy_rain_q4", 2026, 7, 15, 12, 20, "heavy_rain", 900.0, 4],
+	]
+	for sc in scenes:
+		_apply_quality(int(sc[8]))
+		Engine.max_fps = 0
+		_p8_wfx_apply(int(sc[1]), int(sc[2]), int(sc[3]), int(sc[4]), int(sc[5]), String(sc[6]), float(sc[7]))
+		_p8_camera_island()
+		await get_tree().create_timer(1.6).timeout
+		var st := await _sample_frames(180)
+		var wstate := _weather_state
+		print("[P8PERF] %-16s q=%d fps=%.1f frame_ms=%.2f cpu_ms=%.2f objects=%d draw_calls=%d vram_mb=%.1f rain=%.2f snow=%.2f wet=%.2f snow_depth=%.2f" % [
+			String(sc[0]), int(sc[8]), float(st["fps"]), float(st["frame_ms"]), float(st["cpu_ms"]),
+			int(st["objects"]), int(st["calls"]), float(st["vram"]),
+			_weather_rain, _weather_snow,
+			float(wstate.get("wetness", 0.0)), float(wstate.get("snow_depth", 0.0))])
+	_apply_quality(2)
+	print("[P8PERF] done")
+	get_tree().quit()
+
+## 雨中地面近景：花园外侧贴地 1.6 m 机位，能看清地面湿润与雨点水花。
+func _p8_camera_ground_rain() -> void:
+	var ground := Vector3(-7.82, 9.72, -6.20)
+	var target := ground + Vector3(0.9, 0.12, 1.5)
+	_pose_look(target + Vector3(2.4, 3.4, 2.8), target, 54.0)
+
+## 正面屋檐近景：用房屋遮挡盒推出正面屋檐世界位置，从斜下方看滴水线。
+func _p8_camera_eave() -> void:
+	var eave := Vector3(0.8, 13.4, 2.9)
+	var front := Vector3(0.0, 0.0, 1.0)
+	if not _cottage.is_empty():
+		var raw: Variant = _cottage.get("beam_occluders", [])
+		if raw is Array and not (raw as Array).is_empty() and (raw as Array)[0] is Dictionary:
+			var bd: Dictionary = (raw as Array)[0]
+			var center: Vector3 = bd.get("center", Vector3.ZERO)
+			var half: Vector3 = bd.get("half", Vector3.ZERO)
+			var yaw := float(bd.get("yaw", 0.0))
+			var rot_y := -yaw
+			front = Vector3(sin(rot_y), 0.0, cos(rot_y))
+			eave = center + front * (half.z + 0.46)
+			eave.y = center.y + half.y - 0.33
+	var eye := eave + front * 5.6 + Vector3(0.0, -2.6, 0.0)
+	_pose_look(eye, eave + Vector3(0.0, -0.7, 0.0), 54.0)
+
+## 水花近景：直接俯拍 WeatherSplash 的第一个锚点（确定性种子，位置固定）。
+func _p8_camera_splash() -> void:
+	var splash: Dictionary = _weather_fx.get("splash", {})
+	var mm := splash.get("mm", null) as MultiMesh
+	var p := Vector3(-6.0, 9.8, -3.0)
+	if mm != null and mm.instance_count > 0:
+		p = mm.get_instance_transform(0).origin
+	_pose_look(p + Vector3(0.9, 2.4, 1.1), p + Vector3(0.0, 0.15, 0.0), 46.0)
+
+## 室内机位：放在小屋一层内部（复用 cottage.interior_pos），朝前窗/门方向看。
+func _p8_camera_inside() -> void:
+	var ip: Vector3 = _cottage.get("interior_pos", Vector3(0.35, 10.9, 0.0))
+	# front_window_world 是窗框位置数组（每扇窗一个世界点），取第一扇作为视线目标
+	var fw: Vector3 = ip + Vector3(0.0, 0.0, 3.0)
+	var raw: Variant = _cottage.get("front_window_world", [])
+	if raw is Array and not (raw as Array).is_empty():
+		fw = (raw as Array)[0]
+	_pose_look(ip + Vector3(0.0, 0.32, 0.0), fw, 52.0)
+
+## P8 截图机位：默认观景轨道（与 perf noon_clear 一致，便于跨轮对比）。
+func _p8_camera_island() -> void:
+	_cam_target = Vector3(0, 6, 0)
+	_theta = 0.74
+	_elev = 0.28
+	_radius = 82.0
+	_fov = 42.0
+	_apply_pose(_play_pose())
+
+## P8 阶段 4 四季视觉截图（--p8seasons）：固定日期 + 三个机位（全岛 / 大树近景 / 花园近景）。
+## 每张图都从同一权威时钟（_sim_seconds）跳转，季节由 IsleCalendar 投影，不依赖现实日期。
+func _run_p8seasonshots() -> void:
+	_mode = Mode.PLAYING
+	_started = true
+	_paused = true            # 固定时刻：模拟时钟不走，季节不会在截图期间漂移
+	_menu.instant_finish()
+	_blending = ""
+	_hud.set_hud_visible(false, false)
+	_auto_orbit = false
+	_shot_beam_lock = false
+	_time_source = "sim"
+	await get_tree().create_timer(0.9).timeout
+	var seasons: Array = [
+		["spring", 2026, 4, 15, 10, 0],
+		["summer", 2026, 7, 15, 10, 0],
+		["autumn", 2026, 10, 20, 16, 30],
+		["winter", 2027, 1, 15, 10, 0],
+	]
+	for spec in seasons:
+		var tag := String(spec[0])
+		_jump_datetime(int(spec[1]), int(spec[2]), int(spec[3]), int(spec[4]), int(spec[5]))
+		_p8_camera_island()
+		await get_tree().create_timer(0.9).timeout
+		await _save_shot("p8_season_%s_wide" % tag, P8_SEASON_DIR)
+		var cal: Dictionary = ISLE_CALENDAR.parts(_sim_seconds)
+		var v: Dictionary = _season_visuals
+		print("[P8SEASONS] wide ", tag, " ", str(cal.get("date_label", "")), " ", _season_label,
+			" weights=", str(cal.get("season_weights", [])),
+			" canopy=", "%.2f" % float(v.get("canopy_keep", 1.0)),
+			" cards=", "%.2f" % float(v.get("leafcard_keep", 1.0)),
+			" flowers=", str(v.get("flower_keep", [])),
+			" leaf_fall=", "%.2f" % float(v.get("leaf_fall", 0.0)))
+		# 近景 1：大树冠与叶卡（季节变色/稀疏最直观）
+		_p8_camera_tree()
+		await get_tree().create_timer(0.8).timeout
+		await _save_shot("p8_season_%s_tree" % tag, P8_SEASON_DIR)
+		# 近景 2：花园与花（四季花量与冬季红梅）
+		_p8_camera_garden()
+		await get_tree().create_timer(0.8).timeout
+		await _save_shot("p8_season_%s_garden" % tag, P8_SEASON_DIR)
+		# 冬季补一张大树近景：P8.1 起为纯裸枝+积雪（树顶红梅已移除）。
+		if tag == "winter":
+			_p8_camera_tree_close()
+			await get_tree().create_timer(0.8).timeout
+			await _save_shot("p8_season_winter_tree_close", P8_SEASON_DIR)
+	print("[P8SEASONS] done")
+	get_tree().quit()
+
+## P8.1-02 证据截图（--p81treebird）：冬季裸树/裸枝栖点/屋前红花，以及春/夏/秋树冠回归对照。
+## 输出目录独立（P81_EVIDENCE_DIR），绝不触碰 开发产物/p8 冻结证据。
+# ============================================================
+# P8.1-05 强风视觉证据截图（--p81wind）：落叶 / 秋千 / 萤火虫 / 冬季裸树
+# 只写 P81_05_EVIDENCE_DIR，绝不碰 P8 冻结证据目录。
+# ============================================================
+func _p81_camera_leaf() -> void:
+	# 对准大树落叶层：叶团从世界 y≈13.6 起落，穿过 y 8—13 的枝干区。
+	var target := Vector3(IsleMath.BIG_TREE_X + 0.3, 11.4, IsleMath.BIG_TREE_Z)
+	_pose_look(target + Vector3(8.6, 1.4, 8.0), target, 44.0)
+
+func _p81_camera_swing() -> void:
+	if _swing_pivot == null:
+		return
+	var seat_node := _swing_pivot.find_child("SwingSeat", true, false) as Node3D
+	var seat := _swing_pivot.global_position
+	if seat_node != null:
+		seat = seat_node.global_position
+	# roll 是绕世界 z 轴的侧倾：座面位移沿世界 x，因此从 +z 侧（南侧）固定机位看，
+	# 画面左右位移直接对应顺风/逆风侧倾。若跟着风向转机位，摄像机可能落到大树枝干后面
+	# （曾出现树干占满画面），故此处用固定南侧机位，晴/强风/换向三态严格同机位可比。
+	var eye := seat + Vector3(0.0, 2.0, 6.4)
+	_pose_look(eye, seat + Vector3(0.0, 0.9, 0.0), 40.0)
+
+func _p81_camera_firefly() -> void:
+	# 与 P8 阶段 7 的 eco 萤火机位一致，便于新旧证据对比。
+	var ff_center := Vector3(-3.0, IsleMath.terrain_height(-3.0, 3.5) + 1.5, 3.5)
+	_pose_look(ff_center + Vector3(-7.0, 1.6, 5.5), ff_center + Vector3(0.0, 0.8, 0.0), 52.0)
+
+func _p81_swing_seat_world() -> Vector3:
+	if _swing_pivot == null:
+		return Vector3.ZERO
+	var seat_node := _swing_pivot.find_child("SwingSeat", true, false) as Node3D
+	if seat_node != null:
+		return seat_node.global_position
+	return _swing_pivot.global_position
+
+## 等秋千 roll 角速度过零（受迫摆局部极值）；peak=true 等波峰、false 等波谷。
+## 返回 true 表示截图落在极值帧附近（而不是随机相位）。
+func _p81_wait_swing_extreme(peak: bool, timeout: float) -> bool:
+	var t := 0.0
+	var prev_v := float(_swing_roll_v)
+	while t < timeout:
+		await get_tree().process_frame
+		t += get_process_delta_time()
+		if _swing_pivot == null:
+			return false
+		var v := float(_swing_roll_v)
+		if peak and prev_v > 0.0 and v <= 0.0:
+			return true
+		if not peak and prev_v < 0.0 and v >= 0.0:
+			return true
+		prev_v = v
+	return false
+
+func _p81_wind_print(tag: String) -> void:
+	var lp := wind_leaf_params(_weather_visual_wind, _weather_wind_dir_smooth)
+	var grav: Vector3 = lp["gravity"]
+	var leaf: Dictionary = _fx.get("leaves", {})
+	var ln := leaf.get("node", null) as GPUParticles3D
+	var ff: Dictionary = _fx.get("fireflies", {})
+	var fn := ff.get("node", null) as GPUParticles3D
+	var roll := 0.0
+	if _swing_pivot != null:
+		roll = _swing_pivot.rotation.z
+	var seat_y := _p81_swing_seat_world().y
+	print("[P81WIND] %s weather=%s wind=%.2f vis_wind=%.2f dir=(%.2f,%.2f) tr=%.3f grav_y=%.3f leaf_emit=%s leaf_ratio=%.2f firefly_emit=%s firefly_ratio=%.3f roll=%.3f seat_y=%.3f legacy=%s" % [
+		tag, String(_weather_state.get("type", "")), _weather_wind, _weather_visual_wind,
+		_weather_wind_dir_smooth.x, _weather_wind_dir_smooth.y, float(lp["tr"]), grav.y,
+		str(ln.emitting) if ln != null else "-", ln.amount_ratio if ln != null else -1.0,
+		str(fn.emitting) if fn != null else "-", fn.amount_ratio if fn != null else -1.0,
+		roll, seat_y, str(_p81wind_legacy)])
+
+## P8.1-05 强风视觉证据截图主流程（--p81wind）。
+func _run_p81wind() -> void:
+	_mode = Mode.PLAYING
+	_started = true
+	_paused = true            # 固定时刻：季节/红花/天气不漂移，只让风场与弹簧演化
+	_menu.instant_finish()
+	_blending = ""
+	_hud.set_hud_visible(false, false)
+	_auto_orbit = false
+	_shot_beam_lock = false
+	_time_source = "sim"
+	await get_tree().create_timer(1.0).timeout
+	var dir := P81_05_EVIDENCE_DIR
+	# P8.2-03：取证目录可覆盖，避免 P8.2 复跑把新截图写进 P8.1 冻结证据（--windshotsout）。
+	var dir_override := _cmdline_value("--windshotsout")
+	if dir_override != "":
+		dir = dir_override
+		if not dir.ends_with("/"):
+			dir += "/"
+		DirAccess.make_dir_recursive_absolute(dir)
+	# 1) 秋季落叶：同日期/机位，晴天 vs 强风（唯一变量是天气）。
+	_p8_wfx_apply(2026, 10, 20, 16, 30, "clear", 0.0)
+	_p81_camera_leaf()
+	await get_tree().create_timer(1.2).timeout
+	await _save_shot("p81_wind_leaf_clear_autumn", dir)
+	_p81_wind_print("leaf_clear")
+	_p8_wfx_apply(2026, 10, 20, 16, 30, "strong_wind", 120.0)
+	_p81_camera_leaf()
+	await get_tree().create_timer(2.0).timeout
+	await _save_shot("p81_wind_leaf_strong_autumn", dir)
+	_p81_wind_print("leaf_strong")
+	# 2) 强风全岛广角：叶团成片顺风，不是零散乱飞。
+	_p8_camera_island()
+	await get_tree().create_timer(0.9).timeout
+	await _save_shot("p81_wind_wide_autumn", dir)
+	# 3) 秋千：晴天基准 → 强风下风向极值 / 上风向极值（同机位）。
+	_on_weather_type_requested("clear")
+	_weather.reset(_sim_seconds)
+	_update_weather(0.0, true)
+	_update_weather_fx(0.0)
+	_p81_camera_swing()
+	await get_tree().create_timer(1.2).timeout
+	await _save_shot("p81_wind_swing_clear", dir)
+	_p81_wind_print("swing_clear")
+	_on_weather_type_requested("strong_wind")
+	_update_weather(0.0, true)
+	_update_weather_fx(0.0)
+	await get_tree().create_timer(0.6).timeout
+	var got_hi := await _p81_wait_swing_extreme(true, 20.0)
+	await _save_shot("p81_wind_swing_downwind_max", dir)
+	_p81_wind_print("swing_downwind_hi=%s" % str(got_hi))
+	var got_lo := await _p81_wait_swing_extreme(false, 20.0)
+	await _save_shot("p81_wind_swing_upwind_min", dir)
+	_p81_wind_print("swing_upwind_lo=%s" % str(got_lo))
+	# 4) 风向旋转 90°（135→225）：3—5s 平滑过渡，不瞬移。
+	_weather_state["wind_dir"] = 225.0
+	_apply_weather_view()
+	# 冻结状态快照（_update_weather 到点会用 _weather.state() 覆盖 wind_dir），
+	# 让平滑风逐步转到 225°，截图记录“过渡中/过渡完成”两态。
+	_weather_timer = 999.0
+	await get_tree().create_timer(1.6).timeout
+	await _save_shot("p81_wind_swing_dir_shift_mid", dir)
+	_p81_wind_print("dir_shift_mid")
+	await get_tree().create_timer(2.6).timeout
+	await _save_shot("p81_wind_swing_dir_shift_end", dir)
+	_p81_wind_print("dir_shift_end")
+	# 5) 萤火虫：秋夜 22:00 晴夜 vs 强风夜（同机位）。
+	_jump_datetime(2026, 10, 20, 22, 0, 0)
+	_on_weather_type_requested("clear")
+	_weather.reset(_sim_seconds)
+	_update_weather(0.0, true)
+	_update_weather_fx(0.0)
+	_p81_camera_firefly()
+	await get_tree().create_timer(3.0).timeout
+	await _save_shot("p81_wind_firefly_clear", dir)
+	_p81_wind_print("firefly_clear")
+	_on_weather_type_requested("strong_wind")
+	_update_weather(0.0, true)
+	_update_weather_fx(0.0)
+	# 旧粒子在发射时继承寿命：等它们自然死完（晴夜 9s），不调用 restart。
+	await get_tree().create_timer(9.6).timeout
+	await _save_shot("p81_wind_firefly_strong", dir)
+	_p81_wind_print("firefly_strong")
+	# 6) 冬季枯树强风：不得产叶（F4），裸枝/树干完整。
+	_p8_wfx_apply(2027, 1, 15, 10, 0, "strong_wind", 120.0)
+	_p8_camera_tree_close()
+	await get_tree().create_timer(1.2).timeout
+	await _save_shot("p81_wind_winter_bare", dir)
+	_p81_wind_print("winter_bare")
+	_p8_camera_island()
+	await get_tree().create_timer(0.8).timeout
+	await _save_shot("p81_wind_winter_wide", dir)
+	_p81_wind_print("winter_wide")
+	print("[P81WIND] done")
+	get_tree().quit()
+
+# ============================================================
+# P8.1-05 同机 A/B 帧时间（--p81windperf）
+# 同 build 内切换 _p81wind_legacy，场景固定为秋夜强风：落叶 + 萤火抑制 + 秋千偏摆
+# 同时生效；q2 画质、vsync 关闭，交替采样两轮以抵消温升/后台噪声。
+# ============================================================
+func _run_p81windperf() -> void:
+	_mode = Mode.PLAYING
+	_started = true
+	_paused = true
+	_menu.instant_finish()
+	_blending = ""
+	_hud.set_hud_visible(false, false)
+	_auto_orbit = false
+	_shot_beam_lock = false
+	_time_source = "sim"
+	await get_tree().create_timer(1.0).timeout
+	_apply_quality(2)
+	_p8_wfx_apply(2026, 10, 20, 22, 0, "strong_wind", 120.0)
+	_p8_camera_tree()
+	_update_lighting()
+	await get_tree().create_timer(2.0).timeout
+	print("[P81WIND PERF] begin q2 vsync_disabled=%s legacy_toggle_same_build" % str(DisplayServer.window_get_vsync_mode() == DisplayServer.VSYNC_DISABLED))
+	var new_ms := 0.0
+	var old_ms := 0.0
+	var new_cpu := 0.0
+	var old_cpu := 0.0
+	var rounds := 2
+	for i in range(rounds):
+		_p81wind_legacy = false
+		await get_tree().create_timer(0.5).timeout
+		var st_new := await _sample_frames(180)
+		_p81wind_legacy = true
+		await get_tree().create_timer(0.5).timeout
+		var st_old := await _sample_frames(180)
+		new_ms += float(st_new["frame_ms"])
+		old_ms += float(st_old["frame_ms"])
+		new_cpu += float(st_new["cpu_ms"])
+		old_cpu += float(st_old["cpu_ms"])
+		print("[P81WIND PERF] round=%d new frame_ms=%.3f cpu_ms=%.3f objects=%d calls=%d | legacy frame_ms=%.3f cpu_ms=%.3f objects=%d calls=%d" % [
+			i, float(st_new["frame_ms"]), float(st_new["cpu_ms"]), int(st_new["objects"]), int(st_new["calls"]),
+			float(st_old["frame_ms"]), float(st_old["cpu_ms"]), int(st_old["objects"]), int(st_old["calls"])])
+	_p81wind_legacy = false
+	new_ms /= float(rounds)
+	old_ms /= float(rounds)
+	new_cpu /= float(rounds)
+	old_cpu /= float(rounds)
+	print("[P81WIND PERF] q2 summary new_frame_ms=%.3f legacy_frame_ms=%.3f delta_ms=%+.3f gate<=+0.3 new_cpu_ms=%.3f legacy_cpu_ms=%.3f" % [
+		new_ms, old_ms, new_ms - old_ms, new_cpu, old_cpu])
+	print("[P81WIND PERF] done")
+	get_tree().quit()
+
+# ============================================================
+# P8.2-03：强风 CPU 分段采样（--p82windcpu）
+# 固定 q2 / 大树机位（_p8_camera_tree）/ 日期 2026-10-20 22:00 / paused（模拟时钟冻结）/
+# VSync 关 / Engine.max_fps=0；配合 --fixed-fps 60 时 delta 固定，结果可复现。
+# 阶段：calm（clear，且风场强制归零=真无风基线，用于走无风早退分支）/
+#       wind（strong_wind）/ typhoon（台风）。
+# 每阶段做 new / legacy 同 build A/B；轮次顺序奇偶交替，消除热机/漂移偏置。
+# 墙钟帧间隔 frame_us（headless=dummy renderer 隔离 CPU 侧，窗口=含渲染交叉验证）；
+# 分段 sec_* 为 GDScript Time.get_ticks_usec 差值（仅 prof 段），逐帧写 CSV 供离线统计。
+# ============================================================
+const P82_WIND_EVIDENCE_DIR := "D:/休闲小岛幻境/开发产物/p82/evidence/03_wind"
+const P82_WIND_ROUNDS := 9
+const P82_WIND_FRAMES := 120
+const P82_WIND_SETTLE := 30
+
+func _p82_settle(n: int) -> void:
+	for i in range(n):
+		await get_tree().process_frame
+
+## 逐帧采样：frame_us=相邻两帧起点的墙钟间隔；sec_us=该帧 5 个 section 的 µs。
+func _p82_sample(n: int, with_prof: bool, zero_wind: bool) -> Dictionary:
+	var frame_us: Array = []
+	var tp_us: Array = []
+	var sec_us: Array = []
+	var prev_t := Time.get_ticks_usec()
+	for i in range(n):
+		await get_tree().process_frame
+		if zero_wind:
+			# calm 基线：把投影风清零，模拟真正无风的稳态（否则 clear 的 0.08 会让秋千走受迫摆分支）。
+			_weather_wind = 0.0
+			_weather_visual_wind = 0.0
+		var t := Time.get_ticks_usec()
+		frame_us.append(t - prev_t)
+		prev_t = t
+		tp_us.append(int(Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0))
+		if with_prof:
+			sec_us.append(_p82prof_last.duplicate())
+	return {"frame_us": frame_us, "tp_us": tp_us, "sec_us": sec_us}
+
+func _p82_mean(arr: Array) -> float:
+	if arr.is_empty():
+		return 0.0
+	var s := 0.0
+	for v in arr:
+		s += float(v)
+	return s / float(arr.size())
+
+func _p82_stat(arr: Array, pct: float) -> float:
+	if arr.is_empty():
+		return 0.0
+	var a := arr.duplicate()
+	a.sort()
+	var idx := int(round(pct * float(a.size() - 1)))
+	return float(a[clampi(idx, 0, a.size() - 1)])
+
+func _p82_median(arr: Array) -> float:
+	return _p82_stat(arr, 0.5)
+
+## 应用阶段天气并跳到稳态（风/风向平滑直接对齐目标：测稳态成本，不含收敛帧）。
+func _p82phase_apply(type_id: String, accum: float) -> bool:
+	_p8_wfx_apply(2026, 10, 20, 22, 0, type_id, accum)
+	var got := String(_weather_state.get("type", ""))
+	if got != type_id:
+		push_warning("[P82WINDCPU] weather type not applied want=%s got=%s" % [type_id, got])
+		return false
+	_weather_visual_wind = clampf(_weather_wind, 0.0, 1.0)
+	var td := _weather_wind_dir
+	if td.length_squared() < 0.0001:
+		td = Vector2(0.0, -1.0)
+	_weather_wind_dir_smooth = td.normalized()
+	_p8_camera_tree()
+	return true
+
+func _run_p82windcpu() -> void:
+	_mode = Mode.PLAYING
+	_started = true
+	_paused = true
+	_menu.instant_finish()
+	_blending = ""
+	_hud.set_hud_visible(false, false)
+	_auto_orbit = false
+	_shot_beam_lock = false
+	_time_source = "sim"
+	Engine.max_fps = 0
+	DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
+	await get_tree().create_timer(1.0).timeout
+	_apply_quality(2)
+	# 预热：走一次完整天气应用 + 相机机位，避免首批 shader/材质写入混进采样。
+	_p82phase_apply("clear", 0.0)
+	await _p82_settle(60)
+	var out_dir := _cmdline_value("--out")
+	if out_dir == "":
+		out_dir = P82_WIND_EVIDENCE_DIR
+	DirAccess.make_dir_recursive_absolute(out_dir)
+	var headless := DisplayServer.get_name() == "headless"
+	var mode_tag := "headless" if headless else "window"
+	var label := _cmdline_value("--label")
+	if label == "":
+		label = "run"
+	# impl 列表：默认 new/legacy（优化 vs P8.1 旧实现）；传 --impls new,off,legacy 可把优化前路径
+	# 也拉进来做同一 build 内交替 A/B（off=优化前代码，用于净归因）。
+	var impls: Array = ["new", "legacy"]
+	var impls_arg := _cmdline_value("--impls")
+	if impls_arg != "":
+		impls = impls_arg.split(",", false)
+	var unix := int(Time.get_unix_time_from_system())
+	var csv_path := "%s/p82windcpu_%s_%s_%d.csv" % [out_dir, mode_tag, label, unix]
+	var phases: Array = [
+		{"tag": "calm", "type": "clear", "accum": 0.0, "zero_wind": true},
+		{"tag": "wind", "type": "strong_wind", "accum": 120.0, "zero_wind": false},
+		{"tag": "typhoon", "type": "typhoon", "accum": 120.0, "zero_wind": false},
+	]
+	print("[P82WINDCPU] begin mode=%s quality=%d rounds=%d frames=%d settle=%d fixed_fps=%s vp=%s out=%s" % [
+		mode_tag, _quality, P82_WIND_ROUNDS, P82_WIND_FRAMES, P82_WIND_SETTLE,
+		_cmdline_value("--fixed-fps"), str(get_viewport().get_visible_rect().size), csv_path])
+	# ---- 1) A/B 墙钟采样（prof off，避免计时开销污染 frame_us） ----
+	var ab := {}
+	var ab_rows: Array = []
+	for r in range(P82_WIND_ROUNDS):
+		var order: Array = phases.duplicate()
+		if r % 2 == 1:
+			order.reverse()
+		for ph in order:
+			# impl 顺序也按轮次奇偶翻转：消除"同一阶段内某 impl 总排在最前"的位置偏置。
+			var impl_order: Array = []
+			for ii in range(impls.size()):
+				impl_order.append(ii)
+			if r % 2 == 1:
+				impl_order.reverse()
+			for impl_i in impl_order:
+				var impl_tag := String(impls[int(impl_i)])
+				_p81wind_legacy = impl_tag == "legacy"
+				_p82opt_off = impl_tag == "off"
+				if not _p82phase_apply(String(ph["type"]), float(ph["accum"])):
+					continue
+				await _p82_settle(P82_WIND_SETTLE)
+				var st := await _p82_sample(P82_WIND_FRAMES, false, bool(ph.get("zero_wind", false)))
+				var key := "%s|%s" % [String(ph["tag"]), impl_tag]
+				if not ab.has(key):
+					ab[key] = {"frame_us": [], "tp_us": []}
+				var fu: Array = ab[key]["frame_us"]
+				var tp: Array = ab[key]["tp_us"]
+				for i in range(P82_WIND_FRAMES):
+					fu.append(int(st["frame_us"][i]))
+					tp.append(int(st["tp_us"][i]))
+				ab_rows.append([r, String(ph["tag"]), impl_tag, st["frame_us"], st["tp_us"]])
+	_p81wind_legacy = false
+	_p82opt_off = false
+	# ---- 2) prof 段：每 phase × impl 采样一次，逐帧记 5 个 section ----
+	var prof := {}
+	var prof_rows: Array = []
+	for ph in phases:
+		for impl_i in range(impls.size()):
+			var impl_tag := String(impls[impl_i])
+			_p81wind_legacy = impl_tag == "legacy"
+			_p82opt_off = impl_tag == "off"
+			if not _p82phase_apply(String(ph["type"]), float(ph["accum"])):
+				continue
+			await _p82_settle(P82_WIND_SETTLE)
+			_p82p_reset()
+			var st := await _p82_sample(P82_WIND_FRAMES, true, bool(ph.get("zero_wind", false)))
+			prof["%s|%s" % [String(ph["tag"]), impl_tag]] = st["sec_us"]
+			prof_rows.append([String(ph["tag"]), impl_tag, st["sec_us"]])
+	_p81wind_legacy = false
+	_p82opt_off = false
+	# ---- 3) 写 CSV（采样结束后一次性写，避免字符串格式化的开销混进 frame_us） ----
+	var fa := FileAccess.open(csv_path, FileAccess.WRITE)
+	if fa != null:
+		fa.store_line("round,phase,impl,prof,frame_idx,frame_us,tp_us,sec_wind_dir_us,sec_leaf_params_us,sec_winter_leaf_us,sec_firefly_us,sec_swing_us")
+		for row in ab_rows:
+			var rtag = row[0]
+			var ptag = row[1]
+			var itag = row[2]
+			var fu2: Array = row[3]
+			var tp2: Array = row[4]
+			for i in range(fu2.size()):
+				fa.store_line("%d,%s,%s,0,%d,%d,%d,,,,," % [rtag, ptag, itag, i, int(fu2[i]), int(tp2[i])])
+		for row in prof_rows:
+			var ptag2 = row[0]
+			var itag2 = row[1]
+			var secs: Array = row[2]
+			for i in range(secs.size()):
+				var sv: Array = secs[i]
+				fa.store_line("-1,%s,%s,1,%d,0,0,%d,%d,%d,%d,%d" % [
+					ptag2, itag2, i, int(sv[0]), int(sv[1]), int(sv[2]), int(sv[3]), int(sv[4])])
+		fa.close()
+	# ---- 4) 汇总打印（每阶段 median/P95；section 中位 µs） ----
+	for ph in phases:
+		var tag := String(ph["tag"])
+		for impl_tag in impls:
+			var key := "%s|%s" % [tag, String(impl_tag)]
+			if not ab.has(key):
+				continue
+			var fu3: Array = ab[key]["frame_us"]
+			var tp3: Array = ab[key]["tp_us"]
+			print("[P82WINDCPU] ab phase=%s impl=%s n=%d frame_us_med=%d frame_us_p95=%d frame_us_mean=%.1f tp_us_med=%.1f tp_us_p95=%.1f" % [
+				tag, String(impl_tag), fu3.size(), int(_p82_median(fu3)), int(_p82_stat(fu3, 0.95)), _p82_mean(fu3),
+				_p82_median(tp3), _p82_stat(tp3, 0.95)])
+		var kn := "%s|new" % tag
+		for other in impls:
+			var otag := String(other)
+			if otag == "new":
+				continue
+			var ko := "%s|%s" % [tag, otag]
+			if ab.has(kn) and ab.has(ko):
+				print("[P82WINDCPU] ab-delta phase=%s vs=%s frame_us_med_delta=%+.1f frame_us_p95_delta=%+.1f" % [
+					tag, otag,
+					_p82_median(ab[kn]["frame_us"]) - _p82_median(ab[ko]["frame_us"]),
+					_p82_stat(ab[kn]["frame_us"], 0.95) - _p82_stat(ab[ko]["frame_us"], 0.95)])
+	for ph in phases:
+		var tag2 := String(ph["tag"])
+		for impl_tag in impls:
+			var key2 := "%s|%s" % [tag2, String(impl_tag)]
+			if not prof.has(key2):
+				continue
+			var line := ""
+			var sum_med := 0
+			var n := 120
+			for si in range(P82_WIND_SECTION_NAMES.size()):
+				var col: Array = []
+				for row2 in prof[key2]:
+					col.append(int(row2[si]))
+				n = col.size()
+				var med := int(_p82_median(col))
+				sum_med += med
+				line += " %s=%d" % [String(P82_WIND_SECTION_NAMES[si]), med]
+			print("[P82WINDCPU] sec phase=%s impl=%s n=%d sum_med_us=%d%s" % [tag2, String(impl_tag), n, sum_med, line])
+	print("[P82WINDCPU] csv=%s" % csv_path)
+	print("[P82WINDCPU] done")
+	get_tree().quit()
+
+func _run_p81treebird_shots() -> void:
+	_mode = Mode.PLAYING
+	_started = true
+	_paused = true            # 固定时刻：季节/红花 bloom 不漂移
+	_menu.instant_finish()
+	_blending = ""
+	_hud.set_hud_visible(false, false)
+	_auto_orbit = false
+	_shot_beam_lock = false
+	_time_source = "sim"
+	await get_tree().create_timer(0.9).timeout
+	var seasons: Array = [
+		["spring", 2026, 4, 15, 10, 0],
+		["summer", 2026, 7, 15, 10, 0],
+		["autumn", 2026, 10, 20, 16, 30],
+		["winter", 2027, 1, 15, 10, 0],
+	]
+	for spec in seasons:
+		var tag := String(spec[0])
+		_jump_datetime(int(spec[1]), int(spec[2]), int(spec[3]), int(spec[4]), int(spec[5]))
+		_p8_camera_island()
+		await get_tree().create_timer(0.9).timeout
+		await _save_shot("p81_%s_wide" % tag, P81_EVIDENCE_DIR)
+		_p8_camera_tree()
+		await get_tree().create_timer(0.8).timeout
+		await _save_shot("p81_%s_tree" % tag, P81_EVIDENCE_DIR)
+		if tag == "winter":
+			_p8_camera_tree_close()
+			await get_tree().create_timer(0.8).timeout
+			await _save_shot("p81_winter_tree_close", P81_EVIDENCE_DIR)
+			_p81_camera_bloom_front()
+			await get_tree().create_timer(0.8).timeout
+			await _save_shot("p81_winter_bloom_front", P81_EVIDENCE_DIR)
+		var cal: Dictionary = ISLE_CALENDAR.parts(_sim_seconds)
+		var v: Dictionary = _season_visuals
+		print("[P81] ", tag, " ", str(cal.get("date_label", "")),
+			" weights=", str(cal.get("season_weights", [])),
+			" canopy=", "%.3f" % float(v.get("canopy_keep", 1.0)),
+			" cards=", "%.3f" % float(v.get("leafcard_keep", 1.0)))
+	print("[P81] done")
+	get_tree().quit()
+
+## 屋前 5 朵冬季红花机位：从草坪外侧回看门廊，花在画面下中部、房子为背景。
+func _p81_camera_bloom_front() -> void:
+	var target := Vector3(0.82, 7.80, 9.13)  # World._winter_blooms 5 点质心（地面约 7.43，花头 0.62）
+	var front := Vector3(sin(IsleMath.HOUSE_YAW), 0.0, cos(IsleMath.HOUSE_YAW))
+	var right := Vector3(cos(IsleMath.HOUSE_YAW), 0.0, -sin(IsleMath.HOUSE_YAW))
+	_pose_look(target + front * 6.2 + right * 2.2 + Vector3(0.0, 2.6, 0.0), target, 42.0)
+
+func _p8_camera_tree() -> void:
+	# 大树基座地形高约 7.87 m，树冠中心约在 base+9.4 m；机位对准冠层中部而不是地面，
+	# 否则画面下半全是草丛、树冠被顶出画外。
+	var target := Vector3(IsleMath.BIG_TREE_X + 0.25, 14.5, IsleMath.BIG_TREE_Z)
+	_pose_look(target + Vector3(13.8, 1.2, 12.0), target, 40.0)
+
+func _p8_camera_garden() -> void:
+	# 四块高花床（顶面约 9.9-10.3 m）位于花园 x -9.4..-6.25 / z -9.1..-3.3；
+	# 从南门外 3/4 俯角看两张床，保证花朵在画面里而不是钻进地形/棚架内部。
+	var target := Vector3(-7.82, 10.2, -6.20)
+	_pose_look(target + Vector3(-3.9, 2.7, 5.4), target, 40.0)
+
+func _p8_camera_tree_close() -> void:
+	# 冬季大树近景（P8.1）：对准裸枝区，验证"无残冠、无悬空红梅"。
+	var target := Vector3(IsleMath.BIG_TREE_X + 0.28, 14.6, IsleMath.BIG_TREE_Z - 0.05)
+	_pose_look(target + Vector3(13.5, 2.5, 11.5), target, 46.0)
+
+# ============================================================
+# P8.1-03 冬季白化 / 室内豁免 / 五档画质 证据截图（--p81white）
+# 只写 P81_03_EVIDENCE_DIR，绝不触碰 开发产物/p8 冻结证据。
+# 室内像素 diff 采用自包含 ON/OFF 对：同机位把 g_winter 临时归零再拍一张，
+# 由 tools/probe_p81_whiteness.gd 的同级 Python 脚本比对，给出可复核证据。
+# 天气用 --weather-type 固定（默认可在调用侧指定 clear / heavy_snow），
+# 因此「季节白化」与「降雪积雪」两条链在同一批图里可以互相独立验证。
+# ============================================================
+
+## 与 shader 完全同一条 whiteness 曲线（仅日志用；写入在 _set_winter_season_uniforms）。
+func _p81_winter_whiteness() -> float:
+	var w := float(_season_weights[3]) if _season_weights.size() > 3 else 0.0
+	return smoothstep(0.30, 0.90, w)
+
+## 冬季近景：地面（花园外侧，沿用 P8 雨景机位基准，贴地 1.6 m 级）。
+func _p81_camera_ground() -> void:
+	var ground := Vector3(-7.82, 9.72, -6.20)
+	var target := ground + Vector3(0.9, 0.10, 1.5)
+	_pose_look(target + Vector3(2.4, 2.6, 2.8), target, 52.0)
+
+## 冬季近景：草丛（贴地看草叶顶端积雪/结霜）。
+func _p81_camera_grass() -> void:
+	var target := Vector3(-4.6, 0.0, 3.2)
+	target.y = IsleMath.terrain_height(target.x, target.z) + 0.22
+	_pose_look(target + Vector3(2.0, 1.15, 2.4), target, 44.0)
+
+## 冬季近景：岩石（内陆砾石群 spot=(9.8, 6.8)，world 生成 seed=90210 确定性）。
+func _p81_camera_rock() -> void:
+	var target := Vector3(9.8, 0.0, 6.8)
+	target.y = IsleMath.terrain_height(target.x, target.z) + 0.55
+	_pose_look(target + Vector3(3.2, 2.4, 3.0), target, 48.0)
+
+## 冬季近景：房屋侧墙外墙（从 +X 侧面平视，避开正门雨棚柱/烟囱遮挡；数据与 _p8_camera_eave 同源）。
+## 旧版正面机位会被门廊柱挡住，2026-10-22 改为侧墙机位。
+func _p81_camera_wall() -> void:
+	var center := Vector3(IsleMath.HOUSE_X, 8.4, IsleMath.HOUSE_Z)
+	var half := Vector3(3.8, 1.6, 3.1)
+	var rot_y := -IsleMath.HOUSE_YAW
+	var raw: Variant = _cottage.get("beam_occluders", [])
+	if raw is Array and not (raw as Array).is_empty() and (raw as Array)[0] is Dictionary:
+		var bd: Dictionary = (raw as Array)[0]
+		center = bd.get("center", center)
+		half = bd.get("half", half)
+		rot_y = -float(bd.get("yaw", IsleMath.HOUSE_YAW))
+	var front := Vector3(sin(rot_y), 0.0, cos(rot_y))
+	var right := Vector3(cos(rot_y), 0.0, -sin(rot_y))
+	var target := center + right * half.x + front * half.z * 0.25 - Vector3(0.0, half.y * 0.30, 0.0)
+	_pose_look(target + right * 5.6 + front * 1.9 + Vector3(0.0, 0.85, 0.0), target, 50.0)
+
+## 冬季近景：屋顶瓦（斜上方俯视，验证瓦面全白化 + 屋檐雪线）。
+func _p81_camera_roof() -> void:
+	var base := Vector3(IsleMath.HOUSE_X, IsleMath.house_ground_y(), IsleMath.HOUSE_Z)
+	var front := Vector3(sin(IsleMath.HOUSE_YAW), 0.0, cos(IsleMath.HOUSE_YAW))
+	var right := Vector3(cos(IsleMath.HOUSE_YAW), 0.0, -sin(IsleMath.HOUSE_YAW))
+	var target := base + Vector3(0.0, 5.9, 0.0)
+	_pose_look(target + front * 8.5 + right * 7.0 + Vector3(0.0, 6.4, 0.0), target, 46.0)
+
+## 冬季近景：码头木构（侧面看甲板/桩柱/系缆桩的积雪与木质泛白）。
+func _p81_camera_dock() -> void:
+	var start := IsleMath.dock_start()
+	var end := IsleMath.dock_end()
+	var target := start.lerp(end, 0.55)
+	target.y = float(_world.get("dock_deck_world_y", target.y))
+	var dir := IsleMath.dock_dir()
+	var side := Vector3(-dir.z, 0.0, dir.x)
+	_pose_look(target + side * 6.5 + dir * 3.5 + Vector3(0.0, 4.5, 0.0), target, 50.0)
+
+## 冬季近景：灯塔本体与石阶（塔身/红环/石基随机位斜上方入画）。
+func _p81_camera_lighthouse() -> void:
+	var lp := Vector3(IsleMath.HOUSE_X, IsleMath.house_ground_y(), IsleMath.HOUSE_Z)
+	var raw: Variant = _world.get("lighthouse", null)
+	if raw is Node3D:
+		lp = (raw as Node3D).global_position
+	var target := lp + Vector3(0.0, 7.5, 0.0)
+	_pose_look(target + Vector3(10.5, 2.6, 9.0), target, 46.0)
+
+## 阁楼机位：从阁楼内部看山墙窗（验证阁楼室内无白化、窗外正常白化）。
+func _p81_camera_attic() -> void:
+	var lamp: Vector3 = _cottage.get("attic_lamp_world", Vector3(0.8, 13.4, -0.6))
+	var win: Vector3 = _cottage.get("attic_window_world", lamp + Vector3(0.0, 0.0, 2.8))
+	var front := Vector3(sin(IsleMath.HOUSE_YAW), 0.0, cos(IsleMath.HOUSE_YAW))
+	var eye := win - front * 2.30 + Vector3(0.0, 0.55, 0.0)
+	_pose_look(eye, win + Vector3(0.0, -0.55, 0.0), 62.0)
+
+## 阁楼 diff 机位：只看阁楼山墙内侧/屋架，避开窗玻璃（窗外白化不应算室内像素）。
+func _p81_camera_attic_plain() -> void:
+	var lamp: Vector3 = _cottage.get("attic_lamp_world", Vector3(0.8, 13.4, -0.6))
+	var front := Vector3(sin(IsleMath.HOUSE_YAW), 0.0, cos(IsleMath.HOUSE_YAW))
+	var eye := lamp - front * 1.60 + Vector3(0.0, -0.90, 0.0)
+	var target := lamp - front * 2.85 + Vector3(0.0, -1.55, 0.0)
+	_pose_look(eye, target, 60.0)
+
+## 一层室内 diff 机位：相机在房内近前墙，只看后墙/壁炉/家具，不含任何窗玻璃。
+func _p81_camera_inside_plain() -> void:
+	var ip: Vector3 = _cottage.get("interior_pos", Vector3(0.35, 10.9, 0.0))
+	var front := Vector3(sin(IsleMath.HOUSE_YAW), 0.0, cos(IsleMath.HOUSE_YAW))
+	var eye := ip + front * 2.15 + Vector3(0.0, 0.10, 0.0)
+	var target := ip - front * 2.20 + Vector3(0.0, -0.05, 0.0)
+	_pose_look(eye, target, 50.0)
+## 一层室内「无窗」diff 机位：俯看地板/矮桌/沙发脚，画面内完全不含窗玻璃与窗外像素。
+## 用于 G3「室内像素差<0.5%」的严格口径（旧 inside_plain 机位仍会带入窗玻璃区域）。
+func _p81_camera_inside_floor() -> void:
+	var ip: Vector3 = _cottage.get("interior_pos", Vector3(0.35, 10.9, 0.0))
+	var front := Vector3(sin(IsleMath.HOUSE_YAW), 0.0, cos(IsleMath.HOUSE_YAW))
+	var right := Vector3(cos(IsleMath.HOUSE_YAW), 0.0, -sin(IsleMath.HOUSE_YAW))
+	var eye := ip + front * 1.55 + right * 0.45 + Vector3(0.0, 0.62, 0.0)
+	var target := ip + front * 0.55 + right * 0.15 - Vector3(0.0, 1.05, 0.0)
+	_pose_look(eye, target, 58.0)
+
+## 室外隔窗看室内（夜间）：站在前窗外看暖光房间，验证「室外被白化、室内不被白化」两态一致。
+func _p81_camera_outside_window() -> void:
+	var fws: Variant = _cottage.get("front_window_world", [])
+	var win := Vector3(IsleMath.HOUSE_X, IsleMath.house_ground_y() + 1.48, IsleMath.HOUSE_Z + 3.1)
+	if fws is Array and not (fws as Array).is_empty() and (fws as Array)[0] is Vector3:
+		win = (fws as Array)[0]
+	var front := Vector3(sin(IsleMath.HOUSE_YAW), 0.0, cos(IsleMath.HOUSE_YAW))
+	var eye := win + front * 3.05 + Vector3(0.0, 0.30, 0.0)
+	_pose_look(eye, win + Vector3(0.0, -0.10, 0.0), 42.0)
+
+## 单张截图：等一帧 + 保存 + 打日志（tag/日期/whiteness/当前天气）。
+func _p81_shot(tag: String, wait: float = 0.65) -> void:
+	await get_tree().create_timer(wait).timeout
+	await _save_shot(tag, P81_03_EVIDENCE_DIR)
+	var cal: Dictionary = ISLE_CALENDAR.parts(_sim_seconds)
+	print("[P81WHITE] shot ", tag, " date=", str(cal.get("date_label", "")),
+		" whiteness=%.3f" % _p81_winter_whiteness(),
+		" weather=", String(_weather_state.get("type", "clear")),
+		" snow=", "%.3f" % _weather_snow_depth,
+		" wet=", "%.3f" % _weather_wetness,
+		" quality=", _quality)
+
+## 一组 ON/OFF 对照：把 g_winter 归零再拍，随后用权威季节权重精确恢复（供像素 diff 用）。
+## 额外多拍一张 _on2：uniform 完全不变、仅隔两帧，作为「引擎时间噪声/灯焰闪烁」基线，
+## 以证明 ON-OFF 差值不是白化引入的（否则只能看到差值、无法区分噪声与效果）。
+func _p81_shot_pair(tag: String) -> void:
+	_p81_pin_light_t = _frame_t   # 钉住解析点光的呼吸相位：ON/OFF 只允许 g_winter 不同
+	await get_tree().process_frame
+	_set_winter_season_uniforms()   # 先确保 ON 侧就是权威值
+	await _p81_shot(tag + "_on", 0.75)
+	await _p81_shot(tag + "_on2", 0.15)   # 噪声基线：g_winter 未变
+	RenderingServer.global_shader_parameter_set("g_winter", Vector4.ZERO)
+	await get_tree().create_timer(0.25).timeout
+	await _p81_shot(tag + "_off", 0.15)
+	_set_winter_season_uniforms()   # 从 _season_weights 重算，不依赖 Variant 回读
+	# _on3：恢复 ON 后再拍一张（uniform 与 _on 相同，但晚约 1.2s）→ 与 _on 的差即「纯时间演化」基线。
+	# 夜间壁炉灯焰/灯火闪烁会随时间为室内带来低幅变化，必须用 _on3 而不是 _on2 才能解释 ON-OFF 差值。
+	await get_tree().create_timer(0.25).timeout
+	await _p81_shot(tag + "_on3", 0.15)
+	_p81_pin_light_t = -1.0   # 解除钉住，恢复真实呼吸
+
+## P8.1-03 证据截图主流程。
+func _run_p81white() -> void:
+	_mode = Mode.PLAYING
+	_started = true
+	_paused = true            # 固定时刻：季节/太阳/天气都不在截图期间漂移
+	_menu.instant_finish()
+	_blending = ""
+	_hud.set_hud_visible(false, false)
+	_auto_orbit = false
+	_shot_beam_lock = false
+	_time_source = "sim"
+	await get_tree().create_timer(0.9).timeout
+	var wx := String(_weather_state.get("type", "clear"))
+	var pf := "p81_03_"
+	if wx != "clear":
+		pf = "p81_03_wx_" + wx + "_"
+	print("[P81WHITE] begin weather=", wx, " prefix=", pf)
+	# uniform 生效证据：非编辑器运行时 global_shader_parameter_get 直接报错并返回 null，
+	# 故改用「写入侧本地值日志（_set_winter_season_uniforms 的 [P81W] g_winter=...）」
+	# +「同机位 g_winter ON/OFF 像素差」双重证据（见 evidence RM 与 diff_inside.py）。
+	# ---------- (1) 四季室外广角：白化只由季节驱动，春夏秋应与 P8 基线一致 ----------
+	var seasons: Array = [
+		["spring", 2026, 4, 15, 10, 0],
+		["summer", 2026, 7, 15, 10, 0],
+		["autumn", 2026, 10, 20, 16, 30],
+		["winter", 2027, 1, 15, 10, 0],
+	]
+	for spec in seasons:
+		var tag := String(spec[0])
+		_jump_datetime(int(spec[1]), int(spec[2]), int(spec[3]), int(spec[4]), int(spec[5]))
+		_p8_camera_island()
+		await _p81_shot(pf + tag + "_wide", 0.85)
+	# 冬季起止：W1 开始泛白 / W3 维持 / W4 退出（都拍同一广角，直接看白化曲线）
+	var transitions: Array = [
+		["w1_onset", 2026, 12, 1, 10, 0],
+		["w3_hold", 2027, 2, 15, 10, 0],
+		["w4_exit", 2027, 3, 5, 10, 0],
+	]
+	for spec in transitions:
+		_jump_datetime(int(spec[1]), int(spec[2]), int(spec[3]), int(spec[4]), int(spec[5]))
+		_p8_camera_island()
+		await _p81_shot(pf + String(spec[0]) + "_wide", 0.75)
+	# ---------- (2) 冬季近景：地面/草/岩石/外墙/屋顶/码头/灯塔 ----------
+	_jump_datetime(2027, 1, 15, 10, 0)
+	var closeups: Array = [
+		["ground", Callable(self, "_p81_camera_ground")],
+		["grass", Callable(self, "_p81_camera_grass")],
+		["rock", Callable(self, "_p81_camera_rock")],
+		["wall", Callable(self, "_p81_camera_wall")],
+		["roof", Callable(self, "_p81_camera_roof")],
+		["dock", Callable(self, "_p81_camera_dock")],
+		["lighthouse", Callable(self, "_p81_camera_lighthouse")],
+	]
+	for spec in closeups:
+		(spec[1] as Callable).call()
+		await _p81_shot(pf + "winter_" + String(spec[0]), 0.75)
+	# ---------- (3) 一层室内：白天窗景 / 白天窗内 ON-OFF ×2（带窗机位 + 严格无窗机位）/ 夜晚窗景 / 夜晚同两档 ----------
+	_jump_datetime(2027, 1, 15, 10, 0)
+	_p8_camera_inside()
+	await _p81_shot(pf + "winter_inside_window_day", 0.70)
+	_p81_camera_inside_plain()
+	await _p81_shot_pair(pf + "winter_inside_day")
+	_p81_camera_inside_floor()
+	await _p81_shot_pair(pf + "winter_inside_floor_day")
+	_jump_datetime(2027, 1, 15, 20, 30)
+	_p8_camera_inside()
+	await _p81_shot(pf + "winter_inside_window_night", 0.80)
+	_p81_camera_inside_plain()
+	await _p81_shot_pair(pf + "winter_inside_night")
+	_p81_camera_inside_floor()
+	await _p81_shot_pair(pf + "winter_inside_floor_night")
+	# 室外隔窗看室内（夜晚）：室外墙面/地面被白化，室内暖光与家具不应被刷白。
+	_p81_camera_outside_window()
+	await _p81_shot_pair(pf + "winter_outside_window_night")
+	# ---------- (4) 阁楼室内：窗景 / 山墙内侧 ON-OFF（验证阁楼室内完全不受白化） ----------
+	_jump_datetime(2027, 1, 15, 10, 0)
+	_p81_camera_attic()
+	await _p81_shot(pf + "winter_attic_window", 0.75)
+	_p81_camera_attic_plain()
+	await _p81_shot_pair(pf + "winter_attic")
+	# ---------- (5) 五档画质 W10：低档也不得关闭白化（只允许降细节） ----------
+	_jump_datetime(2027, 1, 15, 10, 0)
+	for q in range(5):
+		_apply_quality(q)
+		_p8_camera_island()
+		await _p81_shot(pf + "q%d_winter_wide" % q, 0.70)
+	_apply_quality(2)
+	print("[P81WHITE] done")
+	get_tree().quit()
+
+## P8.1-03 补充证据：冬季季节白化（g_winter）+ 手动大雪积雪（g_weather.w）叠加（--p81snow）。
+## 与 --p81white 的区别：先把日期锁在冬季，再用 _p8_wfx_apply 把天气强制为 heavy_snow 并累积 30000 模拟秒，
+## 让 g_weather.w（降雪/积雪）进入稳态；两套 uniform 在 shader 内独立计算、积雪块取 max 合成，室内同样豁免。
+func _run_p81snow() -> void:
+	_mode = Mode.PLAYING
+	_started = true
+	_paused = true
+	_menu.instant_finish()
+	_blending = ""
+	_hud.set_hud_visible(false, false)
+	_auto_orbit = false
+	_shot_beam_lock = false
+	_time_source = "sim"
+	await get_tree().create_timer(0.9).timeout
+	var pf := "p81_03_snow_"
+	print("[P81SNOW] begin")
+	# 冬季 + 大雪稳态（先跳到冬季日期，再强制类型并累积积雪）。
+	_p8_wfx_apply(2027, 1, 15, 10, 0, "heavy_snow", 30000.0)
+	await get_tree().create_timer(1.6).timeout
+	var st := _weather_state
+	print("[P81SNOW] state type=%s snow=%.2f wet=%.2f snow_depth=%.2f whiteness=%.4f" % [
+		String(st.get("type", "")), _weather_snow, _weather_wetness, _weather_snow_depth, _p81_winter_whiteness()])
+	# ---------- (1) 冬季大雪广角 + 近景 ----------
+	_p8_camera_island()
+	await _p81_shot(pf + "winter_wide", 0.85)
+	var closeups: Array = [
+		["ground", Callable(self, "_p81_camera_ground")],
+		["grass", Callable(self, "_p81_camera_grass")],
+		["roof", Callable(self, "_p81_camera_roof")],
+		["dock", Callable(self, "_p81_camera_dock")],
+		["lighthouse", Callable(self, "_p81_camera_lighthouse")],
+	]
+	for spec in closeups:
+		(spec[1] as Callable).call()
+		await _p81_shot(pf + String(spec[0]), 0.75)
+	# ---------- (2) 白天室内：严格无窗机位 ON/OFF + 带窗机位 ----------
+	_p81_camera_inside_floor()
+	await _p81_shot_pair(pf + "inside_floor_day")
+	_p8_camera_inside()
+	await _p81_shot(pf + "inside_window_day", 0.75)
+	# ---------- (3) 夜晚室内：大雪 + 灯光，室内仍不得被刷白 ----------
+	_p8_wfx_apply(2027, 1, 15, 20, 30, "heavy_snow", 30000.0)
+	await get_tree().create_timer(1.2).timeout
+	_p81_camera_inside_floor()
+	await _p81_shot_pair(pf + "inside_floor_night")
+	_p81_camera_outside_window()
+	await _p81_shot_pair(pf + "outside_window_night")
+	# ---------- (4) 五档画质：低档也不得关闭季节白化或雪面 ----------
+	_p8_wfx_apply(2027, 1, 15, 10, 0, "heavy_snow", 30000.0)
+	await get_tree().create_timer(1.2).timeout
+	for q in range(5):
+		_apply_quality(q)
+		_p8_camera_island()
+		await _p81_shot(pf + "q%d_winter_wide" % q, 0.70)
+	_apply_quality(2)
+	print("[P81SNOW] done")
+	get_tree().quit()
+
+## P8 阶段 3.2 月球专项截图（--p8moon）：八相固定日期 + 海上生明月/不见月两组实景。
+## 相时刻取自 HKO 2026 四相表（北京时），不依赖现实时间；每相在相邻主相窗口内挑选
+## “Δλ 接近目标且月亮有高度”的时刻，避免把新月拍在地平线下。
+func _run_p8moonshots() -> void:
+	_mode = Mode.PLAYING
+	_started = true
+	_paused = true            # 固定时刻：模拟时钟不走，月亮不会在截图期间漂移
+	_menu.instant_finish()
+	_blending = ""
+	_hud.set_hud_visible(false, false)
+	_auto_orbit = false
+	_shot_beam_lock = false
+	var old_source := _time_source
+	_time_source = "sim"
+	_p8_moon_clear = true     # 相诊断：云层清零，只保留月盘与星空
+	await get_tree().create_timer(0.9).timeout
+	# 2026 年 10–11 月一个朔望月的四个主相（北京时，取自 HKO MoonPhases_2026.xml）
+	var t_new1: float = ISLE_CALENDAR.to_local_seconds(2026, 10, 10, 23, 50, 0)
+	var t_q1: float = ISLE_CALENDAR.to_local_seconds(2026, 10, 19, 0, 13, 0)
+	var t_full: float = ISLE_CALENDAR.to_local_seconds(2026, 10, 26, 12, 12, 0)
+	var t_q3: float = ISLE_CALENDAR.to_local_seconds(2026, 11, 2, 4, 28, 0)
+	var t_new2: float = ISLE_CALENDAR.to_local_seconds(2026, 11, 9, 15, 2, 0)
+	var phases: Array = [
+		["p8_moon_00_new", 0.0, t_new1, t_new1],
+		["p8_moon_01_waxing_crescent", 45.0, t_new1, t_q1],
+		["p8_moon_02_first_quarter", 90.0, t_q1, t_q1],
+		["p8_moon_03_waxing_gibbous", 135.0, t_q1, t_full],
+		["p8_moon_04_full", 180.0, t_full, t_full],
+		["p8_moon_05_waning_gibbous", 225.0, t_full, t_q3],
+		["p8_moon_06_last_quarter", 270.0, t_q3, t_q3],
+		["p8_moon_07_waning_crescent", 315.0, t_q3, t_new2],
+	]
+	for spec in phases:
+		var label := str(spec[0])
+		var target_deg := float(spec[1])
+		var t: float
+		if is_equal_approx(float(spec[2]), float(spec[3])):
+			# 新月整夜在地平线下、且与太阳同向（白天会被太阳眩光淹没）：保留精确时刻，
+			# 截图即“无月可见”的证据；其余主相取 ±16h 内可见的替身时刻（数值验证在 probe）。
+			if target_deg < 1.0:
+				t = float(spec[2])
+			else:
+				t = _p8_moon_pick_near(float(spec[2]), target_deg)
+		else:
+			t = _p8_moon_pick_time(float(spec[2]), float(spec[3]), target_deg)
+		_sim_seconds = t
+		_events = IsleAstro.day_events(t)
+		_events_timer = 0.0
+		_update_lighting()
+		var a: Dictionary = IsleAstro.compute(t)
+		var alt := float(a["moon_alt"])
+		var az := float(a["moon_az"])
+		var phase_deg := float(a.get("moon_phase_deg", 0.0))
+		var md := IsleMath.sun_dir(alt, az)
+		if target_deg < 1.0:
+			# 新月：月亮在地平线下，相机改拍同一时刻的夜空（无月即为正确证据）。
+			md = IsleMath.sun_dir(38.0, 180.0)
+		var tgt := md * 260.0
+		_pose_look(tgt - md * 60.0, tgt, 14.0)
+		await get_tree().create_timer(0.55).timeout
+		await _save_shot(label, P8_MOON_DIR)
+		print("[P8MOON] ", label, " ", ISLE_CALENDAR.full_label(t),
+			" dlambda=", "%.1f" % phase_deg, " illum=", "%.3f" % float(a["moon_illum"]),
+			" k_expected=", "%.3f" % ((1.0 - cos(deg_to_rad(phase_deg))) * 0.5),
+			" name=", _moon_name(), " alt=", "%.1f" % alt, " alt_deg_ok=", alt > 5.0,
+			" az=", "%.1f" % az, " vis=", "%.2f" % _moon_visibility(alt))
+	# 实景：满月刚升（海上生明月）与同日新月的 18:00 对照，证明可见性由真实高度决定。
+	# 两者都在云层清零的条件下拍，否则黄昏 0.95 云量会把刚升起的月亮整块遮掉。
+	_p8_moon_clear = true
+	for spec2 in [["p8_moon_08_full_over_sea", 2026, 10, 26, 19, 0], ["p8_moon_09_new_over_sea", 2026, 11, 9, 18, 0]]:
+		_jump_datetime(int(spec2[1]), int(spec2[2]), int(spec2[3]), int(spec2[4]), int(spec2[5]))
+		_paused = true
+		var a2: Dictionary = IsleAstro.compute(_sim_seconds)
+		var md2 := IsleMath.sun_dir(float(a2["moon_alt"]), float(a2["moon_az"]))
+		# 相机侧移：把月亮放到画面一侧，避免月亮正好升在岛屿/灯塔正后方被挡。
+		var side := md2.cross(Vector3.UP).normalized()
+		var eye2 := -md2 * 95.0 + side * 26.0 + Vector3(0, 18, 0)
+		_pose_look(eye2, Vector3(0, 8, 0), 46.0)
+		_update_lighting()
+		await get_tree().create_timer(0.9).timeout
+		await _save_shot(str(spec2[0]), P8_MOON_DIR)
+		print("[P8MOON] ", str(spec2[0]), " alt=", "%.1f" % float(a2["moon_alt"]),
+			" vis=", "%.2f" % _moon_visibility(float(a2["moon_alt"])),
+			" name=", _moon_name())
+	_p8_moon_clear = false
+	_time_source = old_source
+	_update_lighting()
+	print("[P8MOON] done")
+	get_tree().quit()
+
+## 主相精确时刻的视觉替身：在 ±16h 内挑 |Δλ−target| 小、且月亮高度 12..58° 的时刻。
+func _p8_moon_pick_near(t_exact: float, target_deg: float) -> float:
+	var best := t_exact
+	var best_score := -1e9
+	var off := -16.0 * 3600.0
+	while off <= 16.0 * 3600.0:
+		var t := t_exact + off
+		var a: Dictionary = IsleAstro.compute(t)
+		var alt := float(a["moon_alt"])
+		var err := absf(fposmod(float(a.get("moon_phase_deg", 0.0)) - target_deg + 180.0, 360.0) - 180.0)
+		if alt > 12.0 and alt < 58.0 and err < 10.0:
+			var score := alt * 0.5 - err * 8.0 - absf(off) / 3600.0 * 0.5
+			if score > best_score:
+				best_score = score
+				best = t
+		off += 600.0
+	return best
+
+## 在 [t0,t1] 窗口内挑选：日月视黄经距角接近 target_deg、且月亮有正高度、高度不过高（便于看明暗边）的时刻。
+func _p8_moon_pick_time(t0: float, t1: float, target_deg: float) -> float:
+	if is_equal_approx(t0, t1):
+		return t0
+	var best := t0
+	var best_score := -1e9
+	var t := t0
+	while t <= t1:
+		var a: Dictionary = IsleAstro.compute(t)
+		var err := absf(fposmod(float(a.get("moon_phase_deg", 0.0)) - target_deg + 180.0, 360.0) - 180.0)
+		var alt := float(a["moon_alt"])
+		if err <= 6.0 and alt > 5.0:
+			var score := minf(alt, 50.0) - err * 5.0
+			if score > best_score:
+				best_score = score
+				best = t
+		t += 300.0
+	return best
+
+func _run_p7shots() -> void:
+	_mode = Mode.PLAYING
+	_started = true
+	_paused = false
+	_menu.instant_finish()
+	_blending = ""
+	_apply_pose(_play_pose())
+	_hud.set_hud_visible(false, false)
+	_auto_orbit = false
+	_shot_beam_lock = false
+	# 放慢太阳：让黄昏阶段在截图期间保持稳定可复现（正式运行仍用玩家设置流速）。
+	_day_length = 3600.0
+	await get_tree().create_timer(0.9).timeout
+	_p7_camera_island()
+	# 1) 白天海鸥活动（应有飞行/停栖混合）
+	_set_time_of_day(12.0 * 60.0 + 20.0)
+	_update_lighting()
+	await get_tree().create_timer(4.0).timeout
+	await _p7_shot("p7_01_day_gulls")
+	await _p7_shot_close("p7_01b_day_gulls_close", 12.0, 3.0)
+	_p7_camera_island()
+	# 2) 黄昏归栖开始：太阳从上方下穿 +4°
+	_set_p7_sim_time(_p7_time_for_alt(4.2, true))
+	_update_lighting()
+	await get_tree().create_timer(2.5).timeout
+	await _p7_shot("p7_02_dusk_roost_start")
+	await _p7_shot_close("p7_02b_dusk_roost_close", 12.0, 3.0)
+	_p7_camera_island()
+	# 3) 黄昏归栖推进：太阳接近地平线，空中数量应明显下降
+	_set_p7_sim_time(_p7_time_for_alt(0.6, true))
+	_update_lighting()
+	await get_tree().create_timer(6.0).timeout
+	await _p7_shot("p7_03_dusk_roost_mid")
+	await _p7_shot_close("p7_03b_dusk_mid_close", 12.0, 3.0)
+	_p7_camera_island()
+	# 4) 稳定夜间：全部停栖、夜灯/窗灯/星空
+	_set_time_of_day(22.0 * 60.0 + 20.0)
+	_update_lighting()
+	await get_tree().create_timer(5.0).timeout
+	await _p7_shot("p7_04_night_calm")
+	await _p7_shot_close("p7_04b_night_perch_close", 8.0, 2.2, "perch")
+	_p7_camera_island()
+	# 5) 清晨恢复：太阳升过 +2° 后错峰起飞，不是全体同步
+	_set_p7_sim_time(_p7_time_for_alt(3.0, false))
+	_update_lighting()
+	await get_tree().create_timer(6.0).timeout
+	await _p7_shot("p7_05_dawn_recover")
+	await _p7_shot_close("p7_05b_dawn_recover_close", 12.0, 3.0)
+	_p7_camera_island()
+	# 6) 船进近海航段 + 海鸥短暂响应
+	_set_time_of_day(11.0 * 60.0)
+	_update_lighting()
+	await get_tree().create_timer(1.0).timeout
+	var route: Dictionary = _p7_pick_coastal_route()
+	if not route.is_empty():
+		var trigger := _p7_setup_boat_pass(route)
+		if trigger > 0.0:
+			var wait_s: float = clampf(6.0 / maxf(_boat_route_speed, 0.5), 0.5, 4.0) + 1.6
+			await get_tree().create_timer(wait_s).timeout
+			_p7_camera_boat()
+			await get_tree().create_timer(0.5).timeout
+			await _p7_shot("p7_06_boat_pass")
+			await _p7_shot_boat_respond_close("p7_06b_boat_respond_close")
+			_p7_camera_boat()
+			await get_tree().create_timer(14.0).timeout
+			await _p7_shot("p7_07_boat_recovered")
+			await _p7_shot_close("p7_07b_boat_recovered_close", 12.0, 3.0)
+	print("[SHOT] p7 sequence done")
+	get_tree().quit()
+
+## P7 截图：保存到独立目录，并把鸟群生态状态打进日志便于逐张核对。
+func _p7_shot(shot_name: String) -> void:
+	await _save_shot(shot_name, P7_SHOTS_DIR)
+	var eco: Dictionary = {}
+	var counts: Dictionary = {}
+	if _birds != null:
+		eco = _birds.debug_eco_state()
+		counts = _birds.get_state_counts()
+	var compact := {
+		"airborne": counts.get("airborne", -1),
+		"perched": counts.get("perched", -1),
+		"waiting": counts.get("waiting", -1),
+		"takeoffs": counts.get("takeoffs", -1),
+		"landings": counts.get("landings", -1),
+		"conflicts": counts.get("perch_conflicts", -1),
+	}
+	print("[P7] ", shot_name, " sun_alt=", snappedf(_sun_alt, 0.01), " eco=", JSON.stringify(eco), " counts=", JSON.stringify(compact))
+
+## P7 截图：把相机拉近到当前空中的海鸥群 / 响应船只的海鸥 / 夜间栖鸟，验证行为可观察性。
+## 只影响截图机位，不改变正式运行的生态规则。
+func _p7_shot_close(shot_name: String, back: float, up: float, mode: String = "air") -> void:
+	if not _p7_camera_birds(back, up, mode):
+		return
+	await get_tree().create_timer(0.5).timeout
+	await _p7_shot(shot_name)
+
+func _p7_camera_birds(back: float, up: float, mode: String) -> bool:
+	if _birds == null:
+		return false
+	var snap: Array = _birds.debug_snapshot()
+	var c := Vector3.ZERO
+	var n := 0
+	if mode == "perch":
+		# 夜间：选最高的一只栖鸟（大树冠层），避免被屋顶挡住视线。
+		var best: Dictionary = {}
+		for s_v in snap:
+			var sp: Dictionary = s_v
+			if int(sp["state"]) != 3:
+				continue
+			if best.is_empty() or (sp["pos"] as Vector3).y > (best["pos"] as Vector3).y:
+				best = sp
+		if best.is_empty():
+			return false
+		c = best["pos"] as Vector3
+		n = 1
+	else:
+		for s_v in snap:
+			var s: Dictionary = s_v
+			var st: int = int(s["state"])
+			if st == 3:
+				continue
+			if mode == "resp" and float(s["resp_w"]) <= 0.02 and float(s["resp_timer"]) <= 0.0:
+				continue
+			c += s["pos"] as Vector3
+			n += 1
+	if n == 0:
+		return false
+	c /= float(n)
+	var outw := Vector3(c.x, 0.0, c.z)
+	if outw.length() < 0.5:
+		outw = Vector3(1.0, 0.0, 0.0)
+	outw = outw.normalized()
+	_pose_look(c + outw * back + Vector3(0.0, up, 0.0), c, 46.0)
+	return true
+
+## P7 截图：同框呈现帆船与被它引起的响应海鸥（相机放在两者中点外侧）。
+func _p7_shot_boat_respond_close(shot_name: String) -> void:
+	if _birds == null or _sailboat == null:
+		return
+	var snap: Array = _birds.debug_snapshot()
+	var c := Vector3.ZERO
+	var n := 0
+	for s_v in snap:
+		var s: Dictionary = s_v
+		if int(s["state"]) == 3:
+			continue
+		if float(s["resp_w"]) <= 0.02 and float(s["resp_timer"]) <= 0.0:
+			continue
+		c += s["pos"] as Vector3
+		n += 1
+	if n == 0:
+		return
+	c /= float(n)
+	var b: Vector3 = _sailboat.global_position
+	var mid: Vector3 = (c + b) * 0.5
+	# 相机放在「船—鸟」连线的水平垂线上，而不是岛屿外法线上：
+	# 外法线方向会把相机放到船的外海一侧，船落在相机后方而无法同框。
+	var axis := b - c
+	axis.y = 0.0
+	if axis.length() < 0.5:
+		axis = Vector3(1.0, 0.0, 0.0)
+	axis = axis.normalized()
+	var side := Vector3(-axis.z, 0.0, axis.x)
+	var outward := Vector3(mid.x, 0.0, mid.z)
+	if outward.length() > 0.1 and side.dot(outward.normalized()) < 0.0:
+		side = -side
+	var sep := (b - c).length()
+	var back := clampf(10.0 + sep * 0.9, 12.0, 40.0)
+	var cam_y := clampf(4.0 + sep * 0.1, 4.0, 10.0)
+	_pose_look(mid + side * back + Vector3(0.0, cam_y, 0.0), mid + Vector3(0.0, 1.0, 0.0), 55.0)
+	await get_tree().create_timer(0.4).timeout
+	await _p7_shot(shot_name)
+
+func _set_p7_sim_time(seconds: float) -> void:
+	_sim_seconds = seconds
+	_events = IsleAstro.day_events(_sim_seconds)
+
+## 扫描当天，返回太阳高度第一次穿越 target_alt 的模拟时刻（秒）。
+func _p7_time_for_alt(target_alt: float, descending: bool) -> float:
+	var day_start := _sim_seconds - fposmod(_sim_seconds, 86400.0)
+	var prev := 0.0
+	var have_prev := false
+	for m in range(0, 1440):
+		var astro: Dictionary = IsleAstro.compute(day_start + float(m) * 60.0)
+		var alt := float(astro["sun_alt"])
+		if have_prev:
+			var hit: bool = (prev > target_alt and alt <= target_alt) if descending else (prev < target_alt and alt >= target_alt)
+			if hit:
+				return day_start + float(m) * 60.0
+		prev = alt
+		have_prev = true
+	return day_start + 12.0 * 3600.0
+
+func _p7_camera_island() -> void:
+	_theta = 0.86
+	_elev = 0.30
+	_radius = 60.0
+	_cam_target = Vector3(0.0, 11.0, 0.0)
+	_fov = 52.0
+	_apply_pose(_play_pose())
+
+func _p7_camera_boat() -> void:
+	if _sailboat == null:
+		return
+	var bp: Vector3 = _sailboat.global_position
+	var outw := Vector3(bp.x, 0.0, bp.z)
+	if outw.length() < 0.1:
+		outw = Vector3(0.0, 0.0, 1.0)
+	outw = outw.normalized()
+	var cam := bp + outw * 16.0 + Vector3(0.0, 5.5, 0.0)
+	_pose_look(cam, bp + Vector3(0.0, 2.4, 0.0), 52.0)
+
+func _p7_pick_coastal_route() -> Dictionary:
+	for r_v in _sail_routes:
+		var r: Dictionary = r_v
+		if String(r.get("kind", "")) == "coastal" and r.has("shore_a0"):
+			return r
+	return {}
+
+## P7 截图：真实近海航线 + 真实航次号，把船摆到触发点前 6m，由状态机自行驶过触发点。
+func _p7_setup_boat_pass(route: Dictionary) -> float:
+	if _sailboat == null:
+		return -1.0
+	_sail_route = route
+	_sail_route["_out_pts"] = _route_points(route.get("out", []))
+	_sail_route["_back_pts"] = _route_points(route.get("back", []))
+	_boat_route_kind = "coastal"
+	_boat_route_speed = maxf(_sail_speed, float(route.get("speed", _sail_speed)))
+	_boat_route_len = _polyline_len(_sail_route["_out_pts"])
+	_set_boat_shore_window(_sail_route)
+	if _boat_shore_trigger <= 0.0 or _boat_shore_trigger >= _boat_route_len - 1.0:
+		return -1.0
+	_boat_route_dist = maxf(0.0, _boat_shore_trigger - 6.0)
+	_boat_speed_cur = _boat_route_speed
+	_boat_fade = 1.0
+	_boat_state = "COASTAL_CRUISE"
+	_sail_phase = "out"
+	_boat_trip += 1
+	var smp: Dictionary = _sample_polyline(_sail_route["_out_pts"], _boat_route_dist)
+	var pos: Vector3 = smp["pos"]
+	var dir: Vector3 = smp["dir"]
+	_boat_apply(pos, atan2(dir.x, dir.z), _boat_route_speed, 1.0 / 60.0)
+	_apply_boat_fade()
+	print("[P7] boat pass armed route=", String(route.get("name", "?")), " trip=", _boat_trip, " trigger=", snappedf(_boat_shore_trigger, 0.1), " len=", snappedf(_boat_route_len, 0.1))
+	return _boat_shore_trigger
+

@@ -40,7 +40,9 @@ const KEY_SPECS := {
 	"sea_mesh_scale": {"type": "float", "min": 0.4, "max": 1.6, "def": 1.0},
 	"grass_density": {"type": "float", "min": 0.3, "max": 1.6, "def": 1.0},
 	"particle_density": {"type": "float", "min": 0.3, "max": 1.6, "def": 1.0},
-	"light_budget": {"type": "int", "min": 4, "max": 12, "def": 8},
+	# P8.1-06：12→16 槽（室外池 10 + 室内池 6）。min 提到 10 = 低画质也不许把灯关掉；
+	# max 16 = 双池全部槽位。def=高档值（12）。
+	"light_budget": {"type": "int", "min": 10, "max": 16, "def": 12},
 	"glow_strength": {"type": "float", "min": 0.0, "max": 1.5, "def": 1.0},
 	"tonemap": {"type": "int", "min": 0, "max": 4, "def": 0},
 	"exposure": {"type": "float", "min": 0.7, "max": 1.4, "def": 1.0},
@@ -52,6 +54,9 @@ const KEY_SPECS := {
 }
 
 ## 五档参数。顺序 = QUALITY_NAMES 下标。全部差异都在"自定义 unshaded 管线"里真实可见。
+## P8.1-06：light_budget 现在是「室内池 + 室外池」的激活总盏数（上限 16 = 室外 10 + 室内 6）。
+## 低档不得关灯：q0=10 已含 6 路灯 + 灯塔 + 壁炉 + 一层吊灯 + 一层台灯。
+## 室内池盏数由 light_indoor_budget(i) 给出，室外池 = 总预算 - 室内池。
 const QUALITY_PRESETS := [
 	# 0 低 · 流畅：能跑就行，但海/天/草仍有基本层次（不掉到"坏画面"）
 	{
@@ -59,7 +64,7 @@ const QUALITY_PRESETS := [
 		"scaling_3d_scale": 0.85, "scaling_3d_mode": 1, "max_fps": 60,
 		"sky_cloud_detail": 0, "sea_wave_detail": 0, "sea_foam": 0.0, "sea_reflection": 0.0,
 		"sea_ssr": 0.0, "sea_mesh_scale": 0.6,
-		"grass_density": 0.45, "particle_density": 0.5, "light_budget": 4,
+		"grass_density": 0.45, "particle_density": 0.5, "light_budget": 10,
 		"glow_strength": 0.55, "tonemap": 0, "exposure": 1.0,
 		"posts_ao": false, "ao_strength": 0.0, "volumetric_fog": false,
 		"fog_scale": 0.85, "lod_bias": 0.8,
@@ -70,7 +75,7 @@ const QUALITY_PRESETS := [
 		"scaling_3d_scale": 0.92, "scaling_3d_mode": 0, "max_fps": 60,
 		"sky_cloud_detail": 1, "sea_wave_detail": 1, "sea_foam": 0.62, "sea_reflection": 1.0,
 		"sea_ssr": 0.0, "sea_mesh_scale": 0.8,
-		"grass_density": 0.7, "particle_density": 0.75, "light_budget": 6,
+		"grass_density": 0.7, "particle_density": 0.75, "light_budget": 11,
 		"glow_strength": 0.75, "tonemap": 0, "exposure": 1.0,
 		"posts_ao": false, "ao_strength": 0.0, "volumetric_fog": false,
 		"fog_scale": 0.92, "lod_bias": 0.9,
@@ -81,7 +86,7 @@ const QUALITY_PRESETS := [
 		"scaling_3d_scale": 1.0, "scaling_3d_mode": 0, "max_fps": 0,
 		"sky_cloud_detail": 2, "sea_wave_detail": 2, "sea_foam": 0.86, "sea_reflection": 1.0,
 		"sea_ssr": 0.0, "sea_mesh_scale": 1.0,
-		"grass_density": 1.0, "particle_density": 1.0, "light_budget": 8,
+		"grass_density": 1.0, "particle_density": 1.0, "light_budget": 12,
 		"glow_strength": 1.0, "tonemap": 0, "exposure": 1.0,
 		"posts_ao": true, "ao_strength": 0.35, "volumetric_fog": false,
 		"fog_scale": 1.0, "lod_bias": 1.0,
@@ -92,7 +97,7 @@ const QUALITY_PRESETS := [
 		"scaling_3d_scale": 1.15, "scaling_3d_mode": 0, "max_fps": 0,
 		"sky_cloud_detail": 2, "sea_wave_detail": 3, "sea_foam": 0.92, "sea_reflection": 1.15,
 		"sea_ssr": 0.58, "sea_mesh_scale": 1.2,
-		"grass_density": 1.2, "particle_density": 1.2, "light_budget": 10,
+		"grass_density": 1.2, "particle_density": 1.2, "light_budget": 14,
 		"glow_strength": 1.08, "tonemap": 0, "exposure": 1.02,
 		"posts_ao": true, "ao_strength": 0.55, "volumetric_fog": false,
 		"fog_scale": 1.06, "lod_bias": 1.15,
@@ -103,12 +108,18 @@ const QUALITY_PRESETS := [
 		"scaling_3d_scale": 1.25, "scaling_3d_mode": 0, "max_fps": 0,
 		"sky_cloud_detail": 3, "sea_wave_detail": 3, "sea_foam": 1.0, "sea_reflection": 1.25,
 		"sea_ssr": 0.62, "sea_mesh_scale": 1.4,
-		"grass_density": 1.4, "particle_density": 1.35, "light_budget": 12,
+		"grass_density": 1.4, "particle_density": 1.35, "light_budget": 16,
 		"glow_strength": 1.12, "tonemap": 0, "exposure": 1.04,
 		"posts_ao": true, "ao_strength": 0.75, "volumetric_fog": false,
 		"fog_scale": 1.1, "lod_bias": 1.3,
 	},
 ]
+
+
+## P8.1-06：五档的「室内池」激活盏数；室外池 = light_budget - 该值（见 light_split()）。
+## 室外池：6 路灯 + 灯塔 + 门廊灯 + 窗光 + 码头灯（上限 10）；
+## 室内池：壁炉 + 一层吊灯 + 一层台灯 + 一层落地灯 + 阁楼吊灯 ×2（上限 6）。
+const LIGHT_INDOOR_BUDGET := [3, 3, 3, 4, 6]
 
 
 ## 五档参数（深拷贝，调用方可安全修改）。
@@ -133,6 +144,19 @@ static func keys() -> Array:
 ## 默认参数（= 高 · 精致档），菜单初始化用。
 static func defaults() -> Dictionary:
 	return (QUALITY_PRESETS[2] as Dictionary).duplicate(true)
+
+
+## 某档的室内池盏数（0..6）。
+static func light_indoor_budget(i: int) -> int:
+	return int(LIGHT_INDOOR_BUDGET[clampi(i, 0, QUALITY_COUNT - 1)])
+
+
+## 某档的灯池拆分：{total, indoor, outdoor}。main.gd 用它决定两个池各上传几盏。
+static func light_split(i: int) -> Dictionary:
+	var q := clampi(i, 0, QUALITY_COUNT - 1)
+	var total := int((QUALITY_PRESETS[q] as Dictionary).get("light_budget", 12))
+	var indoor := light_indoor_budget(q)
+	return {"total": total, "indoor": indoor, "outdoor": total - indoor}
 
 
 ## 兼容入口：isle_settings.preset_defaults_for_ui() 的命名。
