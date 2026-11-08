@@ -161,4 +161,4 @@ Godot_v4.7.2-stable_win64_console.exe --path . -- --selftest
 
 ## 许可证
 
-作者保留权利（未附带开源许可证）。如需开源/商用，请先补充 `LICENSE` 并与作者确认。
+本项目采用 [MIT License](LICENSE) 开源（Copyright © 2026 SAMY0913）。可自由使用、修改与分发，保留版权与许可声明即可。
